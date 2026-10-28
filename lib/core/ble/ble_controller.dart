@@ -485,7 +485,7 @@ class BleController extends Notifier<BleState> {
         final decoded = jsonDecode(tripHistJson) as List<dynamic>;
         loadedHistory = decoded
             .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= 1.0)
+            .where((e) => e.distanceKm >= 0.1 || e.route.isNotEmpty)
             .toList();
       } catch (_) {}
     }
@@ -513,6 +513,8 @@ class BleController extends Notifier<BleState> {
       distanceMode: distM,
       chargingProfile: chargeP,
     );
+    // Tự động khôi phục dữ liệu GPS hành trình dở dang nếu trước đó app bị vuốt tắt
+    unawaited(TripGpsTracker.instance.restoreUnsavedPoints());
     // Tự động kết nối ngay khi mở app nếu đã từng kết nối xe trước đó
     if (savedId != null && savedId.isNotEmpty) {
       unawaited(tryRestoreLastBike());
@@ -547,10 +549,11 @@ class BleController extends Notifier<BleState> {
     final gpsDistKm = TripGpsTracker.instance.totalDistanceKm;
     // Lấy quãng đường lớn hơn giữa ODO xe và GPS
     final effectiveDistKm = trip.distanceKm > 0 ? trip.distanceKm : gpsDistKm;
+    final currentRoute = TripGpsTracker.instance.getCurrentRoute();
 
-    // QUY TẮC CỐT LÕI: Dưới 1km (< 1.0 km) thì KHÔNG lưu hành trình
-    if (effectiveDistKm < 1.0 || _tripStartTime == null) {
-      BleLogger.instance.event('trip_skipped_under_1km', {
+    // Bỏ qua nếu quãng đường quá ngắn (< 100m) VÀ không có điểm GPS thực tế nào được ghi nhận
+    if ((effectiveDistKm < 0.1 && currentRoute.isEmpty) || _tripStartTime == null) {
+      BleLogger.instance.event('trip_skipped_under_100m', {
         'distance_km': effectiveDistKm,
         'odo_dist_km': trip.distanceKm,
         'gps_dist_km': gpsDistKm,
@@ -606,6 +609,7 @@ class BleController extends Notifier<BleState> {
       final prefs = await _prefs;
       final jsonStr = jsonEncode(updated.map((e) => e.toJson()).toList());
       await prefs.setString(_kTripHistory, jsonStr);
+      await TripGpsTracker.instance.clearSavedCache();
       BleLogger.instance.event('trip_archived', {
         'dist_km': record.distanceKm,
         'dur_sec': record.durationSec,
@@ -2288,9 +2292,11 @@ class BleController extends Notifier<BleState> {
           'km=${msg.kmLeft} ecu=${msg.ecu} mot=${msg.motor} '
           'fw=${msg.version} model=${msg.model}';
 
-      // Cập nhật GPS tracker & vận tốc xe
+      // Cập nhật GPS tracker & chế độ lái xe (Chỉ ghi GPS khi ở D hoặc S và không gạt chân chống)
+      final isDriveMode = (msg.state == BikeState.drive || msg.state == BikeState.super_) && !msg.parking;
+      TripGpsTracker.instance.setDriveMode(isDriveMode);
       TripGpsTracker.instance.updateBikeSpeed(msg.speed);
-      if (!TripGpsTracker.instance.isTracking && (msg.speed > 0.5 || state.phase == BlePhase.connected)) {
+      if (!TripGpsTracker.instance.isTracking && isDriveMode) {
         unawaited(TripGpsTracker.instance.startTracking());
       }
 

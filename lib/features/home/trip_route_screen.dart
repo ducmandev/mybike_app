@@ -53,7 +53,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
   bool _followBike = true;
   bool _isLocating = false;
   LatLng? _myLocation;
-  bool _isSimulated = false;
 
   MapTileStyle _tileStyle = MapTileStyle.fastCdn;
   bool _useNavPuckMarker = true;
@@ -95,45 +94,10 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
   void _initRouteData() {
     if (_currentTrip.route.isNotEmpty) {
       _routePoints = TripGpsTracker.cleanAndSmoothRoute(_currentTrip.route);
-      _isSimulated = false;
     } else {
-      _routePoints = _generateSimulatedRoute(_currentTrip);
-      _isSimulated = true;
+      _routePoints = [];
     }
     _currentIndex = 0;
-  }
-
-  List<TripGpsPoint> _generateSimulatedRoute(TripRecord trip) {
-    const startLat = 10.7719;
-    const startLng = 106.7195;
-    final totalKm = trip.distanceKm > 0 ? trip.distanceKm : 3.5;
-    final count = math.max(30, (totalKm * 15).round());
-
-    final list = <TripGpsPoint>[];
-    double curLat = startLat;
-    double curLng = startLng;
-    final startTime = trip.startTime;
-    final durationSec = trip.durationSec > 0 ? trip.durationSec : 600;
-    final timeStep = durationSec / count;
-
-    for (int i = 0; i < count; i++) {
-      final t = i / (count - 1);
-      final speed = math.sin(t * math.pi) * (trip.maxSpeedKmh > 0 ? trip.maxSpeedKmh : 48.0);
-      curLat += 0.00035 * (1 + 0.3 * math.sin(i * 0.6));
-      curLng += 0.00028 * (1 + 0.4 * math.cos(i * 0.8));
-
-      list.add(
-        TripGpsPoint(
-          lat: curLat,
-          lng: curLng,
-          speedKmh: speed.clamp(0.0, 90.0),
-          heading: (45.0 + math.sin(i * 0.3) * 30.0).clamp(0.0, 360.0),
-          altitude: 12.0 + math.sin(i * 0.2) * 4.0,
-          timestamp: startTime.add(Duration(seconds: (i * timeStep).round())),
-        ),
-      );
-    }
-    return list;
   }
 
   @override
@@ -721,7 +685,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                           Row(
                             children: [
                               Expanded(child: _metricTile('TỔNG SỐ ĐIỂM GPS', '${_routePoints.length} điểm ghi nhận', Icons.gps_fixed_rounded)),
-                              Expanded(child: _metricTile('NGUỒN DỮ LIỆU', _isSimulated ? 'Mô phỏng GPS' : 'GPS Thực Tế', Icons.sensors_rounded)),
+                              Expanded(child: _metricTile('NGUỒN DỮ LIỆU', _routePoints.isNotEmpty ? 'GPS Thực Tế' : 'Chưa có GPS', Icons.sensors_rounded)),
                             ],
                           ),
                         ],
@@ -1110,6 +1074,53 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
             },
           ),
 
+          // Thông báo trực quan giữa bản đồ khi chưa có dữ liệu GPS thực tế
+          if (!hasPoints)
+            Center(
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 28),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                decoration: BoxDecoration(
+                  color: AppColors.panel.withValues(alpha: 0.95),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: AppColors.panelBorderBright),
+                  boxShadow: AppColors.modalShadow,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.amber.withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.location_off_rounded, size: 28, color: AppColors.amber),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Chưa có dữ liệu GPS thực tế',
+                      style: GoogleFonts.spaceGrotesk(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Hành trình này không có dữ liệu định vị GPS. Tọa độ chỉ được ghi nhận khi xe chuyển sang chế độ lái (D hoặc S).',
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11.5,
+                        color: AppColors.textDim,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           // 4. BẢNG ĐIỀU KHIỂN & PHÁT LẠI VẬN TỐC Ở ĐÁY MÀN HÌNH (Replay & Telemetry HUD)
           Positioned(
             left: 14,
@@ -1127,11 +1138,12 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                     border: Border.all(color: AppColors.panelBorderBright),
                     boxShadow: AppColors.modalShadow,
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Hàng thông số Telemetry tại thời điểm đang phát lại
-                      if (currentPoint != null) ...[
+                  child: hasPoints
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Hàng thông số Telemetry tại thời điểm đang phát lại
+                            if (currentPoint != null) ...[
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
@@ -1328,6 +1340,58 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                             icon: const Icon(Icons.skip_next_rounded, color: AppColors.textDim, size: 20),
                             tooltip: 'Đến cuối',
                             onPressed: () => _seekTo(_routePoints.length - 1),
+                          ),
+                        ],
+                      ),
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.alt_route_rounded, color: AppColors.primary, size: 20),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Hành trình #${_currentTripIndex > 0 ? _currentTripIndex : 1}',
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${_currentTrip.distanceKm.toStringAsFixed(1)} km · ${_currentTrip.durationSec ~/ 60} phút · Tối đa ${_currentTrip.maxSpeedKmh.toStringAsFixed(0)} km/h',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 11,
+                                    color: AppColors.textDim,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _showTripInfoSheet,
+                            icon: const Icon(Icons.info_outline_rounded, size: 14),
+                            label: const Text('Chi tiết', style: TextStyle(fontSize: 11)),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: AppColors.panelBorderBright),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
                           ),
                         ],
                       ),

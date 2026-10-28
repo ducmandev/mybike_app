@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_gps_point.dart';
 
 /// Bộ lọc Kalman 2D tối ưu hóa cho định vị GPS xe máy điện Dat Bike.
@@ -78,10 +80,15 @@ class TripGpsTracker {
   final StreamController<TripGpsPoint> _pointController = StreamController<TripGpsPoint>.broadcast();
 
   bool _isTracking = false;
+  bool _isDriveMode = false;
   double _lastKnownBikeSpeed = 0.0;
   DateTime? _lastPointTime;
   Position? _lastPosition;
   TripGpsPoint? _lastFilteredPoint;
+  DateTime? _lastPersistTime;
+
+  static const String _kActiveGpsPointsKey = 'active_trip_gps_points_cache';
+  static const String _kActiveGpsTimeKey = 'active_trip_gps_last_time';
 
   final GpsKalmanFilter2D _kalmanFilter = GpsKalmanFilter2D();
 
@@ -94,10 +101,75 @@ class TripGpsTracker {
   static const int kMinIntervalMs = 1200;                  // Tần suất lấy điểm tối đa ~1.2s
 
   bool get isTracking => _isTracking;
+  bool get isDriveMode => _isDriveMode;
   List<TripGpsPoint> get recordedPoints => List.unmodifiable(_recordedPoints);
   Stream<TripGpsPoint> get onPointRecorded => _pointController.stream;
   Position? get lastPosition => _lastPosition;
   TripGpsPoint? get currentPoint => _recordedPoints.isNotEmpty ? _recordedPoints.last : null;
+
+  /// Cập nhật chế độ lái xe (D hoặc S và không gạt chân chống)
+  void setDriveMode(bool active) {
+    if (_isDriveMode != active) {
+      _isDriveMode = active;
+      debugPrint('[TripGpsTracker] Trạng thái ghi nhận chế độ lái D/S: $active');
+    }
+  }
+
+  /// Tự động lưu bộ nhớ đệm GPS định kỳ vào SharedPreferences để chống mất lộ trình khi vuốt/kill app
+  Future<void> _persistPointsDebounced() async {
+    final now = DateTime.now();
+    if (_lastPersistTime != null && now.difference(_lastPersistTime!).inSeconds < 4) {
+      return;
+    }
+    _lastPersistTime = now;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final rawList = _recordedPoints.map((p) => p.toJson()).toList();
+      await prefs.setString(_kActiveGpsPointsKey, jsonEncode(rawList));
+      await prefs.setString(_kActiveGpsTimeKey, now.toIso8601String());
+    } catch (e) {
+      debugPrint('[TripGpsTracker] Lỗi lưu đệm GPS vào SharedPreferences: $e');
+    }
+  }
+
+  /// Khôi phục các điểm GPS đang ghi dở dang nếu người dùng lỡ vuốt tắt app
+  Future<void> restoreUnsavedPoints() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedJson = prefs.getString(_kActiveGpsPointsKey);
+      final cachedTimeStr = prefs.getString(_kActiveGpsTimeKey);
+
+      if (cachedJson != null && cachedJson.isNotEmpty && cachedTimeStr != null) {
+        final lastTime = DateTime.tryParse(cachedTimeStr);
+        // Nếu chuyến đi trong vòng 12 tiếng qua thì nạp lại
+        if (lastTime != null && DateTime.now().difference(lastTime).inHours < 12) {
+          final decoded = jsonDecode(cachedJson) as List<dynamic>;
+          final restored = decoded
+              .map((item) => TripGpsPoint.fromJson(item as Map<String, dynamic>))
+              .toList();
+          if (restored.isNotEmpty) {
+            _recordedPoints.clear();
+            _recordedPoints.addAll(restored);
+            _lastFilteredPoint = restored.last;
+            debugPrint('[TripGpsTracker] Đã khôi phục thành công ${restored.length} điểm GPS từ bộ nhớ đệm!');
+          }
+        } else {
+          await clearSavedCache();
+        }
+      }
+    } catch (e) {
+      debugPrint('[TripGpsTracker] Lỗi khôi phục điểm GPS: $e');
+    }
+  }
+
+  /// Xóa sạch bộ nhớ đệm điểm GPS dở dang
+  Future<void> clearSavedCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kActiveGpsPointsKey);
+      await prefs.remove(_kActiveGpsTimeKey);
+    } catch (_) {}
+  }
 
   /// Tính tổng quãng đường GPS đã tích lũy của chuyến đi hiện tại (km)
   double get totalDistanceKm {
@@ -194,6 +266,11 @@ class TripGpsTracker {
           accuracy: LocationAccuracy.high,
           distanceFilter: 2,
           intervalDuration: const Duration(milliseconds: 1000),
+          foregroundNotificationConfig: const ForegroundNotificationConfig(
+            notificationTitle: 'My Bike - Theo dõi hành trình',
+            notificationText: 'Hệ thống đang ghi nhận lộ trình GPS chuyến đi của bạn liên tục...',
+            enableWakeLock: true,
+          ),
         );
       } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
         locationSettings = AppleSettings(
@@ -231,6 +308,14 @@ class TripGpsTracker {
 
   void _handleNewPosition(Position pos) {
     _lastPosition = pos;
+
+    // 0. BỘ LỌC CHẾ ĐỘ LÁI (DRIVE/SUPER MODE GATE)
+    // Chỉ ghi nhận GPS khi xe ở chế độ lái D (Drive) hoặc S (Sport/Super) và không gạt chân chống.
+    // Khi về P (Parking), tắt máy, hoặc dừng hạ chân chống, ngưng/tạm dừng ghi điểm GPS rác.
+    if (!_isDriveMode) {
+      return;
+    }
+
     final now = DateTime.now();
 
     // 1. BỘ LỌC ĐỘ CHÍNH XÁC (Accuracy Filter)
@@ -323,6 +408,7 @@ class TripGpsTracker {
     _lastPointTime = now;
     _lastFilteredPoint = point;
     _pointController.add(point);
+    unawaited(_persistPointsDebounced());
   }
 
   /// Tính góc phương vị di chuyển giữa 2 điểm tọa độ (Geodesic Bearing 0° - 360°)
@@ -360,6 +446,7 @@ class TripGpsTracker {
     _lastPointTime = null;
     _lastFilteredPoint = null;
     _kalmanFilter.reset();
+    unawaited(clearSavedCache());
   }
 
   /// Thuật toán hậu xử lý và làm mịn lộ trình:
@@ -417,8 +504,7 @@ class TripGpsTracker {
     return smoothed;
   }
 
-  /// Tạo một lộ trình mẫu thực tế (quanh khu đô thị/trung tâm) dành cho các chuyến đi
-  /// không có GPS (như chạy trong nhà hoặc chuyến cũ) để người dùng có thể trải nghiệm tính năng vẽ & xem lại bản đồ.
+  /// Không sử dụng lộ trình giả lập — ứng dụng chỉ hiển thị GPS thực tế
   static List<TripGpsPoint> generateSampleRoute({
     required double distanceKm,
     required double avgSpeedKmh,
@@ -426,54 +512,6 @@ class TripGpsTracker {
     required DateTime startTime,
     required int durationSec,
   }) {
-    final points = <TripGpsPoint>[];
-    if (durationSec <= 0 || distanceKm <= 0) return points;
-
-    // Tọa độ gốc: Khu đô thị Sala / Quận 2, TP.HCM
-    const baseLat = 10.7719;
-    const baseLng = 106.7195;
-
-    final numPoints = math.max(15, math.min(100, durationSec ~/ 5));
-    final intervalSec = durationSec / numPoints;
-
-    double curLat = baseLat;
-    double curLng = baseLng;
-    double currentHeading = 45.0; // Đông Bắc
-
-    final effectiveMaxSpeed = maxSpeedKmh > 5 ? maxSpeedKmh : 48.0;
-    final effectiveAvgSpeed = avgSpeedKmh > 3 ? avgSpeedKmh : 28.0;
-
-    for (int i = 0; i < numPoints; i++) {
-      final t = i / (numPoints - 1);
-      final pointTime = startTime.add(Duration(seconds: (i * intervalSec).round()));
-
-      final speedWave = math.sin(t * math.pi * 3).abs();
-      double speed = effectiveAvgSpeed * 0.5 + (effectiveMaxSpeed - effectiveAvgSpeed * 0.5) * speedWave;
-      if (i == 0 || i == numPoints - 1) speed = 0.0;
-      if (speed > effectiveMaxSpeed) speed = effectiveMaxSpeed;
-
-      if (i % 8 == 0) {
-        currentHeading = (currentHeading + 60.0) % 360.0;
-      }
-      final rad = currentHeading * math.pi / 180.0;
-
-      final stepKm = (speed / 3600.0) * intervalSec;
-      final dLat = (stepKm / 111.0) * math.cos(rad);
-      final dLng = (stepKm / (111.0 * math.cos(curLat * math.pi / 180.0))) * math.sin(rad);
-
-      curLat += dLat;
-      curLng += dLng;
-
-      points.add(TripGpsPoint(
-        lat: double.parse(curLat.toStringAsFixed(6)),
-        lng: double.parse(curLng.toStringAsFixed(6)),
-        speedKmh: double.parse(speed.toStringAsFixed(1)),
-        timestamp: pointTime,
-        altitude: 8.0 + math.sin(i.toDouble() * 0.3) * 3.0,
-        heading: currentHeading,
-      ));
-    }
-
-    return points;
+    return const [];
   }
 }
