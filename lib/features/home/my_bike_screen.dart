@@ -71,6 +71,35 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
     }
   }
 
+  Future<void> _handleConnectTap() async {
+    final ble = ref.read(bleProvider);
+    final notifier = ref.read(bleProvider.notifier);
+
+    if (ble.phase == BlePhase.connecting || ble.phase == BlePhase.reconnecting) {
+      _heroSnack('Đang trong quá trình kết nối với xe, vui lòng đợi giây lát...');
+      return;
+    }
+
+    final lastId = await notifier.lastBikeId();
+    final lastName = await notifier.lastBikeName();
+
+    if (lastId != null && lastId.isNotEmpty) {
+      _heroSnack('Đang tìm và kết nối lại với ${lastName ?? "xe"}...', duration: const Duration(seconds: 3));
+      final ok = await notifier.tryRestoreLastBike();
+      if (!ok && mounted) {
+        _heroSnack('Không tìm thấy xe ở gần. Đang mở quét tìm xe...');
+        await Future.delayed(const Duration(milliseconds: 600));
+        if (mounted) {
+          Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanScreen()));
+        }
+      }
+    } else {
+      if (mounted) {
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanScreen()));
+      }
+    }
+  }
+
   void _heroSnack(String msg, {String? actionLabel, VoidCallback? onAction, Duration? duration}) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -426,13 +455,13 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           icon: Icons.key_rounded,
                           iconColor: const Color(0xFF10B981),
                           iconBg: const Color(0xFFF0FDF4),
-                          title: 'Mở khóa tự động',
-                          subtitle: 'Tự mở khóa khi đến gần xe',
+                          title: 'Mở khóa & Bật xe khi lại gần',
+                          subtitle: 'Tự động mở khóa bánh và bật sáng taplo khi đến gần xe',
                           value: ble.walkUpUnlock,
                           onChanged: (v) {
                             ref.read(bleProvider.notifier).setWalkUpUnlock(v);
                             setSheetState(() {});
-                            _heroSnack(v ? 'Đã bật mở khóa tự động' : 'Đã tắt mở khóa tự động');
+                            _heroSnack(v ? 'Đã bật mở khóa & bật sáng taplo khi lại gần' : 'Đã tắt tự mở xe');
                           },
                         ),
                         if (ble.walkUpUnlock) ...[
@@ -1013,6 +1042,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
           final kmLeft = (ble.lastTelemetry != null && ble.lastTelemetry!.kmLeft > 0)
               ? ble.lastTelemetry!.kmLeft.round()
               : null;
+          final hasBike = ble.bikeName != null || ble.device != null;
           final infoStr = (connected && percent != null)
               ? '$serial · $percent% Pin${kmLeft != null ? " ($kmLeft km)" : ""}'
               : (connected ? '$serial · Đã kết nối' : '$serial · Ngoại tuyến');
@@ -1066,74 +1096,107 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // Xe đang chọn (dữ liệu thật từ BleState)
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEFF6FF),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xFFBFDBFE), width: 1.5),
+                if (hasBike)
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFBFDBFE), width: 1.5),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: const [
+                              BoxShadow(color: Color(0x100F172A), blurRadius: 6, offset: Offset(0, 2)),
+                            ],
+                          ),
+                          clipBehavior: Clip.antiAlias,
+                          child: Image.asset(
+                            'assets/images/bike_logo_3d.png',
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: Color(0xFF2563EB), size: 24),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Text(
+                                    ble.bikeName ?? 'Xe Dat Bike',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w700,
+                                      color: const Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2563EB),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      'ĐANG CHỌN',
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                infoStr,
+                                style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF475569)),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.check_circle_rounded, color: Color(0xFF2563EB), size: 22),
+                      ],
+                    ),
+                  )
+                else
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Column(
+                      children: [
+                        const Icon(Icons.two_wheeler_outlined, size: 40, color: Color(0xFF94A3B8)),
+                        const SizedBox(height: 10),
+                        Text(
+                          'Chưa có xe nào được liên kết',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFF0F172A),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Bấm "TÌM & GHÉP ĐÔI XE" bên dưới để quét kết nối xe Dat Bike của bạn',
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 12,
+                            color: const Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: const [
-                            BoxShadow(color: Color(0x100F172A), blurRadius: 6, offset: Offset(0, 2)),
-                          ],
-                        ),
-                        clipBehavior: Clip.antiAlias,
-                        child: Image.asset(
-                          'assets/images/bike_logo_3d.png',
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: Color(0xFF2563EB), size: 24),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Text(
-                                  ble.bikeName ?? 'Dat Bike Quantum S1',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w700,
-                                    color: const Color(0xFF0F172A),
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF2563EB),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    'ĐANG CHỌN',
-                                    style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              infoStr,
-                              style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF475569)),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const Icon(Icons.check_circle_rounded, color: Color(0xFF2563EB), size: 22),
-                    ],
-                  ),
-                ),
 
                 const SizedBox(height: 20),
 
@@ -1190,10 +1253,16 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
     final speed = telemetry?.speed ?? 0.0;
     final isBikeOn = telemetry?.isBikeOn == true;
     final isLocked = ble.isLocked;
+    final isConnecting = ble.phase == BlePhase.connecting || ble.phase == BlePhase.reconnecting;
+    final hasBike = ble.bikeName != null || ble.device != null;
 
     // Trạng thái vận hành thực tế của xe máy điện
     final statusText = !connected
-        ? 'Chưa kết nối xe — Bấm để kết nối'
+        ? (isConnecting
+            ? 'Đang kết nối lại với xe...'
+            : (hasBike
+                ? 'Chưa kết nối xe — Chạm để kết nối'
+                : 'Chưa có xe — Chạm để quét & kết nối'))
         : (isLocked
             ? 'Đang khóa an toàn (Locked)'
             : (speed > 0.5
@@ -1240,7 +1309,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             ),
                             Flexible(
                               child: Text(
-                                ble.bikeName ?? 'Dat Bike Quantum S1',
+                                ble.bikeName ?? (ble.device != null ? 'Xe Dat Bike' : 'Chưa ghép đôi xe'),
                                 style: GoogleFonts.plusJakartaSans(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w700,
@@ -1281,7 +1350,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                   const SizedBox(width: 2),
                   // Badge Bluetooth Connected hình viên thuốc trắng
                   InkWell(
-                    onTap: connected ? null : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ScanScreen())),
+                    onTap: connected ? null : _handleConnectTap,
                     borderRadius: BorderRadius.circular(22),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1307,7 +1376,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            connected ? 'Online' : 'Offline',
+                            connected ? 'Online' : (isConnecting ? 'Đang nối...' : 'Offline'),
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 11.5,
                               fontWeight: FontWeight.w600,
@@ -1485,14 +1554,50 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
               const SizedBox(height: 8),
 
               // Trạng thái vận hành xe máy điện (Parking / Ready / Driving)
-              Text(
-                statusText,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: const Color(0xFF64748B),
+              if (!connected)
+                InkWell(
+                  onTap: _handleConnectTap,
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    margin: const EdgeInsets.only(top: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFBFDBFE), width: 1.2),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isConnecting ? Icons.sync_rounded : Icons.bluetooth_searching_rounded,
+                          size: 16,
+                          color: const Color(0xFF2563EB),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          statusText,
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFF2563EB),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.arrow_forward_ios_rounded, size: 11, color: Color(0xFF2563EB)),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                Text(
+                  statusText,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: const Color(0xFF64748B),
+                  ),
                 ),
-              ),
 
               const SizedBox(height: 10),
 

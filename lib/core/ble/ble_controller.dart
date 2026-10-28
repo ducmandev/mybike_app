@@ -460,7 +460,7 @@ class BleController extends Notifier<BleState> {
     final savedId = prefs.getString(_kLastBikeId);
     final autoLock = prefs.getBool(_kAutoLockWalkAway) ?? false;
     final walkUp = prefs.getBool(_kWalkUpUnlock) ?? false;
-    final walkUpPowerOn = prefs.getBool(_kWalkUpAutoPowerOn) ?? false;
+    final walkUpPowerOn = prefs.getBool(_kWalkUpAutoPowerOn) ?? true;
     final walkUpRssi = prefs.getDouble(_kWalkUpRssiThreshold);
     final autoLockRssi = prefs.getDouble(_kAutoLockRssiThreshold);
     final theft5m = prefs.getBool(_kAntiTheft5m) ?? false;
@@ -491,7 +491,7 @@ class BleController extends Notifier<BleState> {
     }
 
     state = state.copyWith(
-      bikeName: (savedId != null && savedName != null) ? savedName : state.bikeName,
+      bikeName: (savedId != null && savedName != null) ? savedName : (savedId == null ? null : state.bikeName),
       userName: savedUserName,
       tripHistory: loadedHistory,
       autoLockWalkAway: autoLock,
@@ -1524,24 +1524,16 @@ class BleController extends Notifier<BleState> {
       final wasLocked = state.isLocked;
       if (wasLocked) {
         await unlockBike();
+        await Future.delayed(const Duration(milliseconds: 350));
       }
 
-      if (state.walkUpAutoPowerOn) {
-        final isBikeOn = state.lastTelemetry?.isBikeOn == true;
-        if (!isBikeOn) {
-          if (wasLocked) {
-            await Future.delayed(const Duration(milliseconds: 300));
-          }
-          await turnOnBike();
-          state = state.copyWith(
-            message: '⚡ Đã tự MỞ KHÓA & BẬT XE SẴN — Sẵn sàng khởi hành!',
-          );
-          return;
-        }
+      final isBikeOn = state.lastTelemetry?.isBikeOn == true;
+      if (!isBikeOn) {
+        await turnOnBike();
       }
 
       state = state.copyWith(
-        message: '👋 Đã tự MỞ KHÓA AN TOÀN — sẵn sàng. Bấm BẬT XE để khởi động.',
+        message: '⚡ Đã tự MỞ KHÓA & BẬT ĐÈN TAPLO XE — Sẵn sàng khởi hành!',
       );
     } catch (e) {
       BleLogger.instance.event('walk_up_err', {'error': '$e'});
@@ -2062,7 +2054,7 @@ class BleController extends Notifier<BleState> {
     // (b) WALK-UP UNLOCK & BẬT XE SẴN KHI TỚI GẦN
     if (state.walkUpUnlock && autoAllowed) {
       final nearThreshold = state.walkUpRssiThreshold ?? -55.0;
-      final needsAction = state.isLocked || (state.walkUpAutoPowerOn && !isBikeOn);
+      final needsAction = state.isLocked || !isBikeOn;
       if (needsAction) {
         if (rssi >= nearThreshold) {
           _unlockNearCounter++;
