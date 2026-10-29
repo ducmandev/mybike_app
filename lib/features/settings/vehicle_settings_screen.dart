@@ -825,11 +825,11 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             runSpacing: 4,
             children: [
               StatusPill(
-                label: 'ECE: ${ble.eceMode}',
-                color: ble.eceMode == 1 ? AppColors.tertiary : AppColors.textDim,
+                label: 'ECE: ${ble.eceMode == 1 ? "Mở" : "Đóng (Mặc định)"}',
+                color: ble.eceMode == 1 ? AppColors.amber : AppColors.tertiary,
               ),
               StatusPill(
-                label: 'SPEED: ${ble.speedLimitMode}',
+                label: 'TỐC ĐỘ: ${ble.speedLimitMode == 1 ? "Giới hạn 60 km/h" : "Full Power"}',
                 color: ble.speedLimitMode == 1 ? AppColors.primary : AppColors.textDim,
               ),
               if (ble.fwSpeedLimitRaw != null)
@@ -916,7 +916,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '📌 ECE = cổng của giới hạn (verified 24/10): cần bật ECE mới limit được 60 km/h. Khi ECE đang bật, xe KHÔNG cho chuyển mode lái — tắt giới hạn này để chuyển mode. Muốn về Full Power hoàn toàn, tắt giới hạn rồi TẮT/MỞ lại xe (VESC xóa trần trong RAM).',
+                    '📌 Cơ chế ngầm tự động: Để kích hoạt giới hạn 60 km/h, app sẽ tự động mở cổng ECE → ghi trần tốc độ → đóng cổng ECE lại về mặc định. Nhờ đó, giới hạn tốc độ vẫn hoạt động nhưng xe KHÔNG bị khóa đèn và vẫn chuyển chế độ lái (D/S) bình thường.',
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,

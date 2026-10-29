@@ -831,38 +831,78 @@ class BleController extends Notifier<BleState> {
     });
   }
 
-  /// Giới hạn tốc độ an toàn (60 km/h) — kết hợp ECE + SpeedLimit.
-  /// CƠ CHẾ VERIFIED 24/10 (LAB + chạy thật): ECE là "CỔNG" của giới hạn —
-  /// SpeedLimit chỉ có hiệu lực khi ECE=1. Khi ECE đang BẬT, xe KHÔNG cho
-  /// chuyển mode lái (S/D...); muốn chuyển mode phải tắt ECE (= tắt giới hạn).
-  /// Khi tắt: ghi cả 2 về '0' (nên power-cycle xe để VESC xóa trần ERPM RAM).
+  /// Giới hạn tốc độ an toàn (60 km/h) — cơ chế chuỗi ngầm tự động (ECE Gateway Sequence).
+  ///
+  /// NGUYÊN LÝ FIRMWARE:
+  /// - ECE là "CỔNG" cấu hình: muốn cấu hình giới hạn tốc độ thì ECE bắt buộc phải mở (= 1).
+  /// - Khi ECE đang mở (= 1), firmware xe sẽ KHÓA các tính năng khác: không cho bật/tắt đèn, không cho chuyển mode lái D/S.
+  /// - Nhưng khi đóng ECE lại (= 0), controller xe (VESC) vẫn GIỮ trần giới hạn tốc độ đã thiết lập trong RAM!
+  ///
+  /// QUY TRÌNH BẬT TỰ ĐỘNG CHẠY NGẦM (on == true):
+  /// 1. Mở cổng ECE: Ghi eceModeChar = '1'
+  /// 2. Ghi giới hạn tốc độ: Ghi speedLimitChar = '1' (60 km/h)
+  /// 3. Đóng cổng ECE: Ghi eceModeChar = '0' (trả về mặc định để đèn và chuyển mode lái hoạt động bình thường)
+  ///
+  /// QUY TRÌNH TẮT TỰ ĐỘNG CHẠY NGẦM (on == false):
+  /// 1. Mở cổng ECE: Ghi eceModeChar = '1'
+  /// 2. Trả giới hạn tốc độ về mặc định (Full Power): Ghi speedLimitChar = '0'
+  /// 3. Đóng cổng ECE: Ghi eceModeChar = '0'
   Future<String> setSafeSpeedLimit60(bool on) async {
     if (state.phase != BlePhase.connected) {
       state = state.copyWith(
         speedLimitMode: on ? 1 : 0,
-        eceMode: on ? 1 : 0,
+        eceMode: 0,
         fwSpeedLimitRaw: on ? 1 : 0,
       );
       if (on) {
-        return '⚠️ Xe chưa kết nối. Đã lưu tùy chọn giới hạn tốc độ 60 km/h trên ứng dụng.';
+        return '⚠️ Xe chưa kết nối. Đã lưu cấu hình giới hạn tốc độ 60 km/h trên ứng dụng.';
       } else {
-        return '⚠️ Xe chưa kết nối. Đã lưu tùy chọn tắt giới hạn trên ứng dụng.\n💡 Khi kết nối lại, app sẽ ghi xuống xe. Nên tắt/mở nguồn xe để VESC xóa trần tốc độ khỏi RAM.';
+        return '⚠️ Xe chưa kết nối. Đã lưu cấu hình tắt giới hạn (Full Power) trên ứng dụng.';
       }
     }
-    final msg1 = await _writeSetting(Gatt.speedLimitChar, [on ? 0x31 : 0x30], 'giới hạn tốc độ');
-    await Future.delayed(const Duration(milliseconds: 120));
-    final msg2 = await _writeSetting(Gatt.eceModeChar, [on ? 0x31 : 0x30], 'chế độ ECE (60 km/h)');
-    state = state.copyWith(
-      speedLimitMode: on ? 1 : 0,
-      eceMode: on ? 1 : 0,
-      fwSpeedLimitRaw: on ? 1 : 0,
-    );
-    if (on) {
-      return '⚡ Đã bật Giới hạn tốc độ 60 km/h (ECE + SpeedLimit).\n'
-          '📌 Lưu ý: khi ECE đang bật, xe KHÔNG cho chuyển mode lái — muốn chuyển mode thì tắt giới hạn này.\n$msg1\n$msg2';
-    } else {
-      return '🔓 Đã tắt giới hạn tốc độ & ECE — xe đã chuyển mode lái được trở lại.\n'
-          '⚠️ Nên TẮT XE RỒI BẬT LẠI (Power-Cycle) để VESC giải phóng trần 60 km/h khỏi RAM.\n$msg1\n$msg2';
+
+    try {
+      // BƯỚC 1: Mở cổng ECE để firmware cho phép ghi cấu hình giới hạn tốc độ
+      final msgOpenEce = await _writeSetting(Gatt.eceModeChar, [0x31], 'mở cổng ECE');
+      await Future.delayed(const Duration(milliseconds: 150));
+
+      // BƯỚC 2: Ghi giá trị giới hạn tốc độ ('1' = 60 km/h, '0' = Full Power mặc định)
+      final msgSpeed = await _writeSetting(
+        Gatt.speedLimitChar,
+        [on ? 0x31 : 0x30],
+        on ? 'bật giới hạn 60 km/h' : 'tắt giới hạn tốc độ (Full Power)',
+      );
+      await Future.delayed(const Duration(milliseconds: 150));
+
+      // BƯỚC 3: Đóng cổng ECE lại về '0' để giải phóng đèn và chuyển mode lái hoạt động bình thường
+      final msgCloseEce = await _writeSetting(Gatt.eceModeChar, [0x30], 'đóng cổng ECE');
+
+      // Cập nhật trạng thái ứng dụng:
+      // speedLimitMode = on (1 hoặc 0), eceMode = 0 (luôn đóng để xe hoạt động bình thường)
+      state = state.copyWith(
+        speedLimitMode: on ? 1 : 0,
+        eceMode: 0,
+        fwSpeedLimitRaw: on ? 1 : 0,
+      );
+
+      BleLogger.instance.event('speed_limit_sequence_completed', {
+        'target_on': on,
+        'speed_raw': on ? 1 : 0,
+        'ece_restored': 0,
+      });
+
+      if (on) {
+        return '⚡ Đã kích hoạt Giới hạn tốc độ 60 km/h thành công!\n'
+            '🔒 Quy trình ngầm: Mở ECE → Ghi giới hạn 60 km/h → Đóng ECE.\n'
+            '✅ Cổng ECE đã tự động đóng: Bạn vẫn có thể chuyển chế độ lái (D/S) và sử dụng đèn bình thường.\n$msgOpenEce\n$msgSpeed\n$msgCloseEce';
+      } else {
+        return '🔓 Đã tắt giới hạn tốc độ (trả về Full Power) thành công!\n'
+            '🔒 Quy trình ngầm: Mở ECE → Ghi Limit 0 (mặc định) → Đóng ECE.\n'
+            '💡 Nếu xe chưa nhả tốc độ ngay, bạn chỉ cần tắt máy xe rồi bật lại để bộ điều tốc giải phóng trần tốc độ khỏi RAM.\n$msgOpenEce\n$msgSpeed\n$msgCloseEce';
+      }
+    } catch (e) {
+      BleLogger.instance.event('speed_limit_sequence_error', {'error': '$e'});
+      return '❌ Lỗi thực hiện quy trình cài đặt tốc độ: $e';
     }
   }
 
@@ -1010,7 +1050,9 @@ class BleController extends Notifier<BleState> {
     final vescProgDec = await readFwSettingRaw(Gatt.vescProgrammingChar, 'vesc programming');
     final isLockedVal = await readLockStatus();
 
-    final isLimited = (speed.isNotEmpty && speed[0] == 1) && (ece.isNotEmpty && ece[0] == 1);
+    // Giới hạn tốc độ được lưu tại speedLimitChar (1 = đang giới hạn 60 km/h, 0 = Full Power)
+    // ECE là cổng cấu hình ngầm, bình thường luôn đóng (0) để đèn & chuyển mode D/S hoạt động
+    final isLimited = speed.isNotEmpty && speed[0] == 1;
     final fwSpeedRaw = speed.isNotEmpty ? speed[0] : null;
 
     int? distU16;
