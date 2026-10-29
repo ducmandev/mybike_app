@@ -2484,6 +2484,40 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                               co2Saved: '$co2 kg',
                               isRecent: isRecent,
                               hasGps: trip.route.isNotEmpty,
+                              onDelete: () async {
+                                final tripNumber = history.length - index;
+                                final confirm = await showDialog<bool>(
+                                  context: context,
+                                  builder: (c) => AlertDialog(
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                                    title: Row(
+                                      children: [
+                                        const Icon(Icons.delete_forever_rounded, color: Color(0xFFEF4444), size: 22),
+                                        const SizedBox(width: 8),
+                                        Text('Xóa Hành Trình #$tripNumber?', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700)),
+                                      ],
+                                    ),
+                                    content: Text(
+                                      'Bạn có chắc chắn muốn xóa vĩnh viễn hành trình #$tripNumber (${trip.distanceKm.toStringAsFixed(1)} km) khỏi bộ nhớ thiết bị?',
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 13.5),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(c, false),
+                                        child: Text('HỦY', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
+                                      ),
+                                      FilledButton(
+                                        style: FilledButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+                                        onPressed: () => Navigator.pop(c, true),
+                                        child: Text('XÓA', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700)),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                                if (confirm == true) {
+                                  await sheetRef.read(bleProvider.notifier).deleteTrip(trip);
+                                }
+                              },
                             ),
                           ),
                         );
@@ -2550,6 +2584,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
     required String co2Saved,
     bool isRecent = false,
     bool hasGps = false,
+    VoidCallback? onDelete,
   }) {
     return Container(
       padding: const EdgeInsets.all(14),
@@ -2631,14 +2666,38 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                   ],
                 ),
               ),
-              Text(
-                distance,
-                style: GoogleFonts.spaceGrotesk(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  color: const Color(0xFF0F172A),
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    distance,
+                    style: GoogleFonts.spaceGrotesk(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: const Color(0xFF0F172A),
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                  if (onDelete != null) ...[
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onDelete,
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEE2E2),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(
+                          Icons.delete_outline_rounded,
+                          size: 16,
+                          color: Color(0xFFEF4444),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           ),

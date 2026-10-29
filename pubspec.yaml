@@ -1,7 +1,7 @@
 name: mybike_app
 description: "My Bike App — Smart electric vehicle dashboard and controller."
 publish_to: 'none'
-version: 2.6.9+54
+version: 2.6.10+55
 environment:
   sdk: ^3.13.2
 dependencies:

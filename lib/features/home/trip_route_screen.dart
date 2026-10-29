@@ -80,7 +80,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
       if (jsonStr != null && jsonStr.isNotEmpty) {
         final list = (jsonDecode(jsonStr) as List)
             .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= 1.0)
+            .where((e) => e.distanceKm >= 0.1 || e.route.isNotEmpty)
             .toList();
         if (mounted && list.isNotEmpty) {
           setState(() {
@@ -89,6 +89,93 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
         }
       }
     } catch (_) {}
+  }
+
+  /// Xóa một chuyến đi khỏi lịch sử lưu trữ
+  Future<void> _deleteTripItem(TripRecord tripToDelete) async {
+    final updated = _allTrips.where((t) =>
+      !(t.startTime.millisecondsSinceEpoch == tripToDelete.startTime.millisecondsSinceEpoch &&
+        (t.distanceKm - tripToDelete.distanceKm).abs() < 0.001)
+    ).toList();
+
+    setState(() {
+      _allTrips = updated;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (updated.isEmpty) {
+        await prefs.remove('trip_history_v1');
+      } else {
+        final jsonStr = jsonEncode(updated.map((e) => e.toJson()).toList());
+        await prefs.setString('trip_history_v1', jsonStr);
+      }
+    } catch (_) {}
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Đã xóa hành trình thành công.'),
+        duration: Duration(seconds: 2),
+        backgroundColor: AppColors.textPrimary,
+      ),
+    );
+
+    // Nếu chuyến bị xóa là chuyến đang xem
+    final isViewingDeleted = _currentTrip.startTime.millisecondsSinceEpoch == tripToDelete.startTime.millisecondsSinceEpoch &&
+        (_currentTrip.distanceKm - tripToDelete.distanceKm).abs() < 0.001;
+
+    if (isViewingDeleted) {
+      if (updated.isNotEmpty) {
+        setState(() {
+          _currentTrip = updated.first;
+          _currentTripIndex = updated.length;
+          _initRouteData();
+        });
+        Future.delayed(const Duration(milliseconds: 200), _fitRouteBounds);
+      } else {
+        Navigator.pop(context);
+      }
+    }
+  }
+
+  /// Hộp thoại xác nhận xóa hành trình hiện tại đang xem
+  Future<void> _confirmAndDeleteCurrentTrip() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: Row(
+          children: [
+            const Icon(Icons.delete_forever_rounded, color: AppColors.red, size: 22),
+            const SizedBox(width: 8),
+            Text(
+              'Xóa Hành Trình Này?',
+              style: GoogleFonts.spaceGrotesk(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+        content: Text(
+          'Bạn có chắc chắn muốn xóa vĩnh viễn hành trình #${_currentTripIndex > 0 ? _currentTripIndex : 1} (${_currentTrip.distanceKm.toStringAsFixed(1)} km) khỏi bộ nhớ thiết bị?',
+          style: GoogleFonts.plusJakartaSans(fontSize: 13, height: 1.45, color: AppColors.textPrimary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('HỦY', style: GoogleFonts.spaceGrotesk(color: AppColors.textDim)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text('XÓA', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      await _deleteTripItem(_currentTrip);
+    }
   }
 
   void _initRouteData() {
@@ -475,8 +562,57 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                                           ],
                                         ),
                                       ),
-                                      if (isSelected)
-                                        const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 20),
+                                      Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (isSelected)
+                                            const Padding(
+                                              padding: EdgeInsets.only(right: 6),
+                                              child: Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 18),
+                                            ),
+                                          IconButton(
+                                            tooltip: 'Xóa hành trình',
+                                            icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.textDim),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                                            onPressed: () async {
+                                              final confirm = await showDialog<bool>(
+                                                context: context,
+                                                builder: (dCtx) => AlertDialog(
+                                                  backgroundColor: AppColors.panel,
+                                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                                                  title: Row(
+                                                    children: [
+                                                      const Icon(Icons.delete_forever_rounded, color: AppColors.red, size: 22),
+                                                      const SizedBox(width: 8),
+                                                      Text('Xóa Hành Trình #$tripNum?', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                                                    ],
+                                                  ),
+                                                  content: Text(
+                                                    'Bạn có chắc muốn xóa hành trình #$tripNum (${tripItem.distanceKm.toStringAsFixed(1)} km) khỏi thiết bị?',
+                                                    style: GoogleFonts.plusJakartaSans(fontSize: 13),
+                                                  ),
+                                                  actions: [
+                                                    TextButton(
+                                                      onPressed: () => Navigator.pop(dCtx, false),
+                                                      child: Text('HỦY', style: GoogleFonts.spaceGrotesk(color: AppColors.textDim)),
+                                                    ),
+                                                    FilledButton(
+                                                      style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+                                                      onPressed: () => Navigator.pop(dCtx, true),
+                                                      child: Text('XÓA', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+                                              if (confirm == true) {
+                                                await _deleteTripItem(tripItem);
+                                                setModalState(() {});
+                                              }
+                                            },
+                                          ),
+                                        ],
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -687,6 +823,27 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                               Expanded(child: _metricTile('TỔNG SỐ ĐIỂM GPS', '${_routePoints.length} điểm ghi nhận', Icons.gps_fixed_rounded)),
                               Expanded(child: _metricTile('NGUỒN DỮ LIỆU', _routePoints.isNotEmpty ? 'GPS Thực Tế' : 'Chưa có GPS', Icons.sensors_rounded)),
                             ],
+                          ),
+                          const SizedBox(height: 20),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.red,
+                                side: const BorderSide(color: Color(0xFFFCA5A5)),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                              label: Text(
+                                'XÓA HÀNH TRÌNH NÀY',
+                                style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 13),
+                              ),
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                _confirmAndDeleteCurrentTrip();
+                              },
+                            ),
                           ),
                         ],
                       ),

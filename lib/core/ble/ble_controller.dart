@@ -540,6 +540,31 @@ class BleController extends Notifier<BleState> {
     } catch (_) {}
   }
 
+  /// Xóa một chuyến đi cụ thể khỏi lịch sử hành trình
+  Future<void> deleteTrip(TripRecord trip) async {
+    final updated = state.tripHistory.where((t) =>
+      !(t.startTime.millisecondsSinceEpoch == trip.startTime.millisecondsSinceEpoch &&
+        (t.distanceKm - trip.distanceKm).abs() < 0.001)
+    ).toList();
+    state = state.copyWith(tripHistory: updated);
+    try {
+      final prefs = await _prefs;
+      if (updated.isEmpty) {
+        await prefs.remove(_kTripHistory);
+      } else {
+        final jsonStr = jsonEncode(updated.map((e) => e.toJson()).toList());
+        await prefs.setString(_kTripHistory, jsonStr);
+      }
+      BleLogger.instance.event('trip_deleted', {
+        'start_time': trip.startTime.toIso8601String(),
+        'distance_km': trip.distanceKm,
+        'remaining': updated.length,
+      });
+    } catch (e) {
+      BleLogger.instance.event('trip_delete_error', {'error': '$e'});
+    }
+  }
+
   /// Tự động lưu chuyến đi hiện tại vào lịch sử.
   /// QUY TẮC: Chỉ lưu hành trình nếu quãng đường di chuyển từ 1km trở lên (>= 1.0 km).
   /// Nếu di chuyển dưới 1km (< 1.0 km) thì tuyệt đối không lưu hành trình.
