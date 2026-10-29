@@ -2,7 +2,6 @@
 
 import 'dart:io';
 
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,7 +28,6 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
   String? _dirPath;
   File? _selected;
   bool _exporting = false;
-  int? _sdkInt;
 
   @override
   void initState() {
@@ -37,9 +35,6 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
     BleLogger.dirPath().then((p) {
       if (mounted) setState(() => _dirPath = p);
     });
-    DeviceInfoPlugin().androidInfo.then((i) {
-      if (mounted) setState(() => _sdkInt = i.version.sdkInt);
-    }).catchError((_) {});
     _refresh();
   }
 
@@ -72,8 +67,7 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
     if (_files.isEmpty) return;
     setState(() => _exporting = true);
     try {
-      final sdk = _sdkInt;
-      if (sdk != null && sdk < 29) {
+      if (Platform.isAndroid) {
         final storage = await Permission.storage.request();
         if (storage.isPermanentlyDenied) {
           if (!mounted) return;
