@@ -277,7 +277,9 @@ class TripGpsTracker {
           accuracy: LocationAccuracy.high,
           activityType: ActivityType.automotiveNavigation,
           distanceFilter: 2,
-          pauseLocationUpdatesAutomatically: true,
+          pauseLocationUpdatesAutomatically: false,
+          allowBackgroundLocationUpdates: true,
+          showBackgroundLocationIndicator: true,
         );
       } else {
         locationSettings = const LocationSettings(

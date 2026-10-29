@@ -70,10 +70,18 @@
 	<string>Ứng dụng cần quyền truy cập Bluetooth để kết nối, hiển thị thông số và điều khiển khóa/mở xe điện My Bike.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Ứng dụng cần quyền Bluetooth để giao tiếp với xe điện My Bike.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Ứng dụng cần quyền vị trí để định vị người dùng trên bản đồ, tính toán quãng đường và tìm trạm sạc gần nhất cho My Bike.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Ứng dụng cần quyền vị trí liên tục để tự động ghi lại lộ trình di chuyển của chuyến đi ngay cả khi ứng dụng chạy ngầm hoặc khóa màn hình.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Ứng dụng cần quyền vị trí chạy ngầm để ghi nhận lộ trình GPS hành trình xe điện My Bike liên tục.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
+		<string>location</string>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

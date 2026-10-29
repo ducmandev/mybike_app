@@ -11,8 +11,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1912,7 +1912,12 @@ class BleController extends Notifier<BleState> {
     await _connectWithCachePrime(device);
     BleLogger.instance.event('connected', {'device_id': device.remoteId.str});
     _writeCounter = 0;
-    final mtu = await device.requestMtu(Gatt.androidMtu);
+    int mtu = 23;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        mtu = await device.requestMtu(Gatt.androidMtu);
+      } catch (_) {}
+    }
     BleLogger.instance.event('mtu', {'mtu': mtu});
 
     final services = await device.discoverServices();

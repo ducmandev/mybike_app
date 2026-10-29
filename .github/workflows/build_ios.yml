@@ -5,10 +5,15 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
     paths-ignore:
       - 'README.md'
       - 'docs/**'
       - '.gitignore'
+
+permissions:
+  contents: write
 
 jobs:
   build-ios:
@@ -33,6 +38,13 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Extract App Version
+        id: get_version
+        run: |
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1 | tr -d ' \r\n')
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Detected version: $VERSION"
+
       - name: Get Flutter dependencies
         run: flutter pub get
 
@@ -44,12 +56,24 @@ jobs:
         run: |
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
-          zip -r -q MyBike_v1.0.0.ipa Payload
+          zip -r -q "MyBike_v${APP_VERSION}.ipa" Payload
           rm -rf Payload
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
           name: MyBike-iOS-IPA
-          path: MyBike_v1.0.0.ipa
+          path: "MyBike_v*.ipa"
           retention-days: 14
+
+      - name: Attach IPA to GitHub Release (if release exists)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="v${APP_VERSION}"
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Attaching IPA to release $TAG_NAME..."
+            gh release upload "$TAG_NAME" "MyBike_v${APP_VERSION}.ipa" --clobber
+          else
+            echo "Release $TAG_NAME does not exist yet. Artifact is safely stored in GitHub Actions."
+          fi
