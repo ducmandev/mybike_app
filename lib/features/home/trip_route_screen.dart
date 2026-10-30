@@ -1075,7 +1075,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                                   const SizedBox(width: 6),
                                   Expanded(
                                     child: Text(
-                                      '#$_currentTripIndex · ${_currentTrip.distanceKm.toStringAsFixed(1)} km',
+                                      _currentTripIndex > 0 ? '#$_currentTripIndex · ${_currentTrip.distanceKm.toStringAsFixed(1)} km' : 'Chuyến đi hiện tại · ${_currentTrip.distanceKm.toStringAsFixed(1)} km',
                                       style: GoogleFonts.plusJakartaSans(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w700,
@@ -1506,6 +1506,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           Container(
                             padding: const EdgeInsets.all(8),
@@ -1519,14 +1520,19 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
-                                  'Hành trình #${_currentTripIndex > 0 ? _currentTripIndex : 1}',
+                                  _currentTripIndex > 0
+                                      ? 'Hành trình #$_currentTripIndex'
+                                      : 'Chuyến đi hiện tại',
                                   style: GoogleFonts.spaceGrotesk(
                                     fontSize: 14,
                                     fontWeight: FontWeight.w700,
                                     color: AppColors.textPrimary,
                                   ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
@@ -1535,19 +1541,38 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                                     fontSize: 11,
                                     color: AppColors.textDim,
                                   ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ],
                             ),
                           ),
-                          OutlinedButton.icon(
-                            onPressed: _showTripInfoSheet,
-                            icon: const Icon(Icons.info_outline_rounded, size: 14),
-                            label: const Text('Chi tiết', style: TextStyle(fontSize: 11)),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: AppColors.primary,
-                              side: const BorderSide(color: AppColors.panelBorderBright),
+                          const SizedBox(width: 8),
+                          InkWell(
+                            onTap: _showTripInfoSheet,
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              decoration: BoxDecoration(
+                                color: AppColors.panelSecondary,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: AppColors.panelBorderBright),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.info_outline_rounded, size: 14, color: AppColors.primary),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Chi tiết',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.primary,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ],
