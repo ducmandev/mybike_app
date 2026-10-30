@@ -155,7 +155,13 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           _buildUtilityCard(ble, connected),
           const SizedBox(height: 16),
 
-          // 5. Mẫu âm thanh còi tìm xe
+          // 5. Tự động kết nối & Quét xe
+          const SectionTitle('KẾT NỐI & TỰ ĐỘNG QUÉT'),
+          const SizedBox(height: 10),
+          _buildAutoReconnectCard(ble),
+          const SizedBox(height: 16),
+
+          // 6. Mẫu âm thanh còi tìm xe
           const SectionTitle('ÂM BÁO TÌM XE'),
           const SizedBox(height: 10),
           _buildSoundPatternCard(ble, connected),
@@ -1475,6 +1481,205 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               } : null,
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAutoReconnectCard(BleState ble) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Tự động quét & kết nối lại',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Tự tìm và kết nối xe khi mở app hoặc mất tín hiệu',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11.5,
+                        color: AppColors.textDim,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Switch.adaptive(
+                value: ble.autoReconnect,
+                activeTrackColor: AppColors.primary,
+                onChanged: (v) {
+                  ref.read(bleProvider.notifier).setAutoReconnect(v);
+                  _showResult(v ? 'Đã bật tự động kết nối lại' : 'Đã tắt tự động quét');
+                },
+              ),
+            ],
+          ),
+          if (ble.autoReconnect) ...[
+            const SizedBox(height: 12),
+            const Divider(color: AppColors.panelBorder, height: 1),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Quét liên tục (Không giới hạn)',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Liên tục tìm kiếm và kết nối lại ngay khi xe xuất hiện',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11,
+                          color: AppColors.textDim,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch.adaptive(
+                  value: ble.continuousScan,
+                  activeTrackColor: AppColors.tertiary,
+                  onChanged: (v) {
+                    ref.read(bleProvider.notifier).setContinuousScan(v);
+                    _showResult(v ? 'Đã bật chế độ quét liên tục' : 'Đã chuyển về giới hạn số lần quét');
+                  },
+                ),
+              ],
+            ),
+            if (!ble.continuousScan) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Số lần thử kết nối lại tối đa:',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textDim,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  _buildSegmentOption(
+                    label: '3 lần',
+                    desc: 'Nhanh',
+                    isSelected: ble.reconnectMaxAttempts == 3,
+                    onTap: () {
+                      ref.read(bleProvider.notifier).setReconnectMaxAttempts(3);
+                      _showResult('Số lần quét tối đa: 3 lần');
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _buildSegmentOption(
+                    label: '5 lần',
+                    desc: 'Chuẩn',
+                    isSelected: ble.reconnectMaxAttempts == 5,
+                    onTap: () {
+                      ref.read(bleProvider.notifier).setReconnectMaxAttempts(5);
+                      _showResult('Số lần quét tối đa: 5 lần');
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _buildSegmentOption(
+                    label: '10 lần',
+                    desc: 'Kiên trì',
+                    isSelected: ble.reconnectMaxAttempts == 10,
+                    onTap: () {
+                      ref.read(bleProvider.notifier).setReconnectMaxAttempts(10);
+                      _showResult('Số lần quét tối đa: 10 lần');
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  _buildSegmentOption(
+                    label: '15 lần',
+                    desc: 'Nhiều',
+                    isSelected: ble.reconnectMaxAttempts == 15,
+                    onTap: () {
+                      ref.read(bleProvider.notifier).setReconnectMaxAttempts(15);
+                      _showResult('Số lần quét tối đa: 15 lần');
+                    },
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 12),
+            Text(
+              'Chu kỳ quét / Giãn cách giữa các lần thử:',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textDim,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _buildSegmentOption(
+                  label: '3s',
+                  desc: 'Rất nhanh',
+                  isSelected: ble.reconnectIntervalSeconds == 3,
+                  onTap: () {
+                    ref.read(bleProvider.notifier).setReconnectIntervalSeconds(3);
+                    _showResult('Chu kỳ quét: 3 giây');
+                  },
+                ),
+                const SizedBox(width: 8),
+                _buildSegmentOption(
+                  label: '5s',
+                  desc: 'Tiêu chuẩn',
+                  isSelected: ble.reconnectIntervalSeconds == 5,
+                  onTap: () {
+                    ref.read(bleProvider.notifier).setReconnectIntervalSeconds(5);
+                    _showResult('Chu kỳ quét: 5 giây');
+                  },
+                ),
+                const SizedBox(width: 8),
+                _buildSegmentOption(
+                  label: '10s',
+                  desc: 'Cân bằng',
+                  isSelected: ble.reconnectIntervalSeconds == 10,
+                  onTap: () {
+                    ref.read(bleProvider.notifier).setReconnectIntervalSeconds(10);
+                    _showResult('Chu kỳ quét: 10 giây');
+                  },
+                ),
+                const SizedBox(width: 8),
+                _buildSegmentOption(
+                  label: '20s',
+                  desc: 'Tiết kiệm',
+                  isSelected: ble.reconnectIntervalSeconds == 20,
+                  onTap: () {
+                    ref.read(bleProvider.notifier).setReconnectIntervalSeconds(20);
+                    _showResult('Chu kỳ quét: 20 giây');
+                  },
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

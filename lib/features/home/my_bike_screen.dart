@@ -526,7 +526,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        'Tự mở khóa & bật nguồn xe sẵn sàng ngay khi tới cạnh xe',
+                                        'Tự mở khóa & bật nguồn khi tới cạnh xe (tự kiểm tra status, không tắt xe nếu đã mở sẵn)',
                                         style: GoogleFonts.plusJakartaSans(
                                           fontSize: 11,
                                           color: const Color(0xFF64748B),
@@ -848,6 +848,240 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             ),
                           ],
                         ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  const SizedBox(height: 24),
+
+                  // ══════════════════════════════════════════════════════════
+                  // 3. TỰ ĐỘNG KẾT NỐI & QUÉT XE
+                  // ══════════════════════════════════════════════════════════
+                  Text(
+                    'TỰ ĐỘNG KẾT NỐI & QUÉT XE',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: const Color(0xFF94A3B8),
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: const Color(0xFFF1F5F9)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x040F172A),
+                          blurRadius: 10,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        _sheetToggleRow(
+                          icon: Icons.bluetooth_searching_rounded,
+                          iconColor: const Color(0xFF2563EB),
+                          iconBg: const Color(0xFFEFF6FF),
+                          title: 'Tự động quét & kết nối lại',
+                          subtitle: 'Tự tìm và kết nối xe khi mở app hoặc mất tín hiệu',
+                          value: ble.autoReconnect,
+                          onChanged: (v) {
+                            ref.read(bleProvider.notifier).setAutoReconnect(v);
+                            setSheetState(() {});
+                            _heroSnack(v ? 'Đã bật tự động kết nối lại' : 'Đã tắt tự động quét & kết nối');
+                          },
+                        ),
+                        if (ble.autoReconnect) ...[
+                          const Divider(color: Color(0xFFF8FAFC), height: 1, thickness: 1, indent: 56, endIndent: 16),
+                          _sheetToggleRow(
+                            icon: Icons.all_inclusive_rounded,
+                            iconColor: const Color(0xFF10B981),
+                            iconBg: const Color(0xFFF0FDF4),
+                            title: 'Quét liên tục (Không giới hạn)',
+                            subtitle: 'Luôn sẵn sàng kết nối ngay khi xe xuất hiện trong tầm sóng',
+                            value: ble.continuousScan,
+                            onChanged: (v) {
+                              ref.read(bleProvider.notifier).setContinuousScan(v);
+                              setSheetState(() {});
+                              _heroSnack(v ? 'Đã bật chế độ quét liên tục' : 'Đã chuyển về giới hạn số lần quét');
+                            },
+                          ),
+                          if (!ble.continuousScan) ...[
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        'Số lần quét thử lại tối đa:',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: const Color(0xFF64748B),
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFEFF6FF),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          '${ble.reconnectMaxAttempts} lần',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.w700,
+                                            color: const Color(0xFF2563EB),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      _sheetSegmentPill(
+                                        label: '3 lần',
+                                        sub: 'Nhanh',
+                                        selected: ble.reconnectMaxAttempts == 3,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setReconnectMaxAttempts(3);
+                                          setSheetState(() {});
+                                          _heroSnack('Số lần quét tối đa: 3 lần');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: '5 lần',
+                                        sub: 'Chuẩn',
+                                        selected: ble.reconnectMaxAttempts == 5,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setReconnectMaxAttempts(5);
+                                          setSheetState(() {});
+                                          _heroSnack('Số lần quét tối đa: 5 lần');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: '10 lần',
+                                        sub: 'Kiên trì',
+                                        selected: ble.reconnectMaxAttempts == 10,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setReconnectMaxAttempts(10);
+                                          setSheetState(() {});
+                                          _heroSnack('Số lần quét tối đa: 10 lần');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: '15 lần',
+                                        sub: 'Nhiều',
+                                        selected: ble.reconnectMaxAttempts == 15,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setReconnectMaxAttempts(15);
+                                          setSheetState(() {});
+                                          _heroSnack('Số lần quét tối đa: 15 lần');
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      'Chu kỳ quét / Sau bao lâu thử lại:',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: const Color(0xFF64748B),
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFF0FDF4),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        '${ble.reconnectIntervalSeconds} giây',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: const Color(0xFF10B981),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    _sheetSegmentPill(
+                                      label: '3s',
+                                      sub: 'Rất nhanh',
+                                      selected: ble.reconnectIntervalSeconds == 3,
+                                      onTap: () {
+                                        ref.read(bleProvider.notifier).setReconnectIntervalSeconds(3);
+                                        setSheetState(() {});
+                                        _heroSnack('Chu kỳ quét: 3 giây');
+                                      },
+                                    ),
+                                    const SizedBox(width: 8),
+                                    _sheetSegmentPill(
+                                      label: '5s',
+                                      sub: 'Tiêu chuẩn',
+                                      selected: ble.reconnectIntervalSeconds == 5,
+                                      onTap: () {
+                                        ref.read(bleProvider.notifier).setReconnectIntervalSeconds(5);
+                                        setSheetState(() {});
+                                        _heroSnack('Chu kỳ quét: 5 giây');
+                                      },
+                                    ),
+                                    const SizedBox(width: 8),
+                                    _sheetSegmentPill(
+                                      label: '10s',
+                                      sub: 'Cân bằng',
+                                      selected: ble.reconnectIntervalSeconds == 10,
+                                      onTap: () {
+                                        ref.read(bleProvider.notifier).setReconnectIntervalSeconds(10);
+                                        setSheetState(() {});
+                                        _heroSnack('Chu kỳ quét: 10 giây');
+                                      },
+                                    ),
+                                    const SizedBox(width: 8),
+                                    _sheetSegmentPill(
+                                      label: '20s',
+                                      sub: 'Tiết kiệm',
+                                      selected: ble.reconnectIntervalSeconds == 20,
+                                      onTap: () {
+                                        ref.read(bleProvider.notifier).setReconnectIntervalSeconds(20);
+                                        setSheetState(() {});
+                                        _heroSnack('Chu kỳ quét: 20 giây');
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
