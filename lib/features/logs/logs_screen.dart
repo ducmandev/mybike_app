@@ -67,20 +67,27 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
     if (_files.isEmpty) return;
     setState(() => _exporting = true);
     try {
-      if (Platform.isAndroid) {
-        final storage = await Permission.storage.request();
-        if (storage.isPermanentlyDenied) {
-          if (!mounted) return;
-          _openStorageSettingsDialog();
-          return;
-        }
-        if (!storage.isGranted) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Thiếu quyền lưu trữ — cấp quyền rồi thử lại')),
-          );
-          return;
-        }
+      if (!Platform.isAndroid) {
+        await SharePlus.instance.share(
+          ShareParams(
+            files: _files.map((f) => XFile(f.path)).toList(),
+            text: 'BLE session logs — Dat Bike',
+          ),
+        );
+        return;
+      }
+      final storage = await Permission.storage.request();
+      if (storage.isPermanentlyDenied) {
+        if (!mounted) return;
+        _openStorageSettingsDialog();
+        return;
+      }
+      if (!storage.isGranted) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Thiếu quyền lưu trữ — cấp quyền rồi thử lại')),
+        );
+        return;
       }
       final exported = await _exportChannel.invokeMethod<List<dynamic>>(
         'exportToDownloads',

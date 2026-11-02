@@ -28,8 +28,14 @@ class ScanScreen extends ConsumerStatefulWidget {
 
 class _ScanScreenState extends ConsumerState<ScanScreen> {
   final _results = <ScanResult>[];
-  StreamSubscription? _sub;
+  final _systemResults = <ScanResult>[];
+  StreamSubscription<List<ScanResult>>? _scanResultsSub;
+  StreamSubscription<bool>? _isScanningSub;
+  StreamSubscription<BluetoothAdapterState>? _adapterStateSub;
+
   bool _scanning = false;
+  bool _hasStartedInitialScan = false;
+  BluetoothAdapterState _adapterState = BluetoothAdapterState.unknown;
   String? _error;
   bool _showAll = false;
   String? _lastBikeId;
@@ -56,21 +62,103 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   @override
   void initState() {
     super.initState();
+
+    // Tạm dừng hẹn giờ tự kết nối ngầm để không xung đột lệnh stopScan
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(bleProvider.notifier).pauseAutoReconnectForScan();
+    });
+
     ref.read(bleProvider.notifier).lastBikeId().then((id) async {
       if (!mounted) return;
       final name = await ref.read(bleProvider.notifier).lastBikeName();
+      if (!mounted) return;
       setState(() {
         _lastBikeId = id;
         _lastBikeName = name;
       });
     });
+
+    if (!kIsWeb) {
+      // 1. Lắng nghe trạng thái quét thực tế từ FlutterBluePlus
+      _isScanningSub = FlutterBluePlus.isScanning.listen((state) {
+        if (mounted) {
+          setState(() => _scanning = state);
+        }
+      });
+
+      // 2. Lắng nghe luồng kết quả quét BLE
+      _scanResultsSub = FlutterBluePlus.scanResults.listen(
+        (rs) {
+          BleLogger.instance.event('scan_batch', {
+            'count': rs.length,
+            'devices': [
+              for (final r in rs)
+                {
+                  'id': r.device.remoteId.str,
+                  'adv_name': r.advertisementData.advName,
+                  'platform_name': r.device.platformName,
+                  'rssi': r.rssi,
+                  'services':
+                      r.advertisementData.serviceUuids.map((u) => u.str128).toList(),
+                }
+            ],
+          });
+          if (!mounted) return;
+          setState(() {
+            _results
+              ..clear()
+              ..addAll(
+                _systemResults.where(
+                  (sys) => !rs.any((r) => r.device.remoteId == sys.device.remoteId),
+                ),
+              )
+              ..addAll(rs);
+          });
+        },
+        onError: (Object e) {
+          if (mounted) {
+            setState(() => _error = 'Lỗi nhận kết quả quét BLE: $e');
+          }
+        },
+      );
+
+      // 3. Lắng nghe trạng thái Bluetooth Adapter (đặc biệt quan trọng trên iOS khi vừa cấp quyền)
+      _adapterStateSub = FlutterBluePlus.adapterState.listen((state) {
+        if (!mounted) return;
+        final prev = _adapterState;
+        setState(() => _adapterState = state);
+
+        if (state == BluetoothAdapterState.on) {
+          if (!_hasStartedInitialScan || prev != BluetoothAdapterState.on) {
+            _hasStartedInitialScan = true;
+            _scan();
+          }
+        } else if (state == BluetoothAdapterState.unauthorized) {
+          setState(() {
+            _scanning = false;
+            _error =
+                'Ứng dụng chưa được cấp quyền Bluetooth. Vui lòng mở Cài đặt iPhone để cấp quyền.';
+          });
+        } else if (state == BluetoothAdapterState.off) {
+          setState(() {
+            _scanning = false;
+            _error =
+                'Bluetooth đang tắt — hãy bật Bluetooth trong Trung tâm điều khiển/Cài đặt rồi quét lại.';
+          });
+        }
+      });
+    }
+
     _scan();
   }
 
   @override
   void dispose() {
-    _sub?.cancel();
-    if (FlutterBluePlus.isScanningNow) {
+    _scanResultsSub?.cancel();
+    _isScanningSub?.cancel();
+    _adapterStateSub?.cancel();
+    if (!kIsWeb && FlutterBluePlus.isScanningNow) {
       FlutterBluePlus.stopScan();
     }
     super.dispose();
@@ -78,11 +166,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
   bool _isBike(ScanResult r) {
     // 0. Nếu trùng với ID xe đã lưu trước đó
-    if (_lastBikeId != null && r.device.remoteId.str.toLowerCase() == _lastBikeId!.toLowerCase()) {
+    if (_lastBikeId != null &&
+        r.device.remoteId.str.toLowerCase() == _lastBikeId!.toLowerCase()) {
       return true;
     }
 
-    // 1. Nhận diện qua Service UUID trong gói tin quảng bá hoặc serviceData (chuẩn nhất cho xe Dat Bike)
+    // 1. Nhận diện qua Service UUID trong gói tin quảng bá hoặc serviceData
     for (final uuid in r.advertisementData.serviceUuids) {
       final s128 = uuid.str128.toLowerCase();
       final s = uuid.str.toLowerCase();
@@ -125,9 +214,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       Guid(Gatt.otaService),
       Guid(Gatt.programmingService),
       Guid(Gatt.chargingService),
-      Guid('0000ffe0-0000-1000-8000-00805f9b34fb'),
-      Guid('0000180a-0000-1000-8000-00805f9b34fb'),
-      Guid('00001800-0000-1000-8000-00805f9b34fb'),
+      Guid('1800'),
+      Guid('180a'),
+      Guid('180f'),
+      Guid('ffe0'),
       Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e'),
     ];
 
@@ -142,9 +232,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     if (all.isEmpty || !mounted) return;
 
     setState(() {
+      _systemResults.clear();
       for (final dev in all) {
-        final existingIdx = _results.indexWhere((r) => r.device.remoteId == dev.remoteId);
-        final name = dev.platformName.isNotEmpty ? dev.platformName : 'Xe Dat Bike (Hệ thống)';
+        final name = dev.platformName.isNotEmpty
+            ? dev.platformName
+            : 'Xe Dat Bike (Hệ thống)';
         final synthetic = ScanResult(
           device: dev,
           advertisementData: AdvertisementData(
@@ -159,7 +251,10 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
           rssi: -45,
           timeStamp: DateTime.now(),
         );
+        _systemResults.add(synthetic);
 
+        final existingIdx =
+            _results.indexWhere((r) => r.device.remoteId == dev.remoteId);
         if (existingIdx >= 0) {
           _results[existingIdx] = synthetic;
         } else {
@@ -170,6 +265,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   Future<void> _scan() async {
+    if (!mounted) return;
     setState(() {
       _error = null;
       _scanning = true;
@@ -182,106 +278,102 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       return;
     }
 
-    // 1. Kiểm tra quyền BLE
-    final ok = await BlePermissions.ensure();
-    if (!ok) {
-      setState(() {
-        _scanning = false;
-        _error = 'Thiếu quyền Bluetooth hoặc Vị trí để quét thiết bị.';
-      });
-      if (await BlePermissions.permanentlyDenied() && mounted) {
-        _openSettingsDialog();
-      }
-      return;
-    }
-
-    // 2. Đợi Bluetooth Adapter sẵn sàng (Trên iOS, CoreBluetooth cần thời gian khởi tạo bất đồng bộ)
-    var adapter = FlutterBluePlus.adapterStateNow;
-    if (adapter == BluetoothAdapterState.unknown) {
-      try {
-        adapter = await FlutterBluePlus.adapterState
-            .where((s) => s != BluetoothAdapterState.unknown)
-            .first
-            .timeout(const Duration(seconds: 5));
-      } catch (_) {
-        adapter = FlutterBluePlus.adapterStateNow;
-      }
-    }
-
-    if (adapter == BluetoothAdapterState.unauthorized) {
-      setState(() {
-        _scanning = false;
-        _error = 'Ứng dụng chưa được cấp quyền Bluetooth. Vui lòng mở Cài đặt iPhone để cấp quyền.';
-      });
-      if (mounted) _openSettingsDialog();
-      return;
-    }
-
-    if (adapter == BluetoothAdapterState.off) {
-      setState(() {
-        _scanning = false;
-        _error = 'Bluetooth đang tắt — hãy bật Bluetooth trong Trung tâm điều khiển/Cài đặt rồi quét lại.';
-      });
-      return;
-    }
-
-    if (!BleLogger.instance.active) await BleLogger.instance.startSession();
-
-    _results.clear();
-    await _sub?.cancel();
-
-    // 2.1. Lấy ngay các thiết bị đã kết nối hệ thống / iOS (đặc biệt quan trọng với iPhone đã từng pair)
-    await _fetchSystemAndConnectedDevices();
-
-    // 3. Đăng ký nhận kết quả trước khi phát lệnh scan để không bị sót gói tin
-    _sub = FlutterBluePlus.scanResults.listen((rs) {
-      BleLogger.instance.event('scan_batch', {
-        'count': rs.length,
-        'devices': [
-          for (final r in rs)
-            {
-              'id': r.device.remoteId.str,
-              'adv_name': r.advertisementData.advName,
-              'platform_name': r.device.platformName,
-              'rssi': r.rssi,
-              'services': r.advertisementData.serviceUuids.map((u) => u.str128).toList(),
-            }
-        ],
-      });
-      if (!mounted) return;
-      setState(() {
-        final sysItems = _results.where((existing) => !rs.any((r) => r.device.remoteId == existing.device.remoteId)).toList();
-        _results
-          ..clear()
-          ..addAll(sysItems)
-          ..addAll(rs);
-      });
-    });
-
-    // 4. Bắt đầu quét BLE (bật continuousUpdates: true để iOS liên tục cập nhật tên và RSSI)
     try {
+      // 1. Kiểm tra quyền BLE
+      final ok = await BlePermissions.ensure();
+      if (!ok) {
+        if (!mounted) return;
+        setState(() {
+          _scanning = false;
+          _error = 'Thiếu quyền Bluetooth hoặc Vị trí để quét thiết bị.';
+        });
+        if (await BlePermissions.permanentlyDenied() && mounted) {
+          _openSettingsDialog();
+        }
+        return;
+      }
+
+      // 2. Đợi Bluetooth Adapter chuyển sang ON (Trên iOS, CoreBluetooth khởi tạo bất đồng bộ)
+      var adapter = FlutterBluePlus.adapterStateNow;
+      if (adapter == BluetoothAdapterState.unknown ||
+          adapter == BluetoothAdapterState.turningOn) {
+        try {
+          adapter = await FlutterBluePlus.adapterState
+              .where((s) =>
+                  s != BluetoothAdapterState.unknown &&
+                  s != BluetoothAdapterState.turningOn)
+              .first
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {
+          adapter = FlutterBluePlus.adapterStateNow;
+        }
+      }
+
+      if (!mounted) return;
+      _adapterState = adapter;
+
+      if (adapter == BluetoothAdapterState.unauthorized) {
+        setState(() {
+          _scanning = false;
+          _error =
+              'Ứng dụng chưa được cấp quyền Bluetooth. Vui lòng mở Cài đặt để cấp quyền.';
+        });
+        if (mounted) _openSettingsDialog();
+        return;
+      }
+
+      if (adapter == BluetoothAdapterState.off) {
+        setState(() {
+          _scanning = false;
+          _error =
+              'Bluetooth đang tắt — hãy bật Bluetooth trong Trung tâm điều khiển/Cài đặt rồi quét lại.';
+        });
+        return;
+      }
+
+      if (adapter != BluetoothAdapterState.on) {
+        // Đang chờ người dùng bấm "Cho phép" trên hộp thoại quyền Bluetooth iOS.
+        // Khi người dùng bấm Cho phép, _adapterStateSub sẽ tự động gọi lại _scan().
+        setState(() {
+          _scanning = false;
+        });
+        return;
+      }
+
+      _hasStartedInitialScan = true;
+
+      // 3. Khởi tạo logger an toàn (không bao giờ làm gián đoạn luồng quét)
+      try {
+        if (!BleLogger.instance.active) {
+          await BleLogger.instance.startSession();
+        }
+      } catch (_) {}
+
+      // 4. Lấy các thiết bị đã kết nối hệ thống / iOS
+      await _fetchSystemAndConnectedDevices();
+
+      // 5. Bắt đầu quét BLE
       await FlutterBluePlus.startScan(
-        timeout: const Duration(seconds: 20),
+        timeout: const Duration(seconds: 15),
         androidScanMode: AndroidScanMode.lowLatency,
-        continuousUpdates: true,
       );
+
+      // Làm mới lại danh sách thiết bị hệ thống
+      await _fetchSystemAndConnectedDevices();
     } catch (e) {
       if (mounted) {
-        setState(() => _error = 'Lỗi khởi động quét: $e');
+        setState(() {
+          _scanning = false;
+          _error = 'Lỗi khởi động quét Bluetooth: $e';
+        });
       }
     }
-
-    // Refresh lại system devices sau khi scan khởi động
-    await _fetchSystemAndConnectedDevices();
-
-    try {
-      await FlutterBluePlus.isScanning.where((s) => !s).first;
-    } catch (_) {}
-    if (mounted) setState(() => _scanning = false);
   }
 
   void _connect(ScanResult r) {
-    FlutterBluePlus.stopScan();
+    if (!kIsWeb) {
+      FlutterBluePlus.stopScan();
+    }
     final name = r.advertisementData.advName.isNotEmpty
         ? r.advertisementData.advName
         : r.device.platformName;
@@ -310,19 +402,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         backgroundColor: AppColors.panel,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         title: Text(
-          Platform.isIOS ? 'Cần cấp quyền Bluetooth' : 'Cần quyền Bluetooth & Vị trí',
-          style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600, fontSize: 18),
+          Platform.isIOS
+              ? 'Cần cấp quyền Bluetooth'
+              : 'Cần quyền Bluetooth & Vị trí',
+          style: GoogleFonts.spaceGrotesk(
+              fontWeight: FontWeight.w600, fontSize: 18),
         ),
         content: Text(
           Platform.isIOS
               ? 'Quyền truy cập Bluetooth đang bị tắt trong Cài đặt iPhone. Vui lòng mở Cài đặt để cho phép ứng dụng quét và kết nối với xe.'
               : 'Quyền Bluetooth/Vị trí bị từ chối. Mở Cài đặt hệ thống → Ứng dụng → Quyền để cấp lại.',
-          style: GoogleFonts.plusJakartaSans(color: AppColors.textDim, fontSize: 14),
+          style: GoogleFonts.plusJakartaSans(
+              color: AppColors.textDim, fontSize: 14),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(c),
-            child: Text('HỦY', style: GoogleFonts.plusJakartaSans(color: AppColors.textDim)),
+            child: Text('HỦY',
+                style: GoogleFonts.plusJakartaSans(color: AppColors.textDim)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -334,7 +431,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               openAppSettings();
               Navigator.pop(c);
             },
-            child: Text('MỞ CÀI ĐẶT', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+            child: Text('MỞ CÀI ĐẶT',
+                style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
           ),
         ],
       ),
@@ -349,7 +447,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   String _getDeviceDisplayName(ScanResult r) {
-    if (r.advertisementData.advName.isNotEmpty) return r.advertisementData.advName;
+    if (r.advertisementData.advName.isNotEmpty) {
+      return r.advertisementData.advName;
+    }
     if (r.device.platformName.isNotEmpty) return r.device.platformName;
     final id = r.device.remoteId.str;
     return 'Thiết bị BLE (${id.length > 8 ? id.substring(0, 8) : id})';
@@ -366,7 +466,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       appBar: AppBar(
         title: Text(
           'TÌM XE BLUETOOTH',
-          style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 18),
+          style: GoogleFonts.spaceGrotesk(
+              fontWeight: FontWeight.w700, fontSize: 18),
         ),
       ),
       body: RefreshIndicator(
@@ -389,9 +490,11 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                       decoration: BoxDecoration(
                         color: AppColors.primary.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: AppColors.primary.withValues(alpha: 0.25)),
+                        border: Border.all(
+                            color: AppColors.primary.withValues(alpha: 0.25)),
                       ),
-                      child: const Icon(Icons.history_rounded, color: AppColors.primary, size: 26),
+                      child: const Icon(Icons.history_rounded,
+                          color: AppColors.primary, size: 26),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -422,7 +525,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                             height: 20,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.primary),
+                        : const Icon(Icons.arrow_forward_ios_rounded,
+                            size: 16, color: AppColors.primary),
                   ],
                 ),
               ),
@@ -453,9 +557,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                           decoration: BoxDecoration(
                             color: AppColors.secondary.withValues(alpha: 0.10),
                             borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: AppColors.secondary.withValues(alpha: 0.25)),
+                            border: Border.all(
+                                color:
+                                    AppColors.secondary.withValues(alpha: 0.25)),
                           ),
-                          child: const Icon(Icons.electric_moped_rounded, color: AppColors.secondary, size: 28),
+                          child: const Icon(Icons.electric_moped_rounded,
+                              color: AppColors.secondary, size: 28),
                         ),
                         const SizedBox(width: 14),
                         Expanded(
@@ -482,11 +589,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                                     ),
                                   ),
                                   const SizedBox(width: 6),
-                                  Text(
-                                    '${r.rssi} dBm · ${r.device.remoteId.str}',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 12,
-                                      color: AppColors.textDim,
+                                  Expanded(
+                                    child: Text(
+                                      '${r.rssi} dBm · ${r.device.remoteId.str}',
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 12,
+                                        color: AppColors.textDim,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -494,7 +604,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                             ],
                           ),
                         ),
-                        const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.primary),
+                        const Icon(Icons.arrow_forward_ios_rounded,
+                            size: 16, color: AppColors.primary),
                       ],
                     ),
                   ),
@@ -517,7 +628,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                         ),
                         backgroundColor: const Color(0xFF10B981),
                         behavior: SnackBarBehavior.floating,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10)),
                       ),
                     );
                     Navigator.of(context).pop();
@@ -532,9 +644,12 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                         decoration: BoxDecoration(
                           color: AppColors.secondary.withValues(alpha: 0.10),
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: AppColors.secondary.withValues(alpha: 0.25)),
+                          border: Border.all(
+                              color:
+                                  AppColors.secondary.withValues(alpha: 0.25)),
                         ),
-                        child: const Icon(Icons.electric_moped_rounded, color: AppColors.secondary, size: 28),
+                        child: const Icon(Icons.electric_moped_rounded,
+                            color: AppColors.secondary, size: 28),
                       ),
                       const SizedBox(width: 14),
                       Expanded(
@@ -573,12 +688,50 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                           ],
                         ),
                       ),
-                      const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: AppColors.primary),
+                      const Icon(Icons.arrow_forward_ios_rounded,
+                          size: 16, color: AppColors.primary),
                     ],
                   ),
                 ),
               ),
               const SizedBox(height: 12),
+            ],
+
+            // Trạng thái đang quét khi danh sách chưa có thiết bị
+            if (bikes.isEmpty && others.isEmpty && _scanning && !kIsWeb) ...[
+              Panel(
+                padding: const EdgeInsets.all(24),
+                borderRadius: 20,
+                child: Column(
+                  children: [
+                    const SizedBox(
+                      width: 36,
+                      height: 36,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      'Đang dò tìm thiết bị Bluetooth ở gần…',
+                      style: GoogleFonts.spaceGrotesk(
+                          fontWeight: FontWeight.w700, fontSize: 16),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Hãy đứng gần xe trong bán kính 2-5 mét và đảm bảo xe đang mở nguồn.',
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        color: AppColors.textDim,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
             ],
 
             // Gợi ý khi hoàn toàn không tìm thấy thiết bị nào
@@ -594,12 +747,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                         color: AppColors.primary.withValues(alpha: 0.08),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.bluetooth_searching_rounded, size: 36, color: AppColors.primary),
+                      child: const Icon(Icons.bluetooth_searching_rounded,
+                          size: 36, color: AppColors.primary),
                     ),
                     const SizedBox(height: 14),
                     Text(
                       'Chưa tìm thấy thiết bị ở gần',
-                      style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 16),
+                      style: GoogleFonts.spaceGrotesk(
+                          fontWeight: FontWeight.w700, fontSize: 16),
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -617,10 +772,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                     FilledButton.icon(
                       style: FilledButton.styleFrom(
                         shape: const StadiumBorder(),
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 24, vertical: 12),
                       ),
                       icon: const Icon(Icons.radar, size: 18),
-                      label: Text('Quét lại', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600)),
+                      label: Text('Quét lại',
+                          style: GoogleFonts.spaceGrotesk(
+                              fontWeight: FontWeight.w600)),
                       onPressed: _scan,
                     ),
                   ],
@@ -634,11 +792,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  SectionTitle(bikes.isEmpty ? 'THIẾT BỊ BLUETOOTH Ở GẦN' : 'THIẾT BỊ KHÁC'),
+                  SectionTitle(bikes.isEmpty
+                      ? 'THIẾT BỊ BLUETOOTH Ở GẦN'
+                      : 'THIẾT BỊ KHÁC'),
                   const Spacer(),
                   Text(
                     '${others.length} thiết bị',
-                    style: GoogleFonts.plusJakartaSans(fontSize: 12, color: AppColors.textDim),
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 12, color: AppColors.textDim),
                   ),
                   const SizedBox(width: 8),
                   if (bikes.isNotEmpty)
@@ -652,7 +813,8 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                 const SizedBox(height: 4),
                 Text(
                   'Nếu xe của bạn đã đổi tên riêng hoặc tên chưa kịp phân giải trên iOS, hãy chọn thiết bị có sóng mạnh nhất (dBm gần 0 nhất) ở bên dưới để kết nối trực tiếp:',
-                  style: GoogleFonts.plusJakartaSans(fontSize: 12, color: AppColors.textDim, height: 1.4),
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12, color: AppColors.textDim, height: 1.4),
                 ),
                 const SizedBox(height: 10),
               ],
@@ -661,12 +823,14 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Panel(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
                       borderRadius: 14,
                       onTap: () => _connect(r),
                       child: Row(
                         children: [
-                          const Icon(Icons.bluetooth_rounded, size: 20, color: AppColors.textDim),
+                          const Icon(Icons.bluetooth_rounded,
+                              size: 20, color: AppColors.textDim),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -674,7 +838,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                               children: [
                                 Text(
                                   _getDeviceDisplayName(r),
-                                  style: GoogleFonts.plusJakartaSans(fontSize: 13.5, fontWeight: FontWeight.w600),
+                                  style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w600),
                                 ),
                                 Row(
                                   children: [
@@ -688,16 +854,22 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 6),
-                                    Text(
-                                      '${r.rssi} dBm · ${r.device.remoteId.str}',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: AppColors.textDim),
+                                    Expanded(
+                                      child: Text(
+                                        '${r.rssi} dBm · ${r.device.remoteId.str}',
+                                        overflow: TextOverflow.ellipsis,
+                                        style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 11.5,
+                                            color: AppColors.textDim),
+                                      ),
                                     ),
                                   ],
                                 ),
                               ],
                             ),
                           ),
-                          const Icon(Icons.chevron_right, size: 18, color: AppColors.textDim),
+                          const Icon(Icons.chevron_right,
+                              size: 18, color: AppColors.textDim),
                         ],
                       ),
                     ),
@@ -711,16 +883,24 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         foregroundColor: Colors.white,
         elevation: 2,
         shape: const StadiumBorder(),
-        onPressed: _scanning ? null : _scan,
+        onPressed: _scanning
+            ? () {
+                if (!kIsWeb) {
+                  FlutterBluePlus.stopScan();
+                }
+              }
+            : _scan,
         icon: _scanning
             ? const SizedBox(
                 width: 18,
                 height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+                child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
               )
             : const Icon(Icons.radar),
         label: Text(
-          _scanning ? 'Đang quét…' : 'Quét xe',
+          _scanning ? 'Đang quét… (Dừng)' : 'Quét xe',
           style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700),
         ),
       ),

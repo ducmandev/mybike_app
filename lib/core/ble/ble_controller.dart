@@ -3555,6 +3555,10 @@ class BleController extends Notifier<BleState> {
   /// Bond (ghép nối+mã hoá) với xe — app gốc bond ngay sau discovery
   /// (btsnoop 16:16:15-17, bonding state 11→12). Trả về true nếu đã bond.
   Future<bool> _ensureBonded(BluetoothDevice device, {String reason = ''}) async {
+    if (kIsWeb || !Platform.isAndroid) {
+      // Trên iOS, CoreBluetooth tự động quản lý ghép đôi/mã hoá link ở cấp OS.
+      return true;
+    }
     BleLogger.instance.event('bond_start', {'reason': reason});
     try {
       final currentBond = await device.bondState.first.timeout(
@@ -3780,6 +3784,13 @@ class BleController extends Notifier<BleState> {
         FlutterBluePlus.stopScan();
       } catch (_) {}
     }
+  }
+
+  /// Tạm dừng hẹn giờ tự kết nối lại khi người dùng đang mở màn hình Quét thủ công.
+  void pauseAutoReconnectForScan() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectPending = false;
   }
 
   void _teardown() {

@@ -12,7 +12,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 /// Bump mỗi lần build release — để đối chiếu log với code chính xác.
-const appBuild = '20261028a';
+const appBuild = '20261102a';
 
 class BleLogger {
   BleLogger._();
@@ -26,30 +26,36 @@ class BleLogger {
   File? get file => _file;
   int get eventCount => _eventCount;
 
-  Future<File> startSession() async {
-    await close();
-    final dir = await _logDir();
-    final ts = DateTime.now()
-        .toIso8601String()
-        .substring(0, 19)
-        .replaceAll(':', '')
-        .replaceAll('-', '');
-    _file = File('${dir.path}/session_$ts.jsonl');
-    _sink = _file!.openWrite(mode: FileMode.append);
-    _eventCount = 0;
-    event('session_start', {
-      'app': 'datbike_flutter',
-      'platform': Platform.operatingSystem,
-      'build': appBuild,
-    });
-    return _file!;
+  Future<File?> startSession() async {
+    try {
+      await close();
+      final dir = await _logDir();
+      final ts = DateTime.now()
+          .toIso8601String()
+          .substring(0, 19)
+          .replaceAll(':', '')
+          .replaceAll('-', '');
+      _file = File('${dir.path}/session_$ts.jsonl');
+      _sink = _file!.openWrite(mode: FileMode.append);
+      _eventCount = 0;
+      event('session_start', {
+        'app': 'datbike_flutter',
+        'platform': Platform.operatingSystem,
+        'build': appBuild,
+      });
+      return _file;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> close() async {
     final sink = _sink;
     _sink = null;
-    await sink?.flush();
-    await sink?.close();
+    try {
+      await sink?.flush();
+      await sink?.close();
+    } catch (_) {}
   }
 
   /// Ghi lỗi app (crash / exception chưa được bắt) ra app_errors.jsonl.
@@ -125,9 +131,15 @@ class BleLogger {
   }
 
   static Future<Directory> _logDir() async {
-    // Ưu tiên bộ nhớ ngoài app-specific: /storage/emulated/0/Android/data/
+    // Ưu tiên bộ nhớ ngoài app-specific trên Android: /storage/emulated/0/Android/data/
     // vn.datbike.datbike_app/files/ble_logs — xem được bằng file manager/USB.
-    final ext = await getExternalStorageDirectory();
+    // Lưu ý: Trên iOS, getExternalStorageDirectory() ném UnsupportedError!
+    Directory? ext;
+    if (Platform.isAndroid) {
+      try {
+        ext = await getExternalStorageDirectory();
+      } catch (_) {}
+    }
     final base = ext?.path ?? (await getApplicationDocumentsDirectory()).path;
     final dir = Directory('$base/ble_logs');
     if (!dir.existsSync()) dir.createSync(recursive: true);
@@ -135,19 +147,31 @@ class BleLogger {
   }
 
   static Future<List<FileSystemEntity>> listSessions() async {
-    final dir = await _logDir();
-    final files = dir.existsSync()
-        ? dir.listSync().whereType<File>().toList()
-        : <File>[];
-    files.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
-    return files;
+    try {
+      final dir = await _logDir();
+      final files = dir.existsSync()
+          ? dir.listSync().whereType<File>().toList()
+          : <File>[];
+      files.sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+      return files;
+    } catch (_) {
+      return <File>[];
+    }
   }
 
   /// Đường dẫn thư mục log để hiển thị cho user.
-  static Future<String> dirPath() async => (await _logDir()).path;
+  static Future<String> dirPath() async {
+    try {
+      return (await _logDir()).path;
+    } catch (_) {
+      return '';
+    }
+  }
 
   static Future<void> deleteAll() async {
-    final dir = await _logDir();
-    if (dir.existsSync()) dir.deleteSync(recursive: true);
+    try {
+      final dir = await _logDir();
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    } catch (_) {}
   }
 }

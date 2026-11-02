@@ -1,7 +1,9 @@
 // Xin quyền runtime cho BLE — flutter_blue_plus KHÔNG tự xin trên Android.
 // Android 12+: BLUETOOTH_SCAN + BLUETOOTH_CONNECT
 // Android < 12: ACCESS_FINE_LOCATION (bắt buộc để scan có kết quả)
-// iOS: Quyền Bluetooth được cấp phép qua NSBluetoothAlwaysUsageDescription và CoreBluetooth.
+// iOS: Quyền Bluetooth được cấp phép tự nhiên qua NSBluetoothAlwaysUsageDescription
+// và CBCentralManager của FlutterBluePlus (không gọi Permission.bluetooth.request()
+// của permission_handler vì tạo CBCentralManager thứ 2 gây treo callback khi NotDetermined).
 
 import 'dart:io';
 
@@ -16,25 +18,19 @@ class BlePermissions {
   static Future<bool> ensure() async {
     if (kIsWeb) return true;
     if (Platform.isIOS) {
-      // 1. Xin quyền Bluetooth hệ thống qua permission_handler (hiển thị popup xin quyền iOS)
-      try {
-        final status = await Permission.bluetooth.request();
-        if (status.isPermanentlyDenied || status.isRestricted) {
-          return false;
-        }
-      } catch (_) {}
-
-      // 2. Chờ CoreBluetooth Adapter khởi tạo bất đồng bộ (tránh trường hợp còn ở unknown)
+      // Khởi tạo CBCentralManager thông qua FlutterBluePlus.adapterState (hiển thị popup
+      // xin quyền Bluetooth gốc của iOS nếu lần đầu mở ứng dụng) và chờ thoát trạng thái unknown.
       var adapter = FlutterBluePlus.adapterStateNow;
       if (adapter == BluetoothAdapterState.unknown) {
         try {
           adapter = await FlutterBluePlus.adapterState
               .where((s) => s != BluetoothAdapterState.unknown)
               .first
-              .timeout(const Duration(seconds: 4));
-        } catch (_) {}
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {
+          adapter = FlutterBluePlus.adapterStateNow;
+        }
       }
-
       return adapter != BluetoothAdapterState.unauthorized;
     }
     if (!Platform.isAndroid) return true;
@@ -62,10 +58,6 @@ class BlePermissions {
   static Future<bool> permanentlyDenied() async {
     if (kIsWeb) return false;
     if (Platform.isIOS) {
-      try {
-        final status = await Permission.bluetooth.status;
-        if (status.isPermanentlyDenied || status.isRestricted) return true;
-      } catch (_) {}
       return FlutterBluePlus.adapterStateNow == BluetoothAdapterState.unauthorized;
     }
     if (!Platform.isAndroid) return false;
