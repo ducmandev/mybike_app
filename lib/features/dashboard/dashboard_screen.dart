@@ -12,7 +12,6 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../core/ble/ble_controller.dart';
 import '../../core/proto/bike_log.dart';
-import '../../core/services/trip_gps_tracker.dart';
 import '../home/trip_route_screen.dart';
 import '../../ui/app_theme.dart';
 import '../../ui/gauge.dart';
@@ -847,26 +846,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   void _openFullScreenMap(TripData trip) {
-    final curTrip = TripRecord(
-      startTime: trip.duration.inSeconds > 0
-          ? DateTime.now().subtract(trip.duration)
-          : DateTime.now(),
-      endTime: DateTime.now(),
-      distanceKm: trip.distanceKm,
-      durationSec: trip.duration.inSeconds,
-      avgSpeedKmh: trip.avgSpeedKmh,
-      maxSpeedKmh: trip.maxSpeedKmh,
-      usedPercent: trip.usedPercent,
-      route: TripGpsTracker.instance.getCurrentRoute(),
-    );
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => TripRouteScreen(
-          trip: curTrip,
-          tripIndex: 0,
-          allTrips: ref.read(bleProvider).tripHistory,
-        ),
+        builder: (_) => const TripRouteScreen(),
       ),
     );
   }

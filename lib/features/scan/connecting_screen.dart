@@ -29,7 +29,7 @@ class _ConnectingScreenState extends ConsumerState<ConnectingScreen> {
     final args = ModalRoute.of(context)?.settings.arguments
         as Map<String, dynamic>?;
     final device = args?['device'] as BluetoothDevice?;
-    final name = args?['name'] as String?;
+    final name = (args?['bikeName'] ?? args?['name']) as String?;
     if (device == null) {
       if (mounted) Navigator.of(context).pushReplacementNamed('/scan');
       return;

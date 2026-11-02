@@ -21,6 +21,7 @@ import '../proto/bike_log.dart';
 import '../models/trip_gps_point.dart';
 import '../services/foreground_service.dart';
 import '../services/trip_gps_tracker.dart';
+import '../services/trip_storage_service.dart';
 import '../session/bike_session_crypto.dart';
 import '../utils/kalman_filter.dart';
 import 'ble_logger.dart';
@@ -72,8 +73,9 @@ class TripData {
       );
 }
 
-/// Bản ghi một chuyến đi thực tế được lưu vào bộ nhớ bền vững (SharedPreferences)
+/// Bản ghi một chuyến đi thực tế được lưu vào bộ nhớ bền vững (Metadata & Tệp riêng)
 class TripRecord {
+  final String id;
   final DateTime startTime;
   final DateTime endTime;
   final double distanceKm;
@@ -85,7 +87,8 @@ class TripRecord {
   final double? endOdo;
   final List<TripGpsPoint> route;
 
-  const TripRecord({
+  TripRecord({
+    String? id,
     required this.startTime,
     required this.endTime,
     required this.distanceKm,
@@ -96,9 +99,38 @@ class TripRecord {
     this.startOdo,
     this.endOdo,
     this.route = const [],
-  });
+  }) : id = id ?? 'trip_${startTime.millisecondsSinceEpoch}';
+
+  TripRecord copyWith({
+    String? id,
+    DateTime? startTime,
+    DateTime? endTime,
+    double? distanceKm,
+    int? durationSec,
+    double? avgSpeedKmh,
+    double? maxSpeedKmh,
+    int? usedPercent,
+    double? startOdo,
+    double? endOdo,
+    List<TripGpsPoint>? route,
+  }) {
+    return TripRecord(
+      id: id ?? this.id,
+      startTime: startTime ?? this.startTime,
+      endTime: endTime ?? this.endTime,
+      distanceKm: distanceKm ?? this.distanceKm,
+      durationSec: durationSec ?? this.durationSec,
+      avgSpeedKmh: avgSpeedKmh ?? this.avgSpeedKmh,
+      maxSpeedKmh: maxSpeedKmh ?? this.maxSpeedKmh,
+      usedPercent: usedPercent ?? this.usedPercent,
+      startOdo: startOdo ?? this.startOdo,
+      endOdo: endOdo ?? this.endOdo,
+      route: route ?? this.route,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
+    'id': id,
     'startTime': startTime.toIso8601String(),
     'endTime': endTime.toIso8601String(),
     'distanceKm': distanceKm,
@@ -111,21 +143,38 @@ class TripRecord {
     if (route.isNotEmpty) 'route': route.map((e) => e.toJson()).toList(),
   };
 
-  factory TripRecord.fromJson(Map<String, dynamic> json) => TripRecord(
-    startTime: DateTime.tryParse(json['startTime'] as String? ?? '') ?? DateTime.now(),
-    endTime: DateTime.tryParse(json['endTime'] as String? ?? '') ?? DateTime.now(),
-    distanceKm: (json['distanceKm'] as num?)?.toDouble() ?? 0.0,
-    durationSec: (json['durationSec'] as num?)?.toInt() ?? 0,
-    avgSpeedKmh: (json['avgSpeedKmh'] as num?)?.toDouble() ?? 0.0,
-    maxSpeedKmh: (json['maxSpeedKmh'] as num?)?.toDouble() ?? 0.0,
-    usedPercent: (json['usedPercent'] as num?)?.toInt() ?? 0,
-    startOdo: (json['startOdo'] as num?)?.toDouble(),
-    endOdo: (json['endOdo'] as num?)?.toDouble(),
-    route: (json['route'] as List?)
-            ?.map((e) => TripGpsPoint.fromJson(e as Map<String, dynamic>))
-            .toList() ??
-        const [],
-  );
+  Map<String, dynamic> toMetadataJson() => {
+    'id': id,
+    'startTime': startTime.toIso8601String(),
+    'endTime': endTime.toIso8601String(),
+    'distanceKm': distanceKm,
+    'durationSec': durationSec,
+    'avgSpeedKmh': avgSpeedKmh,
+    'maxSpeedKmh': maxSpeedKmh,
+    'usedPercent': usedPercent,
+    if (startOdo != null) 'startOdo': startOdo,
+    if (endOdo != null) 'endOdo': endOdo,
+  };
+
+  factory TripRecord.fromJson(Map<String, dynamic> json) {
+    final startTime = DateTime.tryParse(json['startTime'] as String? ?? '') ?? DateTime.now();
+    return TripRecord(
+      id: json['id'] as String? ?? 'trip_${startTime.millisecondsSinceEpoch}',
+      startTime: startTime,
+      endTime: DateTime.tryParse(json['endTime'] as String? ?? '') ?? DateTime.now(),
+      distanceKm: (json['distanceKm'] as num?)?.toDouble() ?? 0.0,
+      durationSec: (json['durationSec'] as num?)?.toInt() ?? 0,
+      avgSpeedKmh: (json['avgSpeedKmh'] as num?)?.toDouble() ?? 0.0,
+      maxSpeedKmh: (json['maxSpeedKmh'] as num?)?.toDouble() ?? 0.0,
+      usedPercent: (json['usedPercent'] as num?)?.toInt() ?? 0,
+      startOdo: (json['startOdo'] as num?)?.toDouble(),
+      endOdo: (json['endOdo'] as num?)?.toDouble(),
+      route: (json['route'] as List?)
+              ?.map((e) => TripGpsPoint.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          const [],
+    );
+  }
 }
 
 /// Kết quả 1 thao tác lab (đọc/ghi) — trả về UI kèm đủ raw + decrypt + lỗi.
@@ -432,7 +481,6 @@ class BleController extends Notifier<BleState> {
   static const _kIdlingTurnOff = 'fw_idling_turn_off';
   static const _kDistanceMode = 'fw_distance_mode';
   static const _kChargingProfile = 'fw_charging_profile';
-  static const _kTripHistory = 'trip_history_v1';
   static const _kUserName = 'user_profile_name';
 
   final _rssiKalman = KalmanFilter1D(processNoise: 0.008, measurementNoise: 4.0);
@@ -503,17 +551,7 @@ class BleController extends Notifier<BleState> {
     final reconnMax = prefs.getInt(_kReconnectMaxAttempts) ?? 5;
     final reconnInterval = prefs.getInt(_kReconnectIntervalSeconds) ?? 5;
 
-    List<TripRecord> loadedHistory = [];
-    final tripHistJson = prefs.getString(_kTripHistory);
-    if (tripHistJson != null && tripHistJson.isNotEmpty) {
-      try {
-        final decoded = jsonDecode(tripHistJson) as List<dynamic>;
-        loadedHistory = decoded
-            .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= 0.1 || e.route.isNotEmpty)
-            .toList();
-      } catch (_) {}
-    }
+    final loadedHistory = await TripStorageService.instance.loadAllTrips();
 
     state = state.copyWith(
       bikeName: (savedId != null && savedName != null) ? savedName : (savedId == null ? null : state.bikeName),
@@ -563,8 +601,7 @@ class BleController extends Notifier<BleState> {
   Future<void> clearTripHistory() async {
     state = state.copyWith(tripHistory: const []);
     try {
-      final prefs = await _prefs;
-      await prefs.remove(_kTripHistory);
+      await TripStorageService.instance.clearAll();
       BleLogger.instance.event('trip_history_cleared', {});
     } catch (_) {}
   }
@@ -572,19 +609,15 @@ class BleController extends Notifier<BleState> {
   /// Xóa một chuyến đi cụ thể khỏi lịch sử hành trình
   Future<void> deleteTrip(TripRecord trip) async {
     final updated = state.tripHistory.where((t) =>
+      t.id != trip.id &&
       !(t.startTime.millisecondsSinceEpoch == trip.startTime.millisecondsSinceEpoch &&
         (t.distanceKm - trip.distanceKm).abs() < 0.001)
     ).toList();
     state = state.copyWith(tripHistory: updated);
     try {
-      final prefs = await _prefs;
-      if (updated.isEmpty) {
-        await prefs.remove(_kTripHistory);
-      } else {
-        final jsonStr = jsonEncode(updated.map((e) => e.toJson()).toList());
-        await prefs.setString(_kTripHistory, jsonStr);
-      }
+      await TripStorageService.instance.deleteTrip(trip);
       BleLogger.instance.event('trip_deleted', {
+        'id': trip.id,
         'start_time': trip.startTime.toIso8601String(),
         'distance_km': trip.distanceKm,
         'remaining': updated.length,
@@ -645,7 +678,13 @@ class BleController extends Notifier<BleState> {
       route: recordedRoute,
     );
 
-    final updated = [record, ...state.tripHistory].take(50).toList();
+    // Lưu vào bộ nhớ chuẩn 2 tầng (Tách file tọa độ riêng, lưu metadata nhẹ)
+    await TripStorageService.instance.saveTrip(
+      trip: record,
+      route: recordedRoute,
+    );
+
+    final updated = [record.copyWith(route: const []), ...state.tripHistory.where((t) => t.id != record.id)].take(50).toList();
     // Reset bộ đếm chuyến hiện tại ngay sau khi đã lưu để không bị lưu trùng lần 2 khi Tắt máy -> Ngắt BLE
     final curTele = state.lastTelemetry;
     _tripStartOdo = curTele?.odo;
@@ -660,15 +699,13 @@ class BleController extends Notifier<BleState> {
     );
 
     try {
-      final prefs = await _prefs;
-      final jsonStr = jsonEncode(updated.map((e) => e.toJson()).toList());
-      await prefs.setString(_kTripHistory, jsonStr);
       await TripGpsTracker.instance.clearSavedCache();
       BleLogger.instance.event('trip_archived', {
+        'id': record.id,
         'dist_km': record.distanceKm,
         'dur_sec': record.durationSec,
         'avg_speed': record.avgSpeedKmh,
-        'route_points': record.route.length,
+        'route_points': recordedRoute.length,
       });
     } catch (e) {
       BleLogger.instance.event('trip_archive_error', {'error': '$e'});

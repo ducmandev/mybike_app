@@ -1,55 +1,56 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart' hide Path;
-import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../core/ble/ble_controller.dart' show TripRecord, TripGpsPoint;
+import '../../core/ble/ble_controller.dart' show TripRecord, TripGpsPoint, bleProvider, BlePhase;
 import '../../core/services/map_tile_service.dart';
-import '../../core/services/offline_map_service.dart';
 import '../../core/services/trip_gps_tracker.dart';
+import '../../core/services/trip_storage_service.dart';
 import '../../ui/app_theme.dart';
 import '../dashboard/widgets/offline_map_sheet.dart';
 
 /// Màn hình Bản Đồ Lộ Trình & Phát Lại Vận Tốc Từng Thời Điểm
-/// Thiết kế đồng bộ chuẩn Kinetic Stitch EV:
-/// - Thanh tìm kiếm / chọn hành trình kiểu Textbox nhỏ gọn, cân đối.
-/// - Thông tin dải tốc độ & thống kê được chuyển vào nút Info (ℹ️) xổ ra modal để bản đồ thông thoáng.
-/// - Đường lộ trình chuyển sắc Gradient mượt mà tại các điểm giao nhau giữa các dải vận tốc.
-/// - Báo tiến độ tải offline ngầm thời gian thực.
-class TripRouteScreen extends StatefulWidget {
-  final TripRecord trip;
+/// - Mặc định vào bản đồ: Bản đồ sạch sẽ, tự động định vị vị trí hiện tại của người dùng.
+/// - Khi có hành trình đang ghi: Hiển thị badge nhỏ gọn góc trên bên phải "Đang định vị chuyến đi".
+/// - Quản lý dữ liệu chuẩn 2 tầng (Two-Tier Storage): Lazy load tọa độ và đồng bộ xóa 2 chiều với Riverpod.
+/// - Chống sập NaN/Infinity zoom camera khi bounds diện tích = 0.
+class TripRouteScreen extends ConsumerStatefulWidget {
+  final TripRecord? trip;
   final int tripIndex;
   final List<TripRecord>? allTrips;
 
   const TripRouteScreen({
     super.key,
-    required this.trip,
-    required this.tripIndex,
+    this.trip,
+    this.tripIndex = 0,
     this.allTrips,
   });
 
   @override
-  State<TripRouteScreen> createState() => _TripRouteScreenState();
+  ConsumerState<TripRouteScreen> createState() => _TripRouteScreenState();
 }
 
-class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProviderStateMixin {
+class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerProviderStateMixin {
   late final MapController _mapController;
+  late final AnimationController _pulseController;
 
-  late TripRecord _currentTrip;
-  late int _currentTripIndex;
+  TripRecord? _selectedTrip;
+  int _selectedTripIndex = 0;
   List<TripRecord> _allTrips = [];
 
   List<TripGpsPoint> _routePoints = [];
+  bool _isViewingLive = false;
 
   int _currentIndex = 0;
   bool _isPlaying = false;
   double _playbackSpeed = 1.0;
   Timer? _replayTimer;
+  Timer? _liveRefreshTimer;
   bool _followBike = true;
   bool _isLocating = false;
   LatLng? _myLocation;
@@ -61,56 +62,109 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
   void initState() {
     super.initState();
     _mapController = MapController();
-    _currentTrip = widget.trip;
-    _currentTripIndex = widget.tripIndex;
 
+    // Hiệu ứng nhấp nháy cho đèn báo "Đang định vị chuyến đi"
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+
+    // Nạp danh sách hành trình
     if (widget.allTrips != null && widget.allTrips!.isNotEmpty) {
       _allTrips = widget.allTrips!;
     } else {
-      _loadTripHistoryFromPrefs();
+      _loadTripHistory();
     }
 
-    _initRouteData();
-  }
+    // Nếu người dùng chọn xem một chuyến cụ thể từ danh sách lịch sử
+    if (widget.trip != null && (widget.tripIndex > 0 || widget.trip!.distanceKm >= 0.1 || widget.trip!.route.isNotEmpty)) {
+      _selectTrip(widget.trip!, widget.tripIndex);
+    } else {
+      // Mặc định: Bản đồ trống, định vị tại vị trí hiện tại
+      _selectedTrip = null;
+      _selectedTripIndex = 0;
+      _routePoints = [];
+      _locateMe();
+    }
 
-  Future<void> _loadTripHistoryFromPrefs() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final jsonStr = prefs.getString('trip_history_v1');
-      if (jsonStr != null && jsonStr.isNotEmpty) {
-        final list = (jsonDecode(jsonStr) as List)
-            .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= 0.1 || e.route.isNotEmpty)
-            .toList();
-        if (mounted && list.isNotEmpty) {
+    // Chu kỳ cập nhật nếu đang theo dõi trực tiếp (Live Tracking)
+    _liveRefreshTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      if (_isViewingLive) {
+        final livePoints = TripGpsTracker.instance.getCurrentRoute();
+        if (livePoints.isNotEmpty) {
           setState(() {
-            _allTrips = list;
+            _routePoints = TripGpsTracker.cleanAndSmoothRoute(livePoints);
+            _currentIndex = _routePoints.length - 1;
           });
+          if (_followBike && _routePoints.isNotEmpty) {
+            final last = _routePoints.last;
+            _mapController.move(LatLng(last.lat, last.lng), _mapController.camera.zoom);
+          }
         }
       }
+    });
+  }
+
+  Future<void> _loadTripHistory() async {
+    try {
+      final list = await TripStorageService.instance.loadAllTrips();
+      if (mounted && list.isNotEmpty) {
+        setState(() {
+          _allTrips = list;
+        });
+      }
     } catch (_) {}
   }
 
-  /// Xóa một chuyến đi khỏi lịch sử lưu trữ
-  Future<void> _deleteTripItem(TripRecord tripToDelete) async {
-    final updated = _allTrips.where((t) =>
-      !(t.startTime.millisecondsSinceEpoch == tripToDelete.startTime.millisecondsSinceEpoch &&
-        (t.distanceKm - tripToDelete.distanceKm).abs() < 0.001)
-    ).toList();
-
+  /// Chọn xem 1 chuyến đi cụ thể từ danh sách
+  Future<void> _selectTrip(TripRecord trip, int index) async {
     setState(() {
-      _allTrips = updated;
+      _selectedTrip = trip;
+      _selectedTripIndex = index;
+      _isViewingLive = false;
     });
 
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (updated.isEmpty) {
-        await prefs.remove('trip_history_v1');
-      } else {
-        final jsonStr = jsonEncode(updated.map((e) => e.toJson()).toList());
-        await prefs.setString('trip_history_v1', jsonStr);
-      }
-    } catch (_) {}
+    final route = await TripStorageService.instance.loadTripRoute(trip);
+    if (!mounted) return;
+
+    setState(() {
+      _routePoints = TripGpsTracker.cleanAndSmoothRoute(route);
+      _currentIndex = 0;
+    });
+
+    Future.delayed(const Duration(milliseconds: 250), _fitRouteBounds);
+  }
+
+  /// Bật chế độ xem lộ trình đang đi trực tiếp
+  void _startLiveTrackingView() {
+    final livePoints = TripGpsTracker.instance.getCurrentRoute();
+    setState(() {
+      _isViewingLive = true;
+      _selectedTrip = null;
+      _selectedTripIndex = 0;
+      _routePoints = TripGpsTracker.cleanAndSmoothRoute(livePoints);
+      _currentIndex = _routePoints.isNotEmpty ? _routePoints.length - 1 : 0;
+    });
+
+    if (_routePoints.isNotEmpty) {
+      final p = _routePoints.last;
+      _mapController.move(LatLng(p.lat, p.lng), 16.5);
+    } else {
+      _locateMe();
+    }
+  }
+
+  /// Xóa một chuyến đi: Đồng bộ cả Storage tầng 2 và Riverpod Provider
+  Future<void> _deleteTripItem(TripRecord tripToDelete) async {
+    await ref.read(bleProvider.notifier).deleteTrip(tripToDelete);
+
+    final updated = await TripStorageService.instance.loadAllTrips();
+    if (mounted) {
+      setState(() {
+        _allTrips = updated;
+      });
+    }
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -122,25 +176,26 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
     );
 
     // Nếu chuyến bị xóa là chuyến đang xem
-    final isViewingDeleted = _currentTrip.startTime.millisecondsSinceEpoch == tripToDelete.startTime.millisecondsSinceEpoch &&
-        (_currentTrip.distanceKm - tripToDelete.distanceKm).abs() < 0.001;
-
-    if (isViewingDeleted) {
-      if (updated.isNotEmpty) {
-        setState(() {
-          _currentTrip = updated.first;
-          _currentTripIndex = updated.length;
-          _initRouteData();
-        });
-        Future.delayed(const Duration(milliseconds: 200), _fitRouteBounds);
-      } else {
-        Navigator.pop(context);
-      }
+    if (_selectedTrip != null &&
+        (_selectedTrip!.id == tripToDelete.id ||
+         (_selectedTrip!.startTime.millisecondsSinceEpoch == tripToDelete.startTime.millisecondsSinceEpoch &&
+          (_selectedTrip!.distanceKm - tripToDelete.distanceKm).abs() < 0.001))) {
+      setState(() {
+        _selectedTrip = null;
+        _selectedTripIndex = 0;
+        _routePoints = [];
+        _currentIndex = 0;
+      });
+      _stopPlayback();
     }
   }
 
   /// Hộp thoại xác nhận xóa hành trình hiện tại đang xem
   Future<void> _confirmAndDeleteCurrentTrip() async {
+    if (_selectedTrip == null) return;
+    final tripToDelete = _selectedTrip!;
+    final tripNum = _selectedTripIndex > 0 ? _selectedTripIndex : 1;
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -157,7 +212,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
           ],
         ),
         content: Text(
-          'Bạn có chắc chắn muốn xóa vĩnh viễn hành trình #${_currentTripIndex > 0 ? _currentTripIndex : 1} (${_currentTrip.distanceKm.toStringAsFixed(1)} km) khỏi bộ nhớ thiết bị?',
+          'Bạn có chắc chắn muốn xóa vĩnh viễn hành trình #$tripNum (${tripToDelete.distanceKm.toStringAsFixed(1)} km) khỏi bộ nhớ thiết bị?',
           style: GoogleFonts.plusJakartaSans(fontSize: 13, height: 1.45, color: AppColors.textPrimary),
         ),
         actions: [
@@ -174,22 +229,15 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
       ),
     );
     if (confirm == true) {
-      await _deleteTripItem(_currentTrip);
+      await _deleteTripItem(tripToDelete);
     }
-  }
-
-  void _initRouteData() {
-    if (_currentTrip.route.isNotEmpty) {
-      _routePoints = TripGpsTracker.cleanAndSmoothRoute(_currentTrip.route);
-    } else {
-      _routePoints = [];
-    }
-    _currentIndex = 0;
   }
 
   @override
   void dispose() {
     _replayTimer?.cancel();
+    _liveRefreshTimer?.cancel();
+    _pulseController.dispose();
     _mapController.dispose();
     super.dispose();
   }
@@ -305,32 +353,51 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
     }
   }
 
+  /// Căn góc camera an toàn — Chống tuyệt đối lỗi Bounds diện tích 0 (NaN / Infinity Zoom Loop)
   void _fitRouteBounds() {
-    if (_routePoints.isEmpty) return;
+    if (_routePoints.length < 2) {
+      if (_routePoints.isNotEmpty) {
+        _mapController.move(LatLng(_routePoints.first.lat, _routePoints.first.lng), 16.0);
+      }
+      return;
+    }
     final points = _routePoints.map((p) => LatLng(p.lat, p.lng)).toList();
     final bounds = LatLngBounds.fromPoints(points);
-    _mapController.fitCamera(
-      CameraFit.bounds(
-        bounds: bounds,
-        padding: const EdgeInsets.only(top: 100, bottom: 260, left: 40, right: 40),
-      ),
-    );
+
+    // Kiểm tra span để chống bounds siêu nhỏ hoặc diện tích 0
+    final latSpan = (bounds.north - bounds.south).abs();
+    final lngSpan = (bounds.east - bounds.west).abs();
+    if (latSpan < 0.0001 && lngSpan < 0.0001) {
+      _mapController.move(bounds.center, 16.0);
+      return;
+    }
+
+    try {
+      _mapController.fitCamera(
+        CameraFit.bounds(
+          bounds: bounds,
+          padding: const EdgeInsets.only(top: 100, bottom: 260, left: 40, right: 40),
+        ),
+      );
+    } catch (_) {
+      _mapController.move(bounds.center, 15.0);
+    }
   }
 
   /// Nội suy màu chuyển sắc liên tục (Continuous Gradient) giữa các dải tốc độ
   Color _getContinuousSpeedColor(double speedKmh) {
     if (speedKmh <= 15.0) {
       final t = (speedKmh / 15.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFF06B6D4), const Color(0xFF10B981), t)!; // Cyan -> Mint
+      return Color.lerp(const Color(0xFF06B6D4), const Color(0xFF10B981), t)!;
     } else if (speedKmh <= 35.0) {
       final t = ((speedKmh - 15.0) / 20.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFF10B981), const Color(0xFF0EA5E9), t)!; // Mint -> Electric Azure
+      return Color.lerp(const Color(0xFF10B981), const Color(0xFF0EA5E9), t)!;
     } else if (speedKmh <= 55.0) {
       final t = ((speedKmh - 35.0) / 20.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFF97316), t)!; // Amber -> Orange
+      return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFF97316), t)!;
     } else {
       final t = ((speedKmh - 55.0) / 30.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFFF97316), const Color(0xFFEF4444), t)!; // Orange -> Red
+      return Color.lerp(const Color(0xFFF97316), const Color(0xFFEF4444), t)!;
     }
   }
 
@@ -344,7 +411,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
 
   /// Mở Modal Bottom Sheet Chọn Hành Trình (Hỗ trợ tìm kiếm kiểu textbox)
   void _openTripSearchModal() {
-    final tripsToDisplay = _allTrips.isNotEmpty ? _allTrips : [_currentTrip];
     final searchCtrl = TextEditingController();
 
     showModalBottomSheet(
@@ -354,22 +420,22 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
       builder: (ctx) {
         return StatefulBuilder(
           builder: (modalCtx, setModalState) {
+            final tripsToDisplay = _allTrips;
             final query = searchCtrl.text.trim().toLowerCase();
             final filteredTrips = tripsToDisplay.asMap().entries.where((entry) {
               if (query.isEmpty) return true;
               final idx = tripsToDisplay.length - entry.key;
-              final trip = entry.value;
-              final dateStr = '${trip.startTime.day}/${trip.startTime.month}';
-              final distStr = '${trip.distanceKm.toStringAsFixed(1)} km';
-              return '#$idx'.contains(query) ||
+              final km = entry.value.distanceKm.toStringAsFixed(1);
+              final dateStr = '${entry.value.startTime.day}/${entry.value.startTime.month}';
+              return idx.toString().contains(query) ||
+                  km.contains(query) ||
                   dateStr.contains(query) ||
-                  distStr.contains(query) ||
                   'hành trình $idx'.contains(query);
             }).toList();
 
             return Container(
               constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.78,
+                maxHeight: MediaQuery.of(context).size.height * 0.85,
               ),
               decoration: const BoxDecoration(
                 color: AppColors.panel,
@@ -380,7 +446,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Thanh kéo handle
                   Container(
                     margin: const EdgeInsets.only(top: 10, bottom: 6),
                     width: 44,
@@ -393,42 +458,63 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
 
                   // Header Modal
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 16, 10),
+                    padding: const EdgeInsets.fromLTRB(20, 8, 16, 12),
                     child: Row(
                       children: [
-                        const Icon(Icons.route_rounded, color: AppColors.primary, size: 22),
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.10),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.route_rounded, color: AppColors.primary, size: 20),
+                        ),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(
-                            'DANH SÁCH HÀNH TRÌNH',
-                            style: GoogleFonts.spaceGrotesk(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.textPrimary,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'DANH SÁCH HÀNH TRÌNH',
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 0.5,
+                                  color: AppColors.textPrimary,
+                                ),
+                              ),
+                              Text(
+                                '${tripsToDisplay.length} hành trình đã lưu',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11,
+                                  color: AppColors.textDim,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close_rounded, color: AppColors.textDim),
-                          onPressed: () => Navigator.pop(modalCtx),
+                          onPressed: () => Navigator.pop(ctx),
                         ),
                       ],
                     ),
                   ),
 
-                  // Ô Textbox Tìm kiếm
+                  // Ô Tìm Kiếm Textbox
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                     child: TextField(
                       controller: searchCtrl,
                       onChanged: (_) => setModalState(() {}),
+                      style: GoogleFonts.spaceGrotesk(fontSize: 13, color: AppColors.textPrimary),
                       decoration: InputDecoration(
-                        hintText: 'Tìm kiếm theo #1, ngày 27/10, số km…',
-                        hintStyle: GoogleFonts.plusJakartaSans(color: AppColors.textDim, fontSize: 13),
-                        prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary, size: 20),
+                        hintText: 'Tìm theo số #, ngày hoặc số km...',
+                        hintStyle: GoogleFonts.plusJakartaSans(fontSize: 12.5, color: AppColors.textDim),
+                        prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.primary),
                         suffixIcon: searchCtrl.text.isNotEmpty
                             ? IconButton(
-                                icon: const Icon(Icons.clear_rounded, size: 18),
+                                icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.textDim),
                                 onPressed: () {
                                   searchCtrl.clear();
                                   setModalState(() {});
@@ -438,16 +524,12 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                         filled: true,
                         fillColor: AppColors.panelSecondary,
                         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: AppColors.panelBorderBright),
-                        ),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: AppColors.panelBorderBright),
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(color: AppColors.panelBorder),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
                         ),
                       ),
@@ -467,54 +549,54 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                             ),
                           )
                         : ListView.separated(
-                            padding: const EdgeInsets.all(16),
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 20),
                             itemCount: filteredTrips.length,
-                            separatorBuilder: (_, _) => const SizedBox(height: 8),
-                            itemBuilder: (itemCtx, index) {
-                              final entry = filteredTrips[index];
+                            separatorBuilder: (context, index) => const SizedBox(height: 8),
+                            itemBuilder: (context, idx) {
+                              final entry = filteredTrips[idx];
                               final tripItem = entry.value;
                               final tripNum = tripsToDisplay.length - entry.key;
-                              final isSelected = tripItem.startTime == _currentTrip.startTime &&
-                                  tripItem.distanceKm == _currentTrip.distanceKm;
+                              final isSelected = _selectedTrip != null &&
+                                  _selectedTrip!.startTime.millisecondsSinceEpoch == tripItem.startTime.millisecondsSinceEpoch;
 
                               final durMin = tripItem.durationSec ~/ 60;
-                              final durText = '$durMin phút';
+                              final dateStr =
+                                  '${tripItem.startTime.day.toString().padLeft(2, '0')}/${tripItem.startTime.month.toString().padLeft(2, '0')} · ${tripItem.startTime.hour.toString().padLeft(2, '0')}:${tripItem.startTime.minute.toString().padLeft(2, '0')}';
 
                               return InkWell(
                                 borderRadius: BorderRadius.circular(14),
                                 onTap: () {
-                                  Navigator.pop(modalCtx);
-                                  setState(() {
-                                    _currentTrip = tripItem;
-                                    _currentTripIndex = tripNum;
-                                    _initRouteData();
-                                  });
-                                  Future.delayed(const Duration(milliseconds: 200), _fitRouteBounds);
+                                  Navigator.pop(ctx);
+                                  _selectTrip(tripItem, tripNum);
                                 },
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                                  padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
-                                    color: isSelected ? const Color(0xFFEFF6FF) : AppColors.panel,
+                                    color: isSelected ? const Color(0xFFEFF6FF) : AppColors.panelSecondary,
                                     borderRadius: BorderRadius.circular(14),
                                     border: Border.all(
                                       color: isSelected ? AppColors.primary : AppColors.panelBorderBright,
-                                      width: isSelected ? 1.5 : 1,
+                                      width: isSelected ? 1.5 : 1.0,
                                     ),
                                   ),
                                   child: Row(
                                     children: [
                                       Container(
-                                        padding: const EdgeInsets.all(8),
+                                        width: 38,
+                                        height: 38,
                                         decoration: BoxDecoration(
-                                          color: isSelected
-                                              ? AppColors.primary
-                                              : AppColors.primary.withValues(alpha: 0.10),
                                           shape: BoxShape.circle,
+                                          color: isSelected ? AppColors.primary : AppColors.primary.withValues(alpha: 0.12),
                                         ),
-                                        child: Icon(
-                                          Icons.two_wheeler_rounded,
-                                          size: 16,
-                                          color: isSelected ? Colors.white : AppColors.primary,
+                                        child: Center(
+                                          child: Text(
+                                            '#$tripNum',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w800,
+                                              color: isSelected ? Colors.white : AppColors.primary,
+                                            ),
+                                          ),
                                         ),
                                       ),
                                       const SizedBox(width: 12),
@@ -522,38 +604,17 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            Row(
-                                              children: [
-                                                Text(
-                                                  'Hành trình #$tripNum',
-                                                  style: GoogleFonts.spaceGrotesk(
-                                                    fontSize: 13.5,
-                                                    fontWeight: FontWeight.w700,
-                                                    color: AppColors.textPrimary,
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 6),
-                                                if (tripItem.route.isNotEmpty)
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: AppColors.tertiary.withValues(alpha: 0.15),
-                                                      borderRadius: BorderRadius.circular(6),
-                                                    ),
-                                                    child: Text(
-                                                      'GPS Thực',
-                                                      style: GoogleFonts.plusJakartaSans(
-                                                        fontSize: 9,
-                                                        fontWeight: FontWeight.w700,
-                                                        color: AppColors.tertiary,
-                                                      ),
-                                                    ),
-                                                  ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 2),
                                             Text(
-                                              '${tripItem.distanceKm.toStringAsFixed(1)} km · $durText · ${tripItem.startTime.day.toString().padLeft(2, '0')}/${tripItem.startTime.month.toString().padLeft(2, '0')}',
+                                              'Hành trình #$tripNum',
+                                              style: GoogleFonts.spaceGrotesk(
+                                                fontSize: 13.5,
+                                                fontWeight: FontWeight.w700,
+                                                color: AppColors.textPrimary,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 3),
+                                            Text(
+                                              '$dateStr · ${tripItem.distanceKm.toStringAsFixed(1)} km · $durMin phút',
                                               style: GoogleFonts.plusJakartaSans(
                                                 fontSize: 11,
                                                 color: AppColors.textDim,
@@ -562,56 +623,38 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                                           ],
                                         ),
                                       ),
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          if (isSelected)
-                                            const Padding(
-                                              padding: EdgeInsets.only(right: 6),
-                                              child: Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 18),
-                                            ),
-                                          IconButton(
-                                            tooltip: 'Xóa hành trình',
-                                            icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.textDim),
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                                            onPressed: () async {
-                                              final confirm = await showDialog<bool>(
-                                                context: context,
-                                                builder: (dCtx) => AlertDialog(
-                                                  backgroundColor: AppColors.panel,
-                                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                                                  title: Row(
-                                                    children: [
-                                                      const Icon(Icons.delete_forever_rounded, color: AppColors.red, size: 22),
-                                                      const SizedBox(width: 8),
-                                                      Text('Xóa Hành Trình #$tripNum?', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
-                                                    ],
-                                                  ),
-                                                  content: Text(
-                                                    'Bạn có chắc muốn xóa hành trình #$tripNum (${tripItem.distanceKm.toStringAsFixed(1)} km) khỏi thiết bị?',
-                                                    style: GoogleFonts.plusJakartaSans(fontSize: 13),
-                                                  ),
-                                                  actions: [
-                                                    TextButton(
-                                                      onPressed: () => Navigator.pop(dCtx, false),
-                                                      child: Text('HỦY', style: GoogleFonts.spaceGrotesk(color: AppColors.textDim)),
-                                                    ),
-                                                    FilledButton(
-                                                      style: FilledButton.styleFrom(backgroundColor: AppColors.red),
-                                                      onPressed: () => Navigator.pop(dCtx, true),
-                                                      child: Text('XÓA', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
-                                                    ),
-                                                  ],
+                                      IconButton(
+                                        icon: const Icon(Icons.delete_outline_rounded, color: AppColors.red, size: 20),
+                                        tooltip: 'Xóa hành trình',
+                                        onPressed: () async {
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (c) => AlertDialog(
+                                              backgroundColor: AppColors.panel,
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                                              title: Text('Xóa Hành Trình #$tripNum?', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                                              content: Text(
+                                                'Bạn có chắc muốn xóa hành trình #$tripNum (${tripItem.distanceKm.toStringAsFixed(1)} km) khỏi thiết bị?',
+                                                style: GoogleFonts.plusJakartaSans(fontSize: 13),
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () => Navigator.pop(c, false),
+                                                  child: Text('HỦY', style: GoogleFonts.spaceGrotesk(color: AppColors.textDim)),
                                                 ),
-                                              );
-                                              if (confirm == true) {
-                                                await _deleteTripItem(tripItem);
-                                                setModalState(() {});
-                                              }
-                                            },
-                                          ),
-                                        ],
+                                                FilledButton(
+                                                  style: FilledButton.styleFrom(backgroundColor: AppColors.red),
+                                                  onPressed: () => Navigator.pop(c, true),
+                                                  child: Text('XÓA', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm == true) {
+                                            await _deleteTripItem(tripItem);
+                                            setModalState(() {});
+                                          }
+                                        },
                                       ),
                                     ],
                                   ),
@@ -631,11 +674,11 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
 
   /// Mở Modal Thông Tin Dải Tốc Độ & Thống Kê Hành Trình (Nút Info ℹ️)
   void _showTripInfoSheet() {
-    final trip = _currentTrip;
-    final durMin = trip.durationSec ~/ 60;
-    final durSec = trip.durationSec % 60;
+    final trip = _selectedTrip;
+    final durMin = trip != null ? trip.durationSec ~/ 60 : 0;
+    final durSec = trip != null ? trip.durationSec % 60 : 0;
     final durText = durMin > 0 ? '$durMin phút $durSec giây' : '$durSec giây';
-    final co2Kg = (trip.distanceKm * 0.065).toStringAsFixed(2);
+    final co2Kg = trip != null ? (trip.distanceKm * 0.065).toStringAsFixed(2) : '0.00';
 
     showModalBottomSheet(
       context: context,
@@ -680,7 +723,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Chi tiết hành trình',
+                        _selectedTrip != null ? 'Chi tiết hành trình #$_selectedTripIndex' : 'Thông tin bản đồ & Tốc độ',
                         style: GoogleFonts.spaceGrotesk(
                           fontSize: 14.5,
                           fontWeight: FontWeight.w800,
@@ -702,7 +745,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
                   children: [
-                    // 1. BẢNG MÀU DẢI TỐC ĐỘ (GRADIENT SPEED LEGEND)
                     Text(
                       'DẢI TỐC ĐỘ',
                       style: GoogleFonts.spaceGrotesk(
@@ -746,108 +788,63 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                             '> 55 km/h',
                             'Đường trường / tốc độ cao',
                           ),
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFEFF6FF),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.auto_awesome_rounded, size: 14, color: AppColors.primary),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    'Đường đi đổi màu gradient mượt mà theo vận tốc thực tế.',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 10.5,
-                                      color: AppColors.primary,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                         ],
                       ),
                     ),
 
-                    const SizedBox(height: 18),
+                    if (trip != null) ...[
+                      const SizedBox(height: 20),
+                      Text(
+                        'THỐNG KÊ HÀNH TRÌNH',
+                        style: GoogleFonts.spaceGrotesk(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.5,
+                          color: AppColors.textDim,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
 
-                    // 2. THỐNG KÊ CHI TIẾT
-                    Text(
-                      'THỐNG KÊ HÀNH TRÌNH',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
-                        color: AppColors.textDim,
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: AppColors.panelSecondary,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppColors.panelBorderBright),
+                        ),
+                        child: Column(
+                          children: [
+                            _tripDetailRow('Quãng đường', '${trip.distanceKm.toStringAsFixed(1)} km'),
+                            const Divider(color: AppColors.panelBorder, height: 14),
+                            _tripDetailRow('Thời gian di chuyển', durText),
+                            const Divider(color: AppColors.panelBorder, height: 14),
+                            _tripDetailRow('Vận tốc trung bình', '${trip.avgSpeedKmh.toStringAsFixed(0)} km/h'),
+                            const Divider(color: AppColors.panelBorder, height: 14),
+                            _tripDetailRow('Vận tốc cao nhất', '${trip.maxSpeedKmh.toStringAsFixed(0)} km/h'),
+                            const Divider(color: AppColors.panelBorder, height: 14),
+                            _tripDetailRow('Tiêu thụ pin', trip.usedPercent > 0 ? '-${trip.usedPercent}%' : '--'),
+                            const Divider(color: AppColors.panelBorder, height: 14),
+                            _tripDetailRow('Giảm phát thải CO2', '$co2Kg kg'),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
 
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: AppColors.panelSecondary,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: AppColors.panelBorderBright),
+                      const SizedBox(height: 20),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.red,
+                          side: const BorderSide(color: AppColors.red),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                        label: Text('XÓA HÀNH TRÌNH NÀY', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _confirmAndDeleteCurrentTrip();
+                        },
                       ),
-                      child: Column(
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(child: _metricTile('QUÃNG ĐƯỜNG', '${trip.distanceKm.toStringAsFixed(1)} km', Icons.straighten_rounded)),
-                              Expanded(child: _metricTile('THỜI GIAN', durText, Icons.timer_outlined)),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(child: _metricTile('TỐC ĐỘ TỐI ĐA', '${trip.maxSpeedKmh.toStringAsFixed(0)} km/h', Icons.speed_rounded)),
-                              Expanded(child: _metricTile('TỐC ĐỘ TRUNG BÌNH', '${trip.avgSpeedKmh.toStringAsFixed(0)} km/h', Icons.moving_rounded)),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(child: _metricTile('GIẢM THẢI CO2', '$co2Kg kg', Icons.eco_rounded)),
-                              Expanded(child: _metricTile('TIÊU HAO PIN', trip.usedPercent > 0 ? '-${trip.usedPercent}%' : '--', Icons.battery_charging_full_rounded)),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(child: _metricTile('TỔNG SỐ ĐIỂM GPS', '${_routePoints.length} điểm ghi nhận', Icons.gps_fixed_rounded)),
-                              Expanded(child: _metricTile('NGUỒN DỮ LIỆU', _routePoints.isNotEmpty ? 'GPS Thực Tế' : 'Chưa có GPS', Icons.sensors_rounded)),
-                            ],
-                          ),
-                          const SizedBox(height: 20),
-                          SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: AppColors.red,
-                                side: const BorderSide(color: Color(0xFFFCA5A5)),
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                              ),
-                              icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                              label: Text(
-                                'XÓA HÀNH TRÌNH NÀY',
-                                style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 13),
-                              ),
-                              onPressed: () {
-                                Navigator.pop(ctx);
-                                _confirmAndDeleteCurrentTrip();
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -858,34 +855,22 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
     );
   }
 
-  Widget _speedLegendRow(Color color, String range, String desc) {
+  Widget _speedLegendRow(Color color, String speedText, String desc) {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          margin: const EdgeInsets.only(top: 2),
           width: 14,
           height: 14,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: color.withValues(alpha: 0.4),
-                blurRadius: 4,
-                offset: const Offset(0, 1),
-              ),
-            ],
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 10),
         SizedBox(
           width: 85,
           child: Text(
-            range,
+            speedText,
             style: GoogleFonts.spaceGrotesk(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w800,
               color: AppColors.textPrimary,
             ),
           ),
@@ -894,7 +879,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
           child: Text(
             desc,
             style: GoogleFonts.plusJakartaSans(
-              fontSize: 11,
+              fontSize: 11.5,
               color: AppColors.textDim,
             ),
           ),
@@ -903,36 +888,12 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
     );
   }
 
-  Widget _metricTile(String label, String value, IconData icon) {
+  Widget _tripDetailRow(String label, String value) {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Icon(icon, size: 16, color: AppColors.primary),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textDim,
-                ),
-              ),
-              const SizedBox(height: 1),
-              Text(
-                value,
-                style: GoogleFonts.spaceGrotesk(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-            ],
-          ),
-        ),
+        Text(label, style: GoogleFonts.plusJakartaSans(fontSize: 12.5, color: AppColors.textDim)),
+        Text(value, style: GoogleFonts.spaceGrotesk(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
       ],
     );
   }
@@ -942,9 +903,17 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
     final hasPoints = _routePoints.isNotEmpty;
     final currentPoint = hasPoints ? _routePoints[_currentIndex] : null;
 
+    final bleState = ref.watch(bleProvider);
+    final isTrackingActive = TripGpsTracker.instance.isTracking ||
+        TripGpsTracker.instance.getCurrentRoute().isNotEmpty ||
+        (bleState.phase == BlePhase.connected && bleState.trip.duration.inSeconds > 0);
+    final curLiveDistance = TripGpsTracker.instance.totalDistanceKm > 0
+        ? TripGpsTracker.instance.totalDistanceKm
+        : bleState.trip.distanceKm;
+
     final initialCenter = hasPoints
         ? LatLng(_routePoints.first.lat, _routePoints.first.lng)
-        : const LatLng(10.7719, 106.7195);
+        : (_myLocation ?? const LatLng(10.7719, 106.7195));
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -957,16 +926,19 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
               initialCenter: initialCenter,
               initialZoom: 15.0,
               onMapReady: () {
-                Future.delayed(const Duration(milliseconds: 300), _fitRouteBounds);
+                if (_selectedTrip != null && hasPoints) {
+                  Future.delayed(const Duration(milliseconds: 300), _fitRouteBounds);
+                } else {
+                  _locateMe();
+                }
               },
             ),
             children: [
-              // Tile Layer (Ưu tiên nạp từ ổ cứng offline cache)
+              // Tile Layer
               MapTileService.buildTileLayer(style: _tileStyle),
 
-              // Polyline Lộ trình với dải màu vận tốc (Continuous Gradient Transitions)
+              // Polyline Lộ trình (Gradient)
               if (hasPoints) ...[
-                // Lớp bóng mờ phía dưới đường đi
                 PolylineLayer(
                   polylines: [
                     Polyline(
@@ -978,7 +950,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                     ),
                   ],
                 ),
-                // Lớp các đoạn polyline chuyển sắc mượt mà giữa các điểm nối
                 PolylineLayer(
                   polylines: [
                     for (int i = 0; i < _routePoints.length - 1; i++)
@@ -999,7 +970,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                 ),
               ],
 
-              // Marker Điểm xuất phát (A), Đích đến (B), Vị trí của tôi, và Xe Dat Bike
+              // Marker Layer
               MarkerLayer(
                 markers: [
                   if (_myLocation != null)
@@ -1036,7 +1007,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
             ],
           ),
 
-          // 2. HEADER TOP: Thanh tìm kiếm kiểu Textbox & Nút Info (Cân đối rộng rãi trên mọi màn hình mobile)
+          // 2. HEADER TOP: Thanh tìm kiếm kiểu Textbox & Nút Info
           SafeArea(
             child: Align(
               alignment: Alignment.topCenter,
@@ -1051,7 +1022,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                     ),
                     const SizedBox(width: 8),
 
-                    // Thanh tìm kiếm & chọn hành trình kiểu Textbox (Gọn gàng, tỉ lệ chuẩn)
+                    // Thanh tìm kiếm & chọn hành trình
                     Expanded(
                       child: InkWell(
                         borderRadius: BorderRadius.circular(14),
@@ -1075,7 +1046,11 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                                   const SizedBox(width: 6),
                                   Expanded(
                                     child: Text(
-                                      _currentTripIndex > 0 ? '#$_currentTripIndex · ${_currentTrip.distanceKm.toStringAsFixed(1)} km' : 'Chuyến đi hiện tại · ${_currentTrip.distanceKm.toStringAsFixed(1)} km',
+                                      _isViewingLive
+                                          ? 'Đang định vị chuyến đi · ${curLiveDistance.toStringAsFixed(1)} km'
+                                          : (_selectedTrip != null
+                                              ? '#$_selectedTripIndex · ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km'
+                                              : 'Tìm kiếm hành trình...'),
                                       style: GoogleFonts.plusJakartaSans(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w700,
@@ -1094,7 +1069,7 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                     ),
                     const SizedBox(width: 8),
 
-                    // Nút Info (ℹ️): Xổ thông tin dải tốc độ & Thống kê hành trình (Giúp bản đồ thông thoáng)
+                    // Nút Info (ℹ️)
                     _glassIconButton(
                       icon: Icons.info_outline_rounded,
                       iconColor: AppColors.primary,
@@ -1107,482 +1082,469 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
             ),
           ),
 
-          // 3. THANH CÔNG CỤ BẢN ĐỒ DỌC (Góc phải bản đồ, chuẩn Google / Apple Maps UX)
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topRight,
-              child: Padding(
-                padding: const EdgeInsets.only(top: 56, right: 12),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Nút Căn toàn bộ lộ trình
-                    _glassIconButton(
-                      icon: Icons.crop_free_rounded,
-                      tooltip: 'Căn toàn bộ lộ trình',
-                      onTap: _fitRouteBounds,
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Nút Vị trí của tôi
-                    _glassIconButton(
-                      icon: Icons.my_location_rounded,
-                      iconColor: _isLocating ? AppColors.primary : AppColors.textDim,
-                      isActive: _isLocating,
-                      tooltip: 'Vị trí của tôi',
-                      onTap: _locateMe,
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Nút chuyển kiểu Map
-                    _glassIconButton(
-                      icon: MapTileService.getStyleIcon(_tileStyle),
-                      tooltip: MapTileService.getStyleName(_tileStyle),
-                      onTap: _cycleTileStyle,
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Nút Tải bản đồ offline
-                    _glassIconButton(
-                      icon: Icons.download_for_offline_rounded,
-                      tooltip: 'Tải bản đồ offline',
-                      onTap: () {
-                        OfflineMapSheet.show(
-                          context,
-                          currentMapBounds: _mapController.camera.visibleBounds,
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // 4. MINI BANNER TẢI BẢN ĐỒ NGẦM (Nếu đang tải trong nền)
-          ValueListenableBuilder<DownloadProgress>(
-            valueListenable: OfflineMapService.instance.progressNotifier,
-            builder: (context, progress, _) {
-              if (!progress.isRunning && !progress.isPaused) {
-                return const SizedBox.shrink();
-              }
-              return Positioned(
-                top: 56,
-                left: 14,
-                right: 58,
-                child: GestureDetector(
-                  onTap: () => OfflineMapSheet.show(
-                    context,
-                    currentMapBounds: _mapController.camera.visibleBounds,
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(9999),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: AppColors.panel.withValues(alpha: 0.94),
-                          borderRadius: BorderRadius.circular(9999),
-                          border: Border.all(
-                            color: progress.isPaused ? AppColors.amber : AppColors.primary,
-                          ),
-                          boxShadow: AppColors.cardShadow,
+          // 3. NOTIFICATION BADGE NHỎ GÓC TRÊN BÊN PHẢI (Ngay dưới thanh tìm kiếm khi đang định vị chuyến đi)
+          if (isTrackingActive)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 54,
+              right: 12,
+              child: InkWell(
+                onTap: _startLiveTrackingView,
+                borderRadius: BorderRadius.circular(20),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: _isViewingLive ? const Color(0xFF0F172A) : AppColors.panel.withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: _isViewingLive ? AppColors.tertiary : AppColors.panelBorderBright,
+                          width: _isViewingLive ? 1.5 : 1.0,
                         ),
-                        child: Row(
-                          children: [
-                            if (progress.isRunning)
-                              const SizedBox(
-                                width: 12,
-                                height: 12,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-                              )
-                            else
-                              const Icon(Icons.pause_circle_rounded, size: 14, color: AppColors.amber),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                progress.isPaused
-                                    ? 'Đang tạm dừng tải (${progress.percentInt}%)'
-                                    : 'Đang tải bản đồ offline ngầm: ${progress.percentInt}% (${progress.sizeMbText})',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary,
-                                ),
-                                overflow: TextOverflow.ellipsis,
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.tertiary.withValues(alpha: _isViewingLive ? 0.35 : 0.15),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          AnimatedBuilder(
+                            animation: _pulseController,
+                            builder: (context, child) => Container(
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.tertiary.withValues(alpha: 0.4 + 0.6 * _pulseController.value),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.tertiary.withValues(alpha: 0.6 * _pulseController.value),
+                                    blurRadius: 6,
+                                  ),
+                                ],
                               ),
                             ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Đang định vị chuyến đi',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: _isViewingLive ? Colors.white : AppColors.textPrimary,
+                            ),
+                          ),
+                          if (curLiveDistance > 0) ...[
+                            const SizedBox(width: 4),
                             Text(
-                              'Chi tiết >',
+                              '· ${curLiveDistance.toStringAsFixed(1)} km',
                               style: GoogleFonts.plusJakartaSans(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.primary,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.tertiary,
                               ),
                             ),
                           ],
-                        ),
+                        ],
                       ),
                     ),
                   ),
-                ),
-              );
-            },
-          ),
-
-          // Thông báo trực quan giữa bản đồ khi chưa có dữ liệu GPS thực tế
-          if (!hasPoints)
-            Center(
-              child: Container(
-                margin: const EdgeInsets.symmetric(horizontal: 28),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                decoration: BoxDecoration(
-                  color: AppColors.panel.withValues(alpha: 0.95),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: AppColors.panelBorderBright),
-                  boxShadow: AppColors.modalShadow,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppColors.amber.withValues(alpha: 0.12),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.location_off_rounded, size: 28, color: AppColors.amber),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      'Chưa có dữ liệu GPS thực tế',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Hành trình này không có dữ liệu định vị GPS. Tọa độ chỉ được ghi nhận khi xe chuyển sang chế độ lái (D hoặc S).',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 11.5,
-                        color: AppColors.textDim,
-                        height: 1.4,
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ),
 
-          // 4. BẢNG ĐIỀU KHIỂN & PHÁT LẠI VẬN TỐC Ở ĐÁY MÀN HÌNH (Replay & Telemetry HUD)
+          // 4. THANH CÔNG CỤ DỌC (Góc phải bản đồ)
           Positioned(
-            left: 14,
-            right: 14,
-            bottom: 20,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(22),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppColors.panel.withValues(alpha: 0.96),
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(color: AppColors.panelBorderBright),
-                    boxShadow: AppColors.modalShadow,
+            top: MediaQuery.of(context).padding.top + (isTrackingActive ? 98 : 58),
+            right: 12,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (hasPoints) ...[
+                  _glassIconButton(
+                    icon: Icons.crop_free_rounded,
+                    tooltip: 'Căn toàn bộ lộ trình',
+                    onTap: _fitRouteBounds,
                   ),
-                  child: hasPoints
-                      ? Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Hàng thông số Telemetry tại thời điểm đang phát lại
-                            if (currentPoint != null) ...[
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            // Đồng hồ tốc độ to rõ
-                            Expanded(
-                              flex: 5,
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.baseline,
-                                textBaseline: TextBaseline.alphabetic,
+                  const SizedBox(height: 8),
+                ],
+                _glassIconButton(
+                  icon: Icons.my_location_rounded,
+                  iconColor: _isLocating ? AppColors.primary : AppColors.textDim,
+                  tooltip: 'Vị trí của tôi',
+                  onTap: _locateMe,
+                ),
+                const SizedBox(height: 8),
+                _glassIconButton(
+                  icon: Icons.layers_outlined,
+                  tooltip: 'Đổi kiểu bản đồ',
+                  onTap: _cycleTileStyle,
+                ),
+                const SizedBox(height: 8),
+                _glassIconButton(
+                  icon: Icons.download_for_offline_outlined,
+                  tooltip: 'Bản đồ offline',
+                  onTap: () => OfflineMapSheet.show(context),
+                ),
+              ],
+            ),
+          ),
+
+          // 5. BẢNG ĐIỀU KHIỂN & PHÁT LẠI VẬN TỐC Ở ĐÁY MÀN HÌNH
+          // CHỈ HIỆN KHI NGƯỜI DÙNG CHỌN 1 HÀNH TRÌNH HOẶC BẬT XEM LIVE
+          if (_selectedTrip != null || _isViewingLive)
+            Positioned(
+              left: 14,
+              right: 14,
+              bottom: 20,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(22),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: AppColors.panel.withValues(alpha: 0.96),
+                      borderRadius: BorderRadius.circular(22),
+                      border: Border.all(color: AppColors.panelBorderBright),
+                      boxShadow: AppColors.modalShadow,
+                    ),
+                    child: hasPoints
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Hàng tiêu đề + Nút đóng
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
                                 children: [
-                                  Text(
-                                    currentPoint.speedKmh.toStringAsFixed(0),
-                                    style: GoogleFonts.spaceGrotesk(
-                                      fontSize: 40,
-                                      fontWeight: FontWeight.w900,
-                                      color: currentPoint.speedKmh > 0 ? AppColors.primary : AppColors.textPrimary,
-                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                  Container(
+                                    padding: const EdgeInsets.all(7),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(10),
                                     ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'km/h',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.textDim,
+                                    child: Icon(
+                                      _isViewingLive ? Icons.gps_fixed_rounded : Icons.alt_route_rounded,
+                                      color: AppColors.primary,
+                                      size: 18,
                                     ),
                                   ),
                                   const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _isViewingLive
+                                              ? 'Đang định vị trực tiếp'
+                                              : 'Hành trình #$_selectedTripIndex',
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.textPrimary,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        Text(
+                                          _isViewingLive
+                                              ? '${curLiveDistance.toStringAsFixed(1)} km · Điểm GPS: ${_routePoints.length}'
+                                              : '${_selectedTrip!.distanceKm.toStringAsFixed(1)} km · ${_selectedTrip!.durationSec ~/ 60} phút · Max ${_selectedTrip!.maxSpeedKmh.toStringAsFixed(0)} km/h',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 11,
+                                            color: AppColors.textDim,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.textDim),
+                                    tooltip: 'Đóng chi tiết',
+                                    onPressed: () {
+                                      setState(() {
+                                        _selectedTrip = null;
+                                        _selectedTripIndex = 0;
+                                        _isViewingLive = false;
+                                        _routePoints = [];
+                                      });
+                                      _stopPlayback();
+                                    },
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 10),
+
+                              // Đồng hồ tốc độ & Telemetry
+                              if (currentPoint != null) ...[
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Expanded(
+                                      flex: 5,
+                                      child: Row(
+                                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                                        textBaseline: TextBaseline.alphabetic,
+                                        children: [
+                                          Text(
+                                            currentPoint.speedKmh.toStringAsFixed(0),
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 36,
+                                              fontWeight: FontWeight.w900,
+                                              color: currentPoint.speedKmh > 0 ? AppColors.primary : AppColors.textPrimary,
+                                              fontFeatures: const [FontFeature.tabularFigures()],
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'km/h',
+                                            style: GoogleFonts.plusJakartaSans(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.textDim,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                            decoration: BoxDecoration(
+                                              color: _getContinuousSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.15),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(
+                                                color: _getContinuousSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.4),
+                                              ),
+                                            ),
+                                            child: Text(
+                                              _getSpeedLabel(currentPoint.speedKmh),
+                                              style: GoogleFonts.plusJakartaSans(
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.w800,
+                                                color: _getContinuousSpeedColor(currentPoint.speedKmh),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      children: [
+                                        Text(
+                                          '${currentPoint.timestamp.hour.toString().padLeft(2, '0')}:${currentPoint.timestamp.minute.toString().padLeft(2, '0')}:${currentPoint.timestamp.second.toString().padLeft(2, '0')}',
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.textPrimary,
+                                            fontFeatures: const [FontFeature.tabularFigures()],
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Điểm ${_currentIndex + 1}/${_routePoints.length}',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 10.5,
+                                            color: AppColors.textDim,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                              ],
+
+                              // Slider tua lại hành trình
+                              SliderTheme(
+                                data: SliderTheme.of(context).copyWith(
+                                  trackHeight: 4,
+                                  activeTrackColor: AppColors.primary,
+                                  inactiveTrackColor: AppColors.surfaceContainer,
+                                  thumbColor: AppColors.primary,
+                                  overlayColor: AppColors.primary.withValues(alpha: 0.15),
+                                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                                ),
+                                child: Slider(
+                                  value: _currentIndex.toDouble(),
+                                  min: 0,
+                                  max: math.max(1.0, (_routePoints.length - 1).toDouble()),
+                                  onChanged: (val) => _seekTo(val.round()),
+                                ),
+                              ),
+
+                              // Các nút điều khiển Phát lại
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  InkWell(
+                                    onTap: () {
+                                      setState(() => _followBike = !_followBike);
+                                      if (_followBike && currentPoint != null) {
+                                        _mapController.move(LatLng(currentPoint.lat, currentPoint.lng), _mapController.camera.zoom);
+                                      }
+                                    },
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                      decoration: BoxDecoration(
+                                        color: _followBike ? const Color(0xFFEFF6FF) : AppColors.panelSecondary,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(
+                                          color: _followBike ? AppColors.primary : AppColors.panelBorderBright,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.navigation_rounded,
+                                            size: 14,
+                                            color: _followBike ? AppColors.primary : AppColors.textDim,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'Bám xe',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w700,
+                                              color: _followBike ? AppColors.primary : AppColors.textDim,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      IconButton(
+                                        icon: const Icon(Icons.skip_previous_rounded, color: AppColors.textDim, size: 20),
+                                        tooltip: 'Về đầu',
+                                        onPressed: () => _seekTo(0),
+                                      ),
+                                      InkWell(
+                                        onTap: _togglePlayPause,
+                                        borderRadius: BorderRadius.circular(24),
+                                        child: Container(
+                                          width: 42,
+                                          height: 42,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: AppColors.primary,
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: AppColors.primary.withValues(alpha: 0.35),
+                                                blurRadius: 8,
+                                                offset: const Offset(0, 3),
+                                              ),
+                                            ],
+                                          ),
+                                          child: Icon(
+                                            _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                                            color: Colors.white,
+                                            size: 26,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      InkWell(
+                                        onTap: _cyclePlaybackSpeed,
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.panelSecondary,
+                                            borderRadius: BorderRadius.circular(10),
+                                            border: Border.all(color: AppColors.panelBorderBright),
+                                          ),
+                                          child: Text(
+                                            '${_playbackSpeed.toStringAsFixed(0)}x',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: AppColors.primary,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      IconButton(
+                                        icon: const Icon(Icons.skip_next_rounded, color: AppColors.textDim, size: 20),
+                                        tooltip: 'Đến cuối',
+                                        onPressed: () => _seekTo(_routePoints.length - 1),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ],
+                          )
+                        : Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
                                   Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                    padding: const EdgeInsets.all(8),
                                     decoration: BoxDecoration(
-                                      color: _getContinuousSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.15),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: _getContinuousSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.4),
-                                      ),
+                                      color: AppColors.amber.withValues(alpha: 0.15),
+                                      borderRadius: BorderRadius.circular(10),
                                     ),
-                                    child: Text(
-                                      _getSpeedLabel(currentPoint.speedKmh),
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w800,
-                                        color: _getContinuousSpeedColor(currentPoint.speedKmh),
-                                      ),
+                                    child: const Icon(Icons.location_off_rounded, color: AppColors.amber, size: 20),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _isViewingLive ? 'Đang chờ tín hiệu GPS' : 'Hành trình #$_selectedTripIndex',
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.textPrimary,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Chưa có dữ liệu tọa độ GPS thực tế.',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 11,
+                                            color: AppColors.textDim,
+                                          ),
+                                        ),
+                                      ],
                                     ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.textDim),
+                                    onPressed: () {
+                                      setState(() {
+                                        _selectedTrip = null;
+                                        _isViewingLive = false;
+                                        _routePoints = [];
+                                      });
+                                    },
                                   ),
                                 ],
                               ),
-                            ),
-                            // Thông tin mốc thời gian & điểm GPS
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  '${currentPoint.timestamp.hour.toString().padLeft(2, '0')}:${currentPoint.timestamp.minute.toString().padLeft(2, '0')}:${currentPoint.timestamp.second.toString().padLeft(2, '0')}',
-                                  style: GoogleFonts.spaceGrotesk(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppColors.textPrimary,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Điểm ${_currentIndex + 1}/${_routePoints.length}',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 10.5,
-                                    color: AppColors.textDim,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                      ],
-
-                      // Thanh trượt tua thời gian hành trình (Timeline Scrubber Slider)
-                      if (hasPoints)
-                        SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            trackHeight: 4,
-                            activeTrackColor: AppColors.primary,
-                            inactiveTrackColor: AppColors.surfaceContainer,
-                            thumbColor: AppColors.primary,
-                            overlayColor: AppColors.primary.withValues(alpha: 0.15),
-                            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                            ],
                           ),
-                          child: Slider(
-                            value: _currentIndex.toDouble(),
-                            min: 0,
-                            max: math.max(1.0, (_routePoints.length - 1).toDouble()),
-                            onChanged: (val) => _seekTo(val.round()),
-                          ),
-                        ),
-
-                      // Hàng nút điều khiển Phát / Dừng / Tốc độ phát lại / Bám xe
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          // Nút chuyển chế độ bám xe (Follow Bike)
-                          InkWell(
-                            onTap: () {
-                              setState(() => _followBike = !_followBike);
-                              if (_followBike && currentPoint != null) {
-                                _mapController.move(
-                                  LatLng(currentPoint.lat, currentPoint.lng),
-                                  _mapController.camera.zoom,
-                                );
-                              }
-                            },
-                            borderRadius: BorderRadius.circular(10),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: _followBike ? const Color(0xFFEFF6FF) : AppColors.panelSecondary,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: _followBike ? AppColors.primary : AppColors.panelBorderBright,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.navigation_rounded,
-                                    size: 13,
-                                    color: _followBike ? AppColors.primary : AppColors.textDim,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'Bám xe',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w700,
-                                      color: _followBike ? AppColors.primary : AppColors.textDim,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                          // Nút tua lùi về đầu
-                          IconButton(
-                            icon: const Icon(Icons.replay_rounded, color: AppColors.textDim, size: 20),
-                            tooltip: 'Về đầu',
-                            onPressed: () => _seekTo(0),
-                          ),
-
-                          // Nút Phát / Tạm dừng Replay lớn
-                          GestureDetector(
-                            onTap: _togglePlayPause,
-                            child: Container(
-                              width: 48,
-                              height: 48,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: AppColors.primary,
-                                boxShadow: AppColors.cardShadow,
-                              ),
-                              child: Icon(
-                                _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                                color: Colors.white,
-                                size: 28,
-                              ),
-                            ),
-                          ),
-
-                          // Nút đổi tốc độ phát lại (1x, 2x, 4x, 8x)
-                          InkWell(
-                            onTap: _cyclePlaybackSpeed,
-                            borderRadius: BorderRadius.circular(10),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: AppColors.panelSecondary,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: AppColors.panelBorderBright),
-                              ),
-                              child: Text(
-                                '${_playbackSpeed.toStringAsFixed(0)}x',
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 11.5,
-                                  fontWeight: FontWeight.w800,
-                                  color: AppColors.primary,
-                                ),
-                              ),
-                            ),
-                          ),
-
-                          // Nút tua đến cuối
-                          IconButton(
-                            icon: const Icon(Icons.skip_next_rounded, color: AppColors.textDim, size: 20),
-                            tooltip: 'Đến cuối',
-                            onPressed: () => _seekTo(_routePoints.length - 1),
-                          ),
-                        ],
-                      ),
-                    ],
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(Icons.alt_route_rounded, color: AppColors.primary, size: 20),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _currentTripIndex > 0
-                                      ? 'Hành trình #$_currentTripIndex'
-                                      : 'Chuyến đi hiện tại',
-                                  style: GoogleFonts.spaceGrotesk(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppColors.textPrimary,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${_currentTrip.distanceKm.toStringAsFixed(1)} km · ${_currentTrip.durationSec ~/ 60} phút · Tối đa ${_currentTrip.maxSpeedKmh.toStringAsFixed(0)} km/h',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 11,
-                                    color: AppColors.textDim,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          InkWell(
-                            onTap: _showTripInfoSheet,
-                            borderRadius: BorderRadius.circular(10),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: AppColors.panelSecondary,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: AppColors.panelBorderBright),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.info_outline_rounded, size: 14, color: AppColors.primary),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'Chi tiết',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppColors.primary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
                   ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -1683,7 +1645,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
         clipBehavior: Clip.none,
         children: [
           if (_useNavPuckMarker) ...[
-            // 1. CHẾ ĐỘ THỂ THAO HUD: Con trỏ dẫn đường xoay góc cua + Đèn pha chiếu mặt đường
             Transform.rotate(
               angle: heading,
               child: SizedBox(
@@ -1692,12 +1653,10 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                 child: Stack(
                   alignment: Alignment.center,
                   children: [
-                    // Chùm sáng đèn pha LED quét phía trước (Headlight beam)
                     CustomPaint(
                       size: const Size(88, 88),
                       painter: _HeadlightBeamPainter(),
                     ),
-                    // Vòng hào quang phát sáng radar bên dưới
                     Container(
                       width: 44,
                       height: 44,
@@ -1712,7 +1671,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
                         ],
                       ),
                     ),
-                    // Đĩa con trỏ kim loại Sapphire bóng bẩy
                     Container(
                       width: 36,
                       height: 36,
@@ -1748,7 +1706,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
               ),
             ),
           ] else ...[
-            // 2. CHẾ ĐỘ GHIM 3D KIM LOẠI: Huy hiệu 3D Dat Bike cao cấp nổi khối
             Container(
               width: 42,
               height: 42,
@@ -1785,7 +1742,6 @@ class _TripRouteScreenState extends State<TripRouteScreen> with SingleTickerProv
             ),
           ],
 
-          // HUD SPEED CAPSULE: Thanh hiển thị tốc độ nổi phía trên (Chuẩn xe điện hiện đại)
           Positioned(
             top: 2,
             child: Container(

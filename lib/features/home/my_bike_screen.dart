@@ -18,7 +18,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../core/ble/ble_controller.dart';
-import '../../core/services/trip_gps_tracker.dart';
 import '../scan/scan_screen.dart';
 import '../settings/vehicle_settings_screen.dart';
 import '../../ui/geely_icons.dart';
@@ -2261,26 +2260,10 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                 ),
                 InkWell(
                   onTap: () {
-                    final curTrip = TripRecord(
-                      startTime: trip.duration.inSeconds > 0
-                          ? DateTime.now().subtract(trip.duration)
-                          : DateTime.now(),
-                      endTime: DateTime.now(),
-                      distanceKm: trip.distanceKm,
-                      durationSec: trip.duration.inSeconds,
-                      avgSpeedKmh: trip.avgSpeedKmh,
-                      maxSpeedKmh: trip.maxSpeedKmh,
-                      usedPercent: trip.usedPercent,
-                      route: TripGpsTracker.instance.getCurrentRoute(),
-                    );
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => TripRouteScreen(
-                          trip: curTrip,
-                          tripIndex: 0,
-                          allTrips: ref.read(bleProvider).tripHistory,
-                        ),
+                        builder: (_) => const TripRouteScreen(),
                       ),
                     );
                   },

@@ -82,7 +82,7 @@ void main() {
       expect(trip.route, isEmpty);
     });
 
-    test('TripGpsTracker generates realistic sample route for trips', () {
+    test('TripGpsTracker rejects fake sample routes and returns empty', () {
       final sampleRoute = TripGpsTracker.generateSampleRoute(
         distanceKm: 6.8,
         avgSpeedKmh: 30.0,
@@ -91,18 +91,8 @@ void main() {
         durationSec: 600,
       );
 
-      expect(sampleRoute, isNotEmpty);
-      expect(sampleRoute.length, greaterThanOrEqualTo(15));
-      expect(sampleRoute.first.lat, closeTo(10.7719, 0.001));
-      expect(sampleRoute.first.lng, closeTo(106.7195, 0.001));
-
-      // Điểm đầu và cuối có vận tốc 0 km/h
-      expect(sampleRoute.first.speedKmh, 0.0);
-      expect(sampleRoute.last.speedKmh, 0.0);
-
-      // Điểm giữa có vận tốc biến thiên hợp lý
-      final maxFound = sampleRoute.map((e) => e.speedKmh).reduce((a, b) => a > b ? a : b);
-      expect(maxFound, greaterThan(20.0));
+      // Đã tắt hoàn toàn tính năng tạo tọa độ giả, chỉ dùng GPS thật
+      expect(sampleRoute, isEmpty);
     });
 
     test('TripGpsTracker.cleanAndSmoothRoute eliminates teleportation spikes and smooths path', () {

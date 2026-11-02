@@ -60,6 +60,8 @@ class OfflineMapService {
   static final OfflineMapService instance = OfflineMapService._();
 
   Directory? _cacheDir;
+  static Directory? _globalCachedDir;
+  static Completer<Directory>? _dirCompleter;
   bool _isDownloading = false;
   bool _cancelRequested = false;
   bool _pauseRequested = false;
@@ -70,16 +72,31 @@ class OfflineMapService {
 
   bool get isDownloading => _isDownloading;
 
-  /// Lấy thư mục lưu trữ tile offline trên bộ nhớ thiết bị
+  /// Lấy thư mục lưu trữ tile offline trên bộ nhớ thiết bị (Cached đồng bộ chống tắc nghẽn MethodChannel)
   Future<Directory> getCacheDirectory() async {
     if (_cacheDir != null) return _cacheDir!;
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/offline_map_tiles');
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
+    if (_globalCachedDir != null) {
+      _cacheDir = _globalCachedDir;
+      return _globalCachedDir!;
     }
-    _cacheDir = dir;
-    return dir;
+    if (_dirCompleter != null) return _dirCompleter!.future;
+
+    _dirCompleter = Completer<Directory>();
+    try {
+      final base = await getApplicationSupportDirectory();
+      final dir = Directory('${base.path}/offline_map_tiles');
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      _globalCachedDir = dir;
+      _cacheDir = dir;
+      _dirCompleter!.complete(dir);
+      return dir;
+    } catch (e) {
+      _dirCompleter!.completeError(e);
+      _dirCompleter = null;
+      rethrow;
+    }
   }
 
   /// Đường dẫn file tile local: {z}_{x}_{y}.png
@@ -517,12 +534,15 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
     // 2. Nếu chưa có trên máy, tải từ mạng và tự động cache vào ổ cứng
     try {
       final uri = Uri.parse(url);
-      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 6));
+      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 4));
       if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-        // Ghi nền bất đồng bộ vào ổ cứng để không làm giật UI
+        // Ghi nền bất đồng bộ an toàn vào ổ cứng để không làm giật UI
         unawaited(
-          file.parent.create(recursive: true).then((_) {
-            file.writeAsBytes(response.bodyBytes);
+          file.parent.exists().then((exists) async {
+            if (!exists) {
+              await file.parent.create(recursive: true);
+            }
+            await file.writeAsBytes(response.bodyBytes);
           }).catchError((_) {}),
         );
 
