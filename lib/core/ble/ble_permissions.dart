@@ -16,9 +16,26 @@ class BlePermissions {
   static Future<bool> ensure() async {
     if (kIsWeb) return true;
     if (Platform.isIOS) {
-      // Trên iOS, CoreBluetooth quản lý quyền qua Info.plist (NSBluetoothAlwaysUsageDescription).
-      // Nếu trạng thái là unauthorized, người dùng cần vào Cài đặt để bật.
-      return FlutterBluePlus.adapterStateNow != BluetoothAdapterState.unauthorized;
+      // 1. Xin quyền Bluetooth hệ thống qua permission_handler (hiển thị popup xin quyền iOS)
+      try {
+        final status = await Permission.bluetooth.request();
+        if (status.isPermanentlyDenied || status.isRestricted) {
+          return false;
+        }
+      } catch (_) {}
+
+      // 2. Chờ CoreBluetooth Adapter khởi tạo bất đồng bộ (tránh trường hợp còn ở unknown)
+      var adapter = FlutterBluePlus.adapterStateNow;
+      if (adapter == BluetoothAdapterState.unknown) {
+        try {
+          adapter = await FlutterBluePlus.adapterState
+              .where((s) => s != BluetoothAdapterState.unknown)
+              .first
+              .timeout(const Duration(seconds: 4));
+        } catch (_) {}
+      }
+
+      return adapter != BluetoothAdapterState.unauthorized;
     }
     if (!Platform.isAndroid) return true;
 
@@ -45,6 +62,10 @@ class BlePermissions {
   static Future<bool> permanentlyDenied() async {
     if (kIsWeb) return false;
     if (Platform.isIOS) {
+      try {
+        final status = await Permission.bluetooth.status;
+        if (status.isPermanentlyDenied || status.isRestricted) return true;
+      } catch (_) {}
       return FlutterBluePlus.adapterStateNow == BluetoothAdapterState.unauthorized;
     }
     if (!Platform.isAndroid) return false;

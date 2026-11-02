@@ -9,6 +9,7 @@
 // - MTU 517 re-request mỗi lần kết nối (chunk 244 byte như app gốc).
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:convert';
 import 'dart:math';
 
@@ -1987,7 +1988,7 @@ class BleController extends Notifier<BleState> {
 
     // 3. Scan nhanh có RemoteId để làm mới BLE cache và connection window của Android
     try {
-      if (!FlutterBluePlus.isScanningNow) {
+      if ((!kIsWeb && !(!kIsWeb && Platform.isIOS)) && !FlutterBluePlus.isScanningNow) {
         StreamSubscription? scanSub;
         final completer = Completer<void>();
         scanSub = FlutterBluePlus.scanResults.listen((results) {
@@ -2604,6 +2605,16 @@ class BleController extends Notifier<BleState> {
           .firstOrNull;
       if (connectedMatch != null) {
         device = connectedMatch;
+      } else if ((!kIsWeb && Platform.isIOS)) {
+        try {
+          final sys = await FlutterBluePlus.systemDevices([
+            Guid(Gatt.dashboardService),
+            Guid(Gatt.authService),
+            Guid(Gatt.infoService),
+          ]);
+          final sysMatch = sys.where((d) => d.remoteId.str.toLowerCase() == id.toLowerCase()).firstOrNull;
+          if (sysMatch != null) device = sysMatch;
+        } catch (_) {}
       }
 
       _reconnectAttempts = 0;

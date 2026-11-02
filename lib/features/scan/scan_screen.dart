@@ -44,6 +44,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     Gatt.otaService.toLowerCase(),
     Gatt.programmingService.toLowerCase(),
     Gatt.chargingService.toLowerCase(),
+    '0000ffe0-0000-1000-8000-00805f9b34fb',
+    '0000180a-0000-1000-8000-00805f9b34fb',
+    '00001800-0000-1000-8000-00805f9b34fb',
+    '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+    'ffe0',
+    '180a',
+    '1800',
   };
 
   @override
@@ -70,9 +77,23 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
   }
 
   bool _isBike(ScanResult r) {
-    // 1. Nhận diện qua Service UUID trong gói tin quảng bá (chuẩn nhất cho xe Dat Bike)
+    // 0. Nếu trùng với ID xe đã lưu trước đó
+    if (_lastBikeId != null && r.device.remoteId.str.toLowerCase() == _lastBikeId!.toLowerCase()) {
+      return true;
+    }
+
+    // 1. Nhận diện qua Service UUID trong gói tin quảng bá hoặc serviceData (chuẩn nhất cho xe Dat Bike)
     for (final uuid in r.advertisementData.serviceUuids) {
-      if (_bikeServiceGuids.contains(uuid.str128.toLowerCase())) {
+      final s128 = uuid.str128.toLowerCase();
+      final s = uuid.str.toLowerCase();
+      if (_bikeServiceGuids.contains(s128) || _bikeServiceGuids.contains(s)) {
+        return true;
+      }
+    }
+    for (final uuid in r.advertisementData.serviceData.keys) {
+      final s128 = uuid.str128.toLowerCase();
+      final s = uuid.str.toLowerCase();
+      if (_bikeServiceGuids.contains(s128) || _bikeServiceGuids.contains(s)) {
         return true;
       }
     }
@@ -90,7 +111,62 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         combined.contains('dat.bik') ||
         combined.startsWith('db-') ||
         combined.startsWith('db ') ||
-        combined.contains('db-quantum');
+        combined.contains('db-quantum') ||
+        combined.contains('stitch') ||
+        combined.contains('kinetic');
+  }
+
+  /// Quét các thiết bị đã kết nối với hệ thống iOS hoặc đang kết nối
+  Future<void> _fetchSystemAndConnectedDevices() async {
+    final searchServices = [
+      Guid(Gatt.dashboardService),
+      Guid(Gatt.authService),
+      Guid(Gatt.infoService),
+      Guid(Gatt.otaService),
+      Guid(Gatt.programmingService),
+      Guid(Gatt.chargingService),
+      Guid('0000ffe0-0000-1000-8000-00805f9b34fb'),
+      Guid('0000180a-0000-1000-8000-00805f9b34fb'),
+      Guid('00001800-0000-1000-8000-00805f9b34fb'),
+      Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e'),
+    ];
+
+    List<BluetoothDevice> sysList = [];
+    try {
+      sysList = await FlutterBluePlus.systemDevices(searchServices);
+    } catch (_) {}
+
+    final connList = FlutterBluePlus.connectedDevices;
+    final all = <BluetoothDevice>{...sysList, ...connList};
+
+    if (all.isEmpty || !mounted) return;
+
+    setState(() {
+      for (final dev in all) {
+        final existingIdx = _results.indexWhere((r) => r.device.remoteId == dev.remoteId);
+        final name = dev.platformName.isNotEmpty ? dev.platformName : 'Xe Dat Bike (Hệ thống)';
+        final synthetic = ScanResult(
+          device: dev,
+          advertisementData: AdvertisementData(
+            advName: name,
+            txPowerLevel: null,
+            appearance: null,
+            connectable: true,
+            manufacturerData: {},
+            serviceData: {},
+            serviceUuids: [Guid(Gatt.authService), Guid(Gatt.dashboardService)],
+          ),
+          rssi: -45,
+          timeStamp: DateTime.now(),
+        );
+
+        if (existingIdx >= 0) {
+          _results[existingIdx] = synthetic;
+        } else {
+          _results.insert(0, synthetic);
+        }
+      }
+    });
   }
 
   Future<void> _scan() async {
@@ -126,7 +202,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         adapter = await FlutterBluePlus.adapterState
             .where((s) => s != BluetoothAdapterState.unknown)
             .first
-            .timeout(const Duration(seconds: 4));
+            .timeout(const Duration(seconds: 5));
       } catch (_) {
         adapter = FlutterBluePlus.adapterStateNow;
       }
@@ -135,13 +211,13 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     if (adapter == BluetoothAdapterState.unauthorized) {
       setState(() {
         _scanning = false;
-        _error = 'Ứng dụng chưa được cấp quyền Bluetooth. Vui lòng mở Cài đặt để cấp quyền.';
+        _error = 'Ứng dụng chưa được cấp quyền Bluetooth. Vui lòng mở Cài đặt iPhone để cấp quyền.';
       });
       if (mounted) _openSettingsDialog();
       return;
     }
 
-    if (adapter != BluetoothAdapterState.on) {
+    if (adapter == BluetoothAdapterState.off) {
       setState(() {
         _scanning = false;
         _error = 'Bluetooth đang tắt — hãy bật Bluetooth trong Trung tâm điều khiển/Cài đặt rồi quét lại.';
@@ -153,6 +229,9 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
 
     _results.clear();
     await _sub?.cancel();
+
+    // 2.1. Lấy ngay các thiết bị đã kết nối hệ thống / iOS (đặc biệt quan trọng với iPhone đã từng pair)
+    await _fetchSystemAndConnectedDevices();
 
     // 3. Đăng ký nhận kết quả trước khi phát lệnh scan để không bị sót gói tin
     _sub = FlutterBluePlus.scanResults.listen((rs) {
@@ -171,23 +250,29 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       });
       if (!mounted) return;
       setState(() {
+        final sysItems = _results.where((existing) => !rs.any((r) => r.device.remoteId == existing.device.remoteId)).toList();
         _results
           ..clear()
+          ..addAll(sysItems)
           ..addAll(rs);
       });
     });
 
-    // 4. Bắt đầu quét BLE
+    // 4. Bắt đầu quét BLE (bật continuousUpdates: true để iOS liên tục cập nhật tên và RSSI)
     try {
       await FlutterBluePlus.startScan(
         timeout: const Duration(seconds: 20),
         androidScanMode: AndroidScanMode.lowLatency,
+        continuousUpdates: true,
       );
     } catch (e) {
       if (mounted) {
         setState(() => _error = 'Lỗi khởi động quét: $e');
       }
     }
+
+    // Refresh lại system devices sau khi scan khởi động
+    await _fetchSystemAndConnectedDevices();
 
     try {
       await FlutterBluePlus.isScanning.where((s) => !s).first;
