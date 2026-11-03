@@ -1,9 +1,10 @@
 // Dashboard — Bảng đồng hồ số kỹ thuật số (Digital Cockpit / HUD Mode)
-// Thiết kế theo hệ thống Kinetic Stitch EV:
-// 1. Tốc độ số + Đo công suất tức thời (kW Xả / kW Phanh tái sinh RECUP).
-// 2. Chỉ báo xi-nhan Trái/Phải nhấp nháy + Cảnh báo chân chống trực quan.
-// 3. Bản đồ nhiệt 3 điểm (Motor, BMS, ECU) & Bộ giải mã mã lỗi hệ thống OBD.
-// 4. Máy tính chuyến đi (Trip Computer): Quãng đường, thời gian, Vmax, Vtb, % pin đã dùng.
+// Thiết kế theo hệ thống Kinetic Stitch EV - Phiên bản Cockpit v6:
+// 1. Tốc độ số + Đo công suất tức thời (Luminous Energy Beam RECUP/PWR loang màu quang học, không border).
+// 2. Vết ánh sáng tỏa ra của xi-nhan cam đỏ nhẹ (Optical Ambient Light Bloom).
+// 3. Chế độ lái (Mode) nằm ở chính giữa phía trên taplo tốc độ (không viền, hiệu ứng trượt mờ dần).
+// 4. Bố cục ngang (Landscape) chuẩn 70% Cụm đồng hồ tốc độ / 30% Bản đồ GPS & 3 nút Bật/Tắt/Khóa xe (ẩn còi).
+// 5. Bản đồ GPS tích hợp mũi tên la bàn xoay tự động và đồ thị tốc độ GPS độc lập (Sparkline).
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -17,6 +18,9 @@ import '../../ui/app_theme.dart';
 import '../../ui/gauge.dart';
 import '../../ui/widgets.dart';
 import 'widgets/cockpit_live_map.dart';
+import 'widgets/luminous_energy_bar.dart';
+import 'widgets/mode_indicator_header.dart';
+import 'widgets/optical_signal_bloom.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -57,8 +61,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('⚡ Đã gửi lệnh MỞ XE!'),
+          content: Text('⚡ Đã gửi lệnh MỞ XE (READY)!'),
           backgroundColor: AppColors.tertiary,
+          behavior: SnackBarBehavior.floating,
         ),
       );
     } catch (e) {
@@ -144,12 +149,51 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       await ref.read(bleProvider.notifier).turnOffBike();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('🔒 Đã gửi lệnh TẮT XE!'), backgroundColor: AppColors.error),
+        const SnackBar(
+          content: Text('🔒 Đã gửi lệnh TẮT XE an toàn!'),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Lỗi tắt xe: $e'), backgroundColor: AppColors.error),
+      );
+    } finally {
+      if (mounted) setState(() => _powerBusy = false);
+    }
+  }
+
+  Future<void> _toggleLockBike(BleState ble, BikeLogMsg m) async {
+    final currentlyLocked = ble.isLocked || m.state == BikeState.lock;
+    setState(() => _powerBusy = true);
+    try {
+      if (currentlyLocked) {
+        final res = await ref.read(bleProvider.notifier).unlockBike();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🔓 $res'),
+            backgroundColor: AppColors.tertiary,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        final res = await ref.read(bleProvider.notifier).lockBike();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🔒 $res'),
+            backgroundColor: AppColors.amber,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Lỗi thao tác khóa xe: $e'), backgroundColor: AppColors.error),
       );
     } finally {
       if (mounted) setState(() => _powerBusy = false);
@@ -178,26 +222,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     if (errors.isEmpty) errors.add('⚠️ Mã lỗi hệ thống: 0x${errorCode.toRadixString(16).toUpperCase()}');
     return errors;
   }
-
-  String _stateName(BikeState s) => switch (s) {
-        BikeState.off => 'TẮT NGUỒN',
-        BikeState.standBy => 'CHỜ',
-        BikeState.parking => 'ĐỖ XE',
-        BikeState.drive => 'DRIVE',
-        BikeState.super_ => 'SUPER',
-        BikeState.cruiseControl => 'CRUISE',
-        BikeState.reverse => 'LÙI',
-        BikeState.lock => 'ĐÃ KHÓA',
-        BikeState.turtle => 'TIẾT KIỆM (RÙA)',
-      };
-
-  Color _stateColor(BikeState s) => switch (s) {
-        BikeState.super_ => AppColors.secondary,
-        BikeState.drive => AppColors.primary,
-        BikeState.parking => AppColors.amber,
-        BikeState.off || BikeState.lock => AppColors.error,
-        _ => AppColors.textDim,
-      };
 
   @override
   Widget build(BuildContext context) {
@@ -313,7 +337,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  // ========== BẢN BỐ CỤC DỌC (PORTRAIT COCKPIT) ==========
+  // =========================================================================
+  // ========== BẢN BỐ CỤC DỌC (PORTRAIT COCKPIT) =============================
+  // =========================================================================
   Widget _buildPortraitLayout(
     BuildContext context,
     BleState ble,
@@ -324,6 +350,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     bool isDraw,
     bool isEncrypted,
   ) {
+    final isLocked = ble.isLocked || m.state == BikeState.lock;
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
       children: [
@@ -354,7 +382,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           const SizedBox(height: 10),
         ],
 
-        // DƯƠNG = sạc vào pin (âm = xả) — verify session 20261022T212957
         if (m.charging != null || m.phase > 0.5) ...[
           NoticeBanner(
             color: AppColors.secondary,
@@ -374,40 +401,87 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           const SizedBox(height: 10),
         ],
 
-        // 1. Thanh chỉ báo xi-nhan & trạng thái
-        _buildTopIndicators(m),
+        // 1. Cụm 3 nút điều khiển chính nằm 1 hàng ngang (Bật, Tắt, Khóa - ẩn còi)
+        _buildControlButtonsRow(ble, m),
         const SizedBox(height: 10),
 
-        // 2. Cụm điều khiển nguồn chính
-        _buildPowerControls(ble, m),
+        // 2. Cockpit Speedometer Card với hiệu ứng quang học:
+        // - Vết ánh sáng tỏa ra của xi-nhan cam đỏ nhẹ (OpticalSignalBloom).
+        // - Mode xe nằm ở chính giữa phía trên taplo (không border).
+        // - SpeedGauge trung tâm.
+        // - LuminousEnergyBar nạp xả loang màu không border.
+        // - Metric row: PIN, ĐIỆN ÁP, TỔNG ODO.
+        OpticalSignalBloom(
+          isLeft: m.left,
+          isRight: m.right,
+          child: Panel(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+            borderRadius: 22,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final gaugeSize = (constraints.maxWidth * 0.60).clamp(170.0, 225.0);
+
+                return Column(
+                  children: [
+                    // Mode xe nằm ở chính giữa phía trên taplo tốc độ
+                    ModeIndicatorHeader(
+                      state: m.state,
+                      isParking: m.parking,
+                      isLocked: isLocked,
+                    ),
+                    const SizedBox(height: 6),
+
+                    // Vòng cung tốc độ
+                    _buildGaugeWithSpeed(m, gaugeSize: gaugeSize),
+                    const SizedBox(height: 6),
+
+                    // Thanh nạp xả loang màu không border
+                    SizedBox(
+                      width: constraints.maxWidth.clamp(160.0, 360.0),
+                      child: LuminousEnergyBar(
+                        powerKw: powerKw,
+                        isRecup: isRecup,
+                        isDraw: isDraw,
+                        phaseAmps: m.phase,
+                        voltage: m.voltage > 0 ? m.voltage : null,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Hàng metric: Pin, Điện áp, ODO
+                    _buildMetricsRow(m),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
         const SizedBox(height: 12),
 
-        // 3. Cockpit Gauge Card
-        _buildSpeedGaugeCard(m, powerKw, isRecup, isDraw),
-        const SizedBox(height: 12),
-
-        // 4. Tab switcher: Chuyến đi & Bản đồ / Sức khỏe OBD
+        // 3. Tab switcher: Chuyến đi & Bản đồ / Sức khỏe OBD
         _buildTabSwitcher(),
         const SizedBox(height: 12),
 
-        // 5. Nội dung theo tab
+        // 4. Nội dung theo tab
         if (_activeTab == 0)
           _buildTripPanel(trip, m)
         else
           _buildDiagnosticsPanel(m),
         const SizedBox(height: 12),
 
-        // 6. Thông tin phần cứng & dòng tải
+        // 5. Thông tin phần cứng & dòng tải
         _buildHardwareInfo(m),
         const SizedBox(height: 14),
 
-        // 7. Footer đồng bộ telemetry
+        // 6. Footer đồng bộ telemetry
         _buildSyncFooter(ble),
       ],
     );
   }
 
-  // ========== BẢN BỐ CỤC NGANG (LANDSCAPE HUD COCKPIT CHO GIÁ ĐỠ GHI-ĐÔNG) ==========
+  // =========================================================================
+  // ========== BẢN BỐ CỤC NGANG (LANDSCAPE HUD COCKPIT 70% / 30%) ============
+  // =========================================================================
   Widget _buildLandscapeLayout(
     BuildContext context,
     BleState ble,
@@ -418,188 +492,218 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     bool isDraw,
     bool isEncrypted,
   ) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // Cột trái: Đồng hồ tốc độ HUD lớn & Cụm bật/tắt/còi
-        Expanded(
-          flex: 48,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 6, 14),
-            child: Column(
-              children: [
-                _buildTopIndicators(m),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: Panel(
-                    padding: const EdgeInsets.all(8),
-                    borderRadius: 18,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final size = (constraints.maxHeight * 0.72).clamp(110.0, 180.0);
-                        return Center(
-                          child: SingleChildScrollView(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
+    final isLocked = ble.isLocked || m.state == BikeState.lock;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ==================== 70% BÊN TRÁI: CỤM ĐỒNG HỒ TỐC ĐỘ ====================
+          Expanded(
+            flex: 70,
+            child: OpticalSignalBloom(
+              isLeft: m.left,
+              isRight: m.right,
+              child: Panel(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                borderRadius: 22,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final gaugeSize = (constraints.maxHeight * 0.50).clamp(115.0, 175.0);
+
+                    return Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        // 1. Top row: Tên xe, Chân chống, Khóa + PIN & Volt
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: SizedBox(
+                            width: constraints.maxWidth,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                _buildGaugeWithSpeed(m, gaugeSize: size),
-                                const SizedBox(height: 6),
-                                _buildPowerBadge(powerKw, isRecup, isDraw),
+                                Flexible(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: 7,
+                                        height: 7,
+                                        decoration: const BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: AppColors.tertiary,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Flexible(
+                                        child: Text(
+                                          (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppColors.textPrimary,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      if (m.parking) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.amber.withValues(alpha: 0.15),
+                                            borderRadius: BorderRadius.circular(9999),
+                                          ),
+                                          child: Text(
+                                            'CHỐNG',
+                                            style: GoogleFonts.plusJakartaSans(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.amber,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                      if (isLocked) ...[
+                                        const SizedBox(width: 6),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.error.withValues(alpha: 0.15),
+                                            borderRadius: BorderRadius.circular(9999),
+                                          ),
+                                          child: Text(
+                                            'ĐÃ KHÓA',
+                                            style: GoogleFonts.plusJakartaSans(
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.error,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                // Pin & Range
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      'PIN: ',
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
+                                    ),
+                                    Text(
+                                      '${m.percent}%',
+                                      style: GoogleFonts.spaceGrotesk(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppColors.tertiary,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      '(${m.kmLeft.toStringAsFixed(0)} km)',
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
+                                    ),
+                                  ],
+                                ),
                               ],
                             ),
                           ),
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                _buildPowerControls(ble, m),
-              ],
-            ),
-          ),
-        ),
-
-        // Cột phải: Thông số, Thống kê Chuyến đi, Giám sát nhiệt & OBD
-        Expanded(
-          flex: 52,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(6, 4, 14, 24),
-            children: [
-              if (ble.phase == BlePhase.reconnecting || ble.phase == BlePhase.disconnected) ...[
-                NoticeBanner(
-                  color: ble.phase == BlePhase.reconnecting ? AppColors.amber : AppColors.error,
-                  text: ble.message ?? 'Mất kết nối — đang tự kết nối lại…',
-                  trailing: ble.phase == BlePhase.disconnected
-                      ? TextButton(
-                          onPressed: () => ref.read(bleProvider.notifier).tryRestoreLastBike(),
-                          child: Text(
-                            'KẾT NỐI LẠI',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 12,
-                              color: AppColors.error,
-                            ),
-                          ),
-                        )
-                      : null,
-                ),
-                const SizedBox(height: 8),
-              ],
-              _buildMetricsRow(m),
-              const SizedBox(height: 10),
-              _buildTabSwitcher(),
-              const SizedBox(height: 10),
-              if (_activeTab == 0)
-                _buildTripPanel(trip, m)
-              else
-                _buildDiagnosticsPanel(m),
-              const SizedBox(height: 10),
-              _buildHardwareInfo(m),
-              const SizedBox(height: 12),
-              _buildSyncFooter(ble),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ========== CÁC WIDGET THÀNH PHẦN CHỐNG TRÀN RESPONSIVE ==========
-
-  Widget _buildTopIndicators(BikeLogMsg m) {
-    return Panel(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      borderRadius: 16,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          // Xi-nhan trái
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-            decoration: BoxDecoration(
-              color: m.left ? AppColors.primary.withValues(alpha: 0.15) : AppColors.panelSecondary,
-              borderRadius: BorderRadius.circular(9999),
-              border: Border.all(color: m.left ? AppColors.primary : AppColors.panelBorder),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.arrow_back_rounded, size: 13, color: m.left ? AppColors.primary : AppColors.textDim),
-                const SizedBox(width: 4),
-                Text(
-                  'TRÁI',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
-                    color: m.left ? AppColors.primary : AppColors.textDim,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Trạng thái chân chống / Chế độ lái (bọc Flexible + FittedBox chống bể)
-          Flexible(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: m.parking
-                    ? Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: AppColors.amber.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(9999),
-                          border: Border.all(color: AppColors.amber.withValues(alpha: 0.35)),
                         ),
-                        child: Row(
+
+                        // 2. KHU VỰC TRUNG TÂM: MODE Ở GIỮA PHÍA TRÊN + GAUGE + LUMINOUS ENERGY BAR
+                        Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.warning_amber_rounded, size: 14, color: AppColors.amber),
-                            const SizedBox(width: 5),
-                            Text(
-                              'CHÂN CHỐNG HẠ',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 0.4,
-                                color: AppColors.amber,
+                            ModeIndicatorHeader(
+                              state: m.state,
+                              isParking: m.parking,
+                              isLocked: isLocked,
+                            ),
+                            const SizedBox(height: 4),
+
+                            _buildGaugeWithSpeed(m, gaugeSize: gaugeSize),
+                            const SizedBox(height: 4),
+
+                            SizedBox(
+                              width: constraints.maxWidth.clamp(160.0, 340.0),
+                              child: LuminousEnergyBar(
+                                powerKw: powerKw,
+                                isRecup: isRecup,
+                                isDraw: isDraw,
+                                phaseAmps: m.phase,
+                                voltage: m.voltage > 0 ? m.voltage : null,
                               ),
                             ),
                           ],
                         ),
-                      )
-                    : StatusPill(label: _stateName(m.state), color: _stateColor(m.state), pulse: m.state == BikeState.drive),
+
+                        // 3. Dòng đáy: Trip A & ODO
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: SizedBox(
+                              width: constraints.maxWidth,
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'TRIP A: ${trip.distanceKm.toStringAsFixed(1)} km (${_formatDuration(trip.duration)})',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textDim,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                  Text(
+                                    'TỔNG ODO: ${m.odo.toStringAsFixed(0)} km',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textDim,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
           ),
 
-          // Xi-nhan phải
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-            decoration: BoxDecoration(
-              color: m.right ? AppColors.primary.withValues(alpha: 0.15) : AppColors.panelSecondary,
-              borderRadius: BorderRadius.circular(9999),
-              border: Border.all(color: m.right ? AppColors.primary : AppColors.panelBorder),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+          const SizedBox(width: 10),
+
+          // ==================== 30% BÊN PHẢI: CHIA 2 ====================
+          // Phần trên: Bản đồ thông tin GPS (Live map + GPS Speed sparkline)
+          // Phần dưới: 3 nút Bật, Tắt, Khóa xe (Ẩn còi)
+          Expanded(
+            flex: 30,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  'PHẢI',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
-                    color: m.right ? AppColors.primary : AppColors.textDim,
+                Expanded(
+                  flex: 62,
+                  child: CockpitLiveMap(
+                    currentSpeedKmh: m.speed,
+                    onExpandFullScreen: () => _openFullScreenMap(trip),
                   ),
                 ),
-                const SizedBox(width: 4),
-                Icon(Icons.arrow_forward_rounded, size: 13, color: m.right ? AppColors.primary : AppColors.textDim),
+                const SizedBox(height: 8),
+
+                _buildControlButtonsRow(ble, m),
               ],
             ),
           ),
@@ -608,84 +712,84 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildPowerControls(BleState ble, BikeLogMsg m) {
+  // =========================================================================
+  // ========== CỤM 3 NÚT ĐIỀU KHIỂN CHÍNH NẰM CÙNG 1 HÀNG (ẨN CÒI) ===========
+  // =========================================================================
+  Widget _buildControlButtonsRow(BleState ble, BikeLogMsg m) {
+    final isLocked = ble.isLocked || m.state == BikeState.lock;
+    final isRunning = m.speed > 0.5;
+
     return Panel(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-      borderRadius: 16,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      borderRadius: 18,
       child: Row(
         children: [
+          // 1. BẬT XE (READY)
           Expanded(
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.tertiary,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: const Icon(Icons.power_settings_new_rounded, size: 18),
-              label: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  'BẬT XE',
-                  style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 13.5, letterSpacing: 0.4),
+            child: Tooltip(
+              message: 'Bật máy (Ready)',
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.tertiary,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
+                onPressed: _powerBusy ? null : _turnOnBike,
+                child: const Icon(Icons.power_settings_new_rounded, size: 22),
               ),
-              onPressed: _powerBusy ? null : _turnOnBike,
             ),
           ),
           const SizedBox(width: 8),
+
+          // 2. TẮT XE
           Expanded(
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: m.speed > 0.5 ? AppColors.textDim : AppColors.error,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: Icon(m.speed > 0.5 ? Icons.shield_rounded : Icons.power_off_rounded, size: 18),
-              label: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  m.speed > 0.5 ? 'ĐANG CHẠY' : 'TẮT XE',
-                  style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700, fontSize: 13.5, letterSpacing: 0.4),
+            child: Tooltip(
+              message: isRunning ? 'Đang chạy' : 'Tắt nguồn xe',
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isRunning ? AppColors.surfaceContainerHigh : AppColors.error,
+                  foregroundColor: isRunning ? AppColors.textDim : Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
+                onPressed: (_powerBusy || isRunning) ? null : _turnOffBike,
+                child: Icon(isRunning ? Icons.shield_rounded : Icons.power_off_rounded, size: 22),
               ),
-              onPressed: _powerBusy ? null : _turnOffBike,
             ),
           ),
           const SizedBox(width: 8),
-          IconButton(
-            style: IconButton.styleFrom(
-              backgroundColor: ble.isFindingBike ? AppColors.amber : AppColors.panelSecondary,
-              foregroundColor: ble.isFindingBike ? Colors.black : AppColors.primary,
-              padding: const EdgeInsets.all(11),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: ble.isFindingBike ? AppColors.amber : AppColors.panelBorder),
+
+          // 3. KHÓA XE (LOCK / UNLOCK - ẨN CÒI)
+          Expanded(
+            child: Tooltip(
+              message: isLocked ? 'Mở khóa an toàn' : 'Khóa xe (Anti-theft)',
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isLocked ? AppColors.error : AppColors.surfaceContainerHigh,
+                  foregroundColor: isLocked ? Colors.white : AppColors.textPrimary,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                ),
+                onPressed: _powerBusy ? null : () => _toggleLockBike(ble, m),
+                child: Icon(
+                  isLocked ? Icons.lock_open_rounded : Icons.lock_outline_rounded,
+                  size: 22,
+                ),
               ),
             ),
-            tooltip: ble.isFindingBike ? 'Dừng còi' : 'Tìm xe (Đánh kèn)',
-            icon: Icon(ble.isFindingBike ? Icons.notifications_active_rounded : Icons.volume_up_rounded, size: 19),
-            onPressed: () async {
-              if (ble.isFindingBike) {
-                final res = await ref.read(bleProvider.notifier).stopFindBike();
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(res)));
-              } else {
-                final res = await ref.read(bleProvider.notifier).findBike();
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(res), backgroundColor: AppColors.amber, behavior: SnackBarBehavior.floating),
-                );
-              }
-            },
           ),
         ],
       ),
     );
   }
+
+  // =========================================================================
+  // ========== CÁC WIDGET THÀNH PHẦN ========================================
+  // =========================================================================
 
   Widget _buildGaugeWithSpeed(
     BikeLogMsg m, {
@@ -699,110 +803,26 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            m.speed.toStringAsFixed(1),
+            m.speed.toStringAsFixed(0),
             style: GoogleFonts.spaceGrotesk(
-              fontSize: (gaugeSize * 0.25).clamp(42.0, 56.0),
+              fontSize: (gaugeSize * 0.28).clamp(36.0, 56.0),
               fontWeight: FontWeight.w700,
               height: 1.0,
               color: AppColors.textPrimary,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 3),
           Text(
             'KM / H',
             style: GoogleFonts.plusJakartaSans(
               color: AppColors.textDim,
-              fontSize: (gaugeSize * 0.05).clamp(11.0, 13.0),
-              fontWeight: FontWeight.w600,
+              fontSize: (gaugeSize * 0.05).clamp(10.0, 12.0),
+              fontWeight: FontWeight.w700,
               letterSpacing: 0.08 * 12,
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildPowerBadge(double powerKw, bool isRecup, bool isDraw) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-      decoration: BoxDecoration(
-        color: isRecup
-            ? AppColors.tertiary.withValues(alpha: 0.12)
-            : isDraw
-                ? AppColors.secondary.withValues(alpha: 0.12)
-                : AppColors.panelSecondary,
-        borderRadius: BorderRadius.circular(9999),
-        border: Border.all(
-          color: isRecup
-              ? AppColors.tertiary
-              : isDraw
-                  ? AppColors.secondary
-                  : AppColors.panelBorder,
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isRecup
-                ? Icons.recycling_rounded
-                : isDraw
-                    ? Icons.electric_bolt_rounded
-                    : Icons.remove_rounded,
-            size: 14,
-            color: isRecup
-                ? AppColors.tertiary
-                : isDraw
-                    ? AppColors.secondary
-                    : AppColors.textDim,
-          ),
-          const SizedBox(width: 5),
-          Text(
-            isRecup
-                ? '+${powerKw.toStringAsFixed(2)} kW RECUP'
-                : isDraw
-                    ? '${powerKw.abs().toStringAsFixed(2)} kW'
-                    : '0.00 kW',
-            style: GoogleFonts.spaceGrotesk(
-              fontSize: 11.5,
-              fontWeight: FontWeight.w700,
-              color: isRecup
-                  ? AppColors.tertiary
-                  : isDraw
-                      ? AppColors.secondary
-                      : AppColors.textDim,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSpeedGaugeCard(
-    BikeLogMsg m,
-    double powerKw,
-    bool isRecup,
-    bool isDraw,
-  ) {
-    return Panel(
-      padding: const EdgeInsets.fromLTRB(14, 16, 14, 14),
-      borderRadius: 20,
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final gaugeSize = (constraints.maxWidth * 0.62).clamp(180.0, 230.0);
-          return Column(
-            children: [
-              _buildGaugeWithSpeed(m, gaugeSize: gaugeSize),
-              const SizedBox(height: 6),
-              _buildPowerBadge(powerKw, isRecup, isDraw),
-              const SizedBox(height: 14),
-              _buildMetricsRow(m),
-            ],
-          );
-        },
       ),
     );
   }
@@ -857,7 +877,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   Widget _buildTabSwitcher() {
     return Row(
       children: [
-        // Tab 0: CHUYẾN ĐI (TRIP A) & BẢN ĐỒ LIVE
         Expanded(
           child: _tabButton(
             index: 0,
@@ -866,7 +885,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        // Tab 1: SỨC KHỎE & MÃ LỖI
         Expanded(
           child: _tabButton(
             index: 1,

@@ -4,25 +4,29 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 
 import '../../../core/models/trip_gps_point.dart';
 import '../../../core/services/map_tile_service.dart';
-import '../../../core/services/offline_map_service.dart';
 import '../../../core/services/trip_gps_tracker.dart';
 import '../../../ui/app_theme.dart';
 import 'offline_map_sheet.dart';
 
 /// Widget Bản Đồ Lái Xe Thời Gian Thực (Live GPS Cockpit Map) trên Dashboard
 /// Thiết kế đồng bộ hoàn hảo theo ngôn ngữ Kinetic Stitch EV (Pure White Card, Hairline Border, Space Grotesk)
+/// - Mũi tên con trỏ xe tự xoay theo góc hướng đi (heading) thực tế.
+/// - Đo và hiển thị Tốc độ GPS độc lập + Biểu đồ xu hướng GPS Speed (Sparkline).
+/// - Lược bỏ text rườm rà, giữ giao diện thanh lịch và sắc nét.
 class CockpitLiveMap extends StatefulWidget {
   final double currentSpeedKmh;
   final VoidCallback? onExpandFullScreen;
+  final double? height;
 
   const CockpitLiveMap({
     super.key,
     required this.currentSpeedKmh,
     this.onExpandFullScreen,
+    this.height,
   });
 
   @override
@@ -33,11 +37,21 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
   late final MapController _mapController;
   StreamSubscription<TripGpsPoint>? _pointSub;
   List<TripGpsPoint> _liveRoute = [];
+  List<double> _gpsSpeedHistory = [];
 
-  MapTileStyle _tileStyle = MapTileStyle.fastCdn; // Mặc định OSM-FR sáng đồng bộ Kinetic Stitch EV
+  double _currentGpsSpeed = 0.0;
+  double _currentHeading = 0.0;
+
+  MapTileStyle _tileStyle = MapTileStyle.fastCdn;
   bool _followBike = true;
   bool _isLocating = false;
   LatLng? _myLocation;
+
+  static String _shortCardinal(double deg) {
+    const dirs = ['B', 'ĐB', 'Đ', 'ĐN', 'N', 'TN', 'T', 'TB'];
+    final idx = ((deg + 22.5) % 360 / 45).floor();
+    return dirs[idx % 8];
+  }
 
   @override
   void initState() {
@@ -45,12 +59,28 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
     _mapController = MapController();
     _liveRoute = TripGpsTracker.instance.getCurrentRoute();
 
+    _gpsSpeedHistory = _liveRoute.map((p) => p.speedKmh).toList();
+    if (_gpsSpeedHistory.length > 30) {
+      _gpsSpeedHistory = _gpsSpeedHistory.sublist(_gpsSpeedHistory.length - 30);
+    }
+    if (_liveRoute.isNotEmpty) {
+      _currentGpsSpeed = _liveRoute.last.speedKmh;
+      _currentHeading = _liveRoute.last.heading ?? 0.0;
+    }
+
     // Lắng nghe điểm GPS mới khi xe di chuyển trong thời gian thực
     _pointSub = TripGpsTracker.instance.onPointRecorded.listen((newPoint) {
       if (!mounted) return;
       setState(() {
         _liveRoute.add(newPoint);
         _myLocation = LatLng(newPoint.lat, newPoint.lng);
+        _currentGpsSpeed = newPoint.speedKmh;
+        _currentHeading = newPoint.heading ?? 0.0;
+
+        _gpsSpeedHistory.add(newPoint.speedKmh);
+        if (_gpsSpeedHistory.length > 30) {
+          _gpsSpeedHistory.removeAt(0);
+        }
       });
       if (_followBike) {
         _mapController.move(LatLng(newPoint.lat, newPoint.lng), _mapController.camera.zoom);
@@ -127,8 +157,10 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
             ? LatLng(lastPoint.lat, lastPoint.lng)
             : const LatLng(10.7719, 106.7195));
 
+    final mapHeight = widget.height ?? 220.0;
+
     return Container(
-      height: 220,
+      height: mapHeight,
       decoration: BoxDecoration(
         color: AppColors.panel,
         borderRadius: BorderRadius.circular(20),
@@ -146,10 +178,10 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
               initialZoom: 16.0,
             ),
             children: [
-              // Tile Layer (Ưu tiên nạp từ ổ cứng offline cache)
+              // Tile Layer
               MapTileService.buildTileLayer(style: _tileStyle),
 
-              // Polyline Lộ trình đang di chuyển (Live Speed Heatmap với gradient mượt mà)
+              // Polyline Lộ trình đang di chuyển
               if (hasRoute) ...[
                 PolylineLayer(
                   polylines: [
@@ -182,7 +214,7 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
                 ),
               ],
 
-              // Marker Vị trí xe Dat Bike
+              // Marker Vị trí xe Dat Bike với mũi tên xoay theo hướng đi
               MarkerLayer(
                 markers: [
                   if (_myLocation != null || lastPoint != null)
@@ -192,7 +224,7 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
                       height: 52,
                       child: _buildLiveBikeMarker(
                         widget.currentSpeedKmh,
-                        lastPoint?.heading ?? 0.0,
+                        lastPoint?.heading ?? _currentHeading,
                       ),
                     ),
                 ],
@@ -200,71 +232,123 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
             ],
           ),
 
-          // 2. HEADER TOP: Trạng thái REC ghi nhận & Các nút chức năng (Pure White Glass Pill)
+          // 2. HEADER TOP: MŨI TÊN LA BÀN HƯỚNG ĐI + TỐC ĐỘ GPS ĐỘC LẬP + NÚT CÔNG CỤ
           Positioned(
-            top: 10,
-            left: 10,
-            right: 10,
-            child: Row(
+            top: 8,
+            left: 8,
+            right: 8,
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: SizedBox(
+                width: 540,
+                child: Row(
               children: [
-                // Badge Trạng thái ghi GPS (REC)
-                Flexible(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(9999),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: AppColors.panel.withValues(alpha: 0.92),
-                          borderRadius: BorderRadius.circular(9999),
-                          border: Border.all(
-                            color: isTracking
-                                ? AppColors.red.withValues(alpha: 0.4)
-                                : AppColors.panelBorderBright,
+                // Chip Hướng đi la bàn (Mũi tên xoay tự động)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(9999),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+                      decoration: BoxDecoration(
+                        color: AppColors.panel.withValues(alpha: 0.94),
+                        borderRadius: BorderRadius.circular(9999),
+                        border: Border.all(color: AppColors.panelBorderBright),
+                        boxShadow: AppColors.cardShadow,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Transform.rotate(
+                            angle: (_currentHeading * math.pi) / 180.0,
+                            child: const Icon(
+                              Icons.navigation_rounded,
+                              size: 13,
+                              color: AppColors.primary,
+                            ),
                           ),
-                          boxShadow: AppColors.cardShadow,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 7,
-                              height: 7,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: isTracking ? AppColors.red : AppColors.tertiary,
-                              ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${_currentHeading.toStringAsFixed(0).padLeft(3, '0')}° ${_shortCardinal(_currentHeading)}',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                              fontFeatures: const [FontFeature.tabularFigures()],
                             ),
-                            const SizedBox(width: 6),
-                            Flexible(
-                              child: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text(
-                                  isTracking ? 'REC ĐANG GHI' : 'GPS SẴN SÀNG',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                    color: isTracking ? AppColors.red : AppColors.textPrimary,
-                                    letterSpacing: 0.05 * 10,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
+
                 const SizedBox(width: 6),
-                // Nút đổi Map Tile Style (Tải Nhanh / Đêm EV / Làn xe máy / OSM)
+
+                // Chip Tốc độ GPS tính riêng biệt (không phụ thuộc BMS)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(9999),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+                      decoration: BoxDecoration(
+                        color: AppColors.panel.withValues(alpha: 0.94),
+                        borderRadius: BorderRadius.circular(9999),
+                        border: Border.all(
+                          color: isTracking
+                              ? AppColors.tertiary.withValues(alpha: 0.35)
+                              : AppColors.panelBorderBright,
+                        ),
+                        boxShadow: AppColors.cardShadow,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isTracking ? AppColors.tertiary : AppColors.secondary,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            'GPS: ${_currentGpsSpeed.toStringAsFixed(1)}',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          Text(
+                            'km/h',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textDim,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                const Spacer(),
+
+                // Nút đổi Map Tile Style
                 _miniGlassBtn(
                   icon: MapTileService.getStyleIcon(_tileStyle),
                   tooltip: MapTileService.getStyleName(_tileStyle),
                   onTap: _cycleTileStyle,
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 5),
+
                 // Nút tải bản đồ offline
                 _miniGlassBtn(
                   icon: Icons.download_for_offline_rounded,
@@ -276,7 +360,8 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
                     );
                   },
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 5),
+
                 // Nút toàn màn hình
                 if (widget.onExpandFullScreen != null)
                   _miniGlassBtn(
@@ -287,87 +372,16 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
               ],
             ),
           ),
+        ),
+      ),
 
-          // Mini Banner hiển thị trạng thái tải ngầm (Background download tracker)
-          ValueListenableBuilder<DownloadProgress>(
-            valueListenable: OfflineMapService.instance.progressNotifier,
-            builder: (context, progress, _) {
-              if (!progress.isRunning && !progress.isPaused) {
-                return const SizedBox.shrink();
-              }
-              return Positioned(
-                top: 50,
-                left: 10,
-                right: 10,
-                child: GestureDetector(
-                  onTap: () => OfflineMapSheet.show(
-                    context,
-                    currentMapBounds: _mapController.camera.visibleBounds,
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(9999),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: AppColors.panel.withValues(alpha: 0.94),
-                          borderRadius: BorderRadius.circular(9999),
-                          border: Border.all(
-                            color: progress.isPaused ? AppColors.amber : AppColors.primary,
-                          ),
-                          boxShadow: AppColors.cardShadow,
-                        ),
-                        child: Row(
-                          children: [
-                            if (progress.isRunning)
-                              const SizedBox(
-                                width: 12,
-                                height: 12,
-                                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-                              )
-                            else
-                              const Icon(Icons.pause_circle_rounded, size: 14, color: AppColors.amber),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                progress.isPaused
-                                    ? 'Tạm dừng tải (${progress.percentInt}%)'
-                                    : 'Đang tải bản đồ ngầm: ${progress.percentInt}% (${progress.sizeMbText})',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            Text(
-                              'Xem >',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.primary,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-
-          // 3. CÁC NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải - Clean White Circular Buttons)
+          // 3. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải)
           Positioned(
-            bottom: 48,
-            right: 10,
+            bottom: (_gpsSpeedHistory.length >= 2) ? 42 : 12,
+            right: 8,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Nút "Vị trí của tôi"
                 _miniGlassBtn(
                   icon: Icons.my_location_rounded,
                   iconColor: _isLocating ? AppColors.primary : AppColors.textDim,
@@ -375,8 +389,7 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
                   tooltip: 'Vị trí của tôi',
                   onTap: () => _locateMe(moveCamera: true),
                 ),
-                const SizedBox(height: 6),
-                // Nút bám theo xe (Follow Bike)
+                const SizedBox(height: 5),
                 _miniGlassBtn(
                   icon: Icons.navigation_rounded,
                   iconColor: _followBike ? AppColors.primary : AppColors.textDim,
@@ -396,89 +409,62 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
             ),
           ),
 
-          // 4. FOOTER TELEMETRY THỜI GIAN THỰC (Clean White Pill Card)
-          Positioned(
-            left: 10,
-            right: 10,
-            bottom: 8,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: AppColors.panel.withValues(alpha: 0.94),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: AppColors.panelBorderBright),
-                    boxShadow: AppColors.cardShadow,
-                  ),
-                  child: Row(
-                    children: [
-                      // Vận tốc tức thời
-                      Flexible(
-                        flex: 4,
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              Text(
-                                widget.currentSpeedKmh.toStringAsFixed(0),
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w800,
-                                  color: widget.currentSpeedKmh > 0 ? AppColors.primary : AppColors.textPrimary,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                              const SizedBox(width: 3),
-                              Text(
-                                'km/h',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.textDim,
-                                ),
-                              ),
-                            ],
+          // 4. BIỂU ĐỒ TỐC ĐỘ GPS (SPARKLINE CHART) TÍNH RIÊNG ĐỘC LẬP
+          if (_gpsSpeedHistory.length >= 2)
+            Positioned(
+              left: 8,
+              right: 8,
+              bottom: 8,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                  child: Container(
+                    height: 28,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.panel.withValues(alpha: 0.94),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.panelBorderBright),
+                      boxShadow: AppColors.cardShadow,
+                    ),
+                    child: Row(
+                      children: [
+                        Text(
+                          'GPS SPEED',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.textDim,
+                            letterSpacing: 0.3,
                           ),
                         ),
-                      ),
-                      const Spacer(),
-                      // Tọa độ vĩ độ/kinh độ hoặc số điểm
-                      Flexible(
-                        flex: 6,
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.location_on_outlined, size: 12, color: AppColors.secondary),
-                              const SizedBox(width: 3),
-                              Text(
-                                _myLocation != null
-                                    ? '${_myLocation!.latitude.toStringAsFixed(4)}°, ${_myLocation!.longitude.toStringAsFixed(4)}°'
-                                    : '${_liveRoute.length} điểm GPS',
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                            ],
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: CustomPaint(
+                            size: const Size(double.infinity, 22),
+                            painter: _GpsSpeedSparklinePainter(
+                              history: _gpsSpeedHistory,
+                              color: AppColors.secondary,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 6),
+                        Text(
+                          '${_currentGpsSpeed.toStringAsFixed(0)} km/h',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -490,7 +476,6 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Sóng radar định vị lan tỏa
           Container(
             width: 44,
             height: 44,
@@ -503,7 +488,6 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
               ),
             ),
           ),
-          // Con trỏ xe Dat Bike
           Container(
             width: 28,
             height: 28,
@@ -544,8 +528,8 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
         child: Container(
-          width: 32,
-          height: 32,
+          width: 30,
+          height: 30,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: isActive ? const Color(0xFFEFF6FF) : AppColors.panel.withValues(alpha: 0.92),
@@ -560,7 +544,7 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
             icon: Icon(
               icon,
               color: iconColor ?? (isActive ? AppColors.primary : AppColors.textDim),
-              size: 16,
+              size: 15,
             ),
             tooltip: tooltip,
             onPressed: onTap,
@@ -569,4 +553,74 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
       ),
     );
   }
+}
+
+class _GpsSpeedSparklinePainter extends CustomPainter {
+  final List<double> history;
+  final Color color;
+
+  _GpsSpeedSparklinePainter({required this.history, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (history.length < 2) return;
+
+    final maxVal = history.reduce(math.max).clamp(20.0, 120.0);
+    const minVal = 0.0;
+    final range = maxVal - minVal;
+
+    final path = Path();
+    final fillPath = Path();
+
+    final stepX = size.width / (history.length - 1);
+
+    for (int i = 0; i < history.length; i++) {
+      final x = i * stepX;
+      final normalized = ((history[i] - minVal) / range).clamp(0.0, 1.0);
+      final y = size.height - (normalized * (size.height - 4)) - 2;
+
+      if (i == 0) {
+        path.moveTo(x, y);
+        fillPath.moveTo(x, size.height);
+        fillPath.lineTo(x, y);
+      } else {
+        path.lineTo(x, y);
+        fillPath.lineTo(x, y);
+      }
+
+      if (i == history.length - 1) {
+        fillPath.lineTo(x, size.height);
+        fillPath.close();
+
+        final dotPaint = Paint()
+          ..color = color
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(Offset(x, y), 2.2, dotPaint);
+      }
+    }
+
+    final fillPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          color.withValues(alpha: 0.22),
+          color.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+    canvas.drawPath(fillPath, fillPaint);
+
+    final linePaint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, linePaint);
+  }
+
+  @override
+  bool shouldRepaint(_GpsSpeedSparklinePainter old) =>
+      old.history.length != history.length ||
+      (history.isNotEmpty && old.history.isNotEmpty && old.history.last != history.last);
 }
