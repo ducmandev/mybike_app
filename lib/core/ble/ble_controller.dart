@@ -1170,7 +1170,8 @@ class BleController extends Notifier<BleState> {
       distanceRawU16: distU16 ?? state.distanceRawU16,
       vescProgActive: isVescProg,
       chargingProfile: chgProfile ?? state.chargingProfile,
-      isLocked: isLockedVal ?? state.isLocked,
+      isLocked: isLockedVal ??
+          (state.lastTelemetry?.state == BikeState.lock ? true : state.isLocked),
     );
     BleLogger.instance.event('fw_settings_synced', {
       'speed': speed.isEmpty ? null : speed[0],
@@ -1654,8 +1655,11 @@ class BleController extends Notifier<BleState> {
   /// Walk-up: tự MỞ khóa an toàn & tùy chọn BẬT XE SẴN khi user tới gần
   /// Kiểm tra chặt chẽ status thực tế của xe để không bao giờ gửi nhầm lệnh làm tắt xe đang mở.
   Future<void> _runWalkUpUnlockAndPower(double rssi) async {
-    final isLocked = state.isLocked;
-    final isBikeOn = state.lastTelemetry?.isBikeOn == true;
+    final tele = state.lastTelemetry;
+    if (tele == null) return;
+
+    final isLocked = state.isLocked || tele.state == BikeState.lock;
+    final isBikeOn = tele.isBikeOn;
 
     BleLogger.instance.event('walk_up_triggered', {
       'rssi': rssi,
@@ -1671,7 +1675,8 @@ class BleController extends Notifier<BleState> {
       }
 
       // 2. Chỉ gửi lệnh bật xe nếu user BẬT tính năng walkUpAutoPowerOn VÀ xe ĐANG TẮT
-      if (state.walkUpAutoPowerOn) {
+      // Tuyệt đối không gửi lệnh bật xe nếu xe đã đang bật (tránh toggling làm tắt xe)
+      if (state.walkUpAutoPowerOn && !isBikeOn) {
         final currentlyOn = state.lastTelemetry?.isBikeOn == true;
         if (!currentlyOn) {
           await turnOnBike();
@@ -2197,10 +2202,14 @@ class BleController extends Notifier<BleState> {
     // test bị nhiễm).
     if (_labModeActive) return;
     if (_smoothedRssi == null) return;
+    // BẮT BUỘC có ít nhất 1 gói telemetry hợp lệ từ xe trước khi tính toán cự ly / tự động hóa
+    final tele = state.lastTelemetry;
+    if (tele == null) return;
+
     final rssi = _smoothedRssi!;
-    final isBikeOn = state.lastTelemetry?.isBikeOn == true;
-    final isLocked = state.isLocked;
-    final speed = state.lastTelemetry?.speed ?? 0.0;
+    final isBikeOn = tele.isBikeOn;
+    final isLocked = state.isLocked || tele.state == BikeState.lock;
+    final speed = tele.speed;
 
     // Theo dõi xem user đã từng ở gần xe trong phiên kết nối này chưa
     final nearThreshold = state.walkUpRssiThreshold ?? -55.0;
@@ -2537,7 +2546,26 @@ class BleController extends Notifier<BleState> {
         if (clean.isNotEmpty) autoSerial = clean;
       }
 
-      state = state.copyWith(lastTelemetry: msg, trip: currentTrip, frameSerial: autoSerial);
+      // Đồng bộ trạng thái khóa xe thực tế từ MCU (msg.state):
+      // - msg.state == BikeState.lock (7): Chắc chắn đang KHÓA AN TOÀN
+      // - msg.state đang chạy (parking, drive, super_, standBy, cruiseControl, reverse, turtle): Chắc chắn KHÔNG KHÓA
+      // - msg.state == BikeState.off (0): Giữ nguyên cờ khóa trước đó
+      final isLockedNow = (msg.state == BikeState.lock);
+      final isRunningNow = (msg.state == BikeState.parking ||
+                            msg.state == BikeState.drive ||
+                            msg.state == BikeState.super_ ||
+                            msg.state == BikeState.standBy ||
+                            msg.state == BikeState.cruiseControl ||
+                            msg.state == BikeState.reverse ||
+                            msg.state == BikeState.turtle);
+      final updatedIsLocked = isLockedNow ? true : (isRunningNow ? false : state.isLocked);
+
+      state = state.copyWith(
+        lastTelemetry: msg,
+        trip: currentTrip,
+        frameSerial: autoSerial,
+        isLocked: updatedIsLocked,
+      );
       _telemetry.add(BikeTelemetry(msg, DateTime.now()));
     } catch (e) {
       _decodeFailStreak++;
@@ -2683,13 +2711,22 @@ class BleController extends Notifier<BleState> {
   /// Chỉ gửi khi ĐÃ xác thực. CHẶN khi xe đang KHÓA AN TOÀN.
   Future<void> turnOnBike() async {
     _lastUserCommandAt = DateTime.now();
-    if (state.isLocked) {
+    final tele = state.lastTelemetry;
+    final isLocked = state.isLocked || tele?.state == BikeState.lock;
+    if (isLocked) {
       state = state.copyWith(
           message: 'Xe đang KHÓA AN TOÀN — bấm MỞ KHÓA (hoặc quẹt thẻ NFC) trước khi bật xe');
       BleLogger.instance.event('power_blocked', {
         'reason': 'xe đang khóa an toàn (ARM) — phải mở khóa trước',
       });
       throw Exception('Xe đang khóa an toàn — mở khóa trước khi bật');
+    }
+    // Nếu xe đã đang bật nguồn rồi (isBikeOn == true), bỏ qua lệnh để không làm toggle tắt xe
+    if (tele?.isBikeOn == true) {
+      BleLogger.instance.event('power_skipped', {
+        'reason': 'xe đã đang bật nguồn rồi',
+      });
+      return;
     }
     await _waitWhileCommandBusy();
     if (_isCommandBusy) {
@@ -2708,6 +2745,13 @@ class BleController extends Notifier<BleState> {
   /// Lệnh TẮT XE — plain '0' (0x30) + protected '0'.
   Future<void> turnOffBike() async {
     _lastUserCommandAt = DateTime.now();
+    // Nếu xe đã đang tắt nguồn rồi, không gửi thêm lệnh tắt
+    if (state.lastTelemetry != null && !state.lastTelemetry!.isBikeOn) {
+      BleLogger.instance.event('power_skipped', {
+        'reason': 'xe đã đang tắt nguồn rồi',
+      });
+      return;
+    }
     await _waitWhileCommandBusy();
     if (_isCommandBusy) {
       throw Exception('Xe đang xử lý lệnh trước đó, vui lòng đợi 1 giây...');
@@ -2829,6 +2873,13 @@ class BleController extends Notifier<BleState> {
     if (_isCommandBusy) {
       return 'Xe đang bận xử lý lệnh trước, vui lòng đợi giây lát...';
     }
+    final teleLock = state.lastTelemetry?.state == BikeState.lock;
+    if (!state.isLocked && !teleLock) {
+      BleLogger.instance.event('unlock_skipped', {
+        'reason': 'xe đã ở trạng thái mở khóa rồi',
+      });
+      return 'Xe đã ở trạng thái mở khóa sẵn sàng.';
+    }
     try {
       return await setImmobilizer(false);
     } catch (e) {
@@ -2849,6 +2900,13 @@ class BleController extends Notifier<BleState> {
     }
     if (_isCommandBusy) {
       return 'Xe đang bận xử lý lệnh trước, vui lòng đợi giây lát...';
+    }
+    final teleLock = state.lastTelemetry?.state == BikeState.lock;
+    if (state.isLocked && teleLock) {
+      BleLogger.instance.event('lock_skipped', {
+        'reason': 'xe đã đang khóa an toàn rồi',
+      });
+      return 'Xe đã đang khóa an toàn.';
     }
     final spd = state.lastTelemetry?.speed ?? 0.0;
     if (spd > 0.5) {
