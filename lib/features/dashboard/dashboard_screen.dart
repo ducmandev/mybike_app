@@ -382,24 +382,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           const SizedBox(height: 10),
         ],
 
-        if (m.charging != null || m.phase > 0.5) ...[
-          NoticeBanner(
-            color: AppColors.secondary,
-            text: '⚡ Xe đang sạc (${m.charging?.power ?? (m.voltage * m.phase.abs()).round()}W) · Chạm để xem ETA',
-            trailing: TextButton(
-              onPressed: () => Navigator.of(context).pushNamed('/charging'),
-              child: Text(
-                'CHI TIẾT',
-                style: GoogleFonts.plusJakartaSans(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 12,
-                  color: AppColors.secondary,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
 
         // 1. Cụm 3 nút điều khiển chính nằm 1 hàng ngang (Bật, Tắt, Khóa - ẩn còi)
         _buildControlButtonsRow(ble, m),
