@@ -22,6 +22,16 @@ import 'widgets/luminous_energy_bar.dart';
 import 'widgets/mode_indicator_header.dart';
 import 'widgets/optical_signal_bloom.dart';
 
+/// Chế độ hiển thị phóng to độc lập của màn hình Cockpit:
+/// - normal: Mặc định chia 2 phần (Dọc: Scrollable tab; Ngang: 70/30)
+/// - speedometer: Phóng to toàn màn hình Cụm đồng hồ tốc độ (Speedometer HUD)
+/// - map: Phóng to toàn màn hình Bản đồ GPS trực tiếp (Cockpit Live Map)
+enum DashboardFocusMode {
+  normal,
+  speedometer,
+  map,
+}
+
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
@@ -35,6 +45,50 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   StreamSubscription? _sub;
   bool _powerBusy = false;
   int _activeTab = 0; // 0: Cockpit & Chuyến đi, 1: Giám sát nhiệt & Lỗi
+  DashboardFocusMode _focusMode = DashboardFocusMode.normal;
+
+  void _toggleSpeedZoom() {
+    setState(() {
+      _focusMode = _focusMode == DashboardFocusMode.speedometer
+          ? DashboardFocusMode.normal
+          : DashboardFocusMode.speedometer;
+    });
+  }
+
+  void _toggleMapZoom() {
+    setState(() {
+      _focusMode = _focusMode == DashboardFocusMode.map
+          ? DashboardFocusMode.normal
+          : DashboardFocusMode.map;
+    });
+  }
+
+  Widget _miniGlassActionBtn({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: AppColors.panel.withValues(alpha: 0.94),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.panelBorderBright, width: 1),
+              boxShadow: AppColors.cardShadow,
+            ),
+            child: Icon(icon, size: 17, color: AppColors.textPrimary),
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -352,6 +406,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   ) {
     final isLocked = ble.isLocked || m.state == BikeState.lock;
 
+    if (_focusMode == DashboardFocusMode.speedometer) {
+      return _buildPortraitSpeedZoomLayout(
+        context, ble, m, trip, powerKw, isRecup, isDraw, isLocked,
+      );
+    }
+
+    if (_focusMode == DashboardFocusMode.map) {
+      return _buildPortraitMapZoomLayout(
+        context, ble, m, trip, isLocked,
+      );
+    }
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
       children: [
@@ -405,11 +471,24 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
                 return Column(
                   children: [
-                    // Mode xe nằm ở chính giữa phía trên taplo tốc độ
-                    ModeIndicatorHeader(
-                      state: m.state,
-                      isParking: m.parking,
-                      isLocked: isLocked,
+                    // Mode xe nằm ở chính giữa phía trên taplo tốc độ + Nút phóng to ở góc phải
+                    Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        ModeIndicatorHeader(
+                          state: m.state,
+                          isParking: m.parking,
+                          isLocked: isLocked,
+                        ),
+                        Positioned(
+                          right: 0,
+                          child: _miniGlassActionBtn(
+                            icon: Icons.fullscreen_rounded,
+                            tooltip: 'Phóng to đồng hồ tốc độ',
+                            onTap: _toggleSpeedZoom,
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 6),
 
@@ -475,6 +554,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     bool isEncrypted,
   ) {
     final isLocked = ble.isLocked || m.state == BikeState.lock;
+
+    if (_focusMode == DashboardFocusMode.speedometer) {
+      return _buildLandscapeSpeedZoomLayout(
+        context, ble, m, trip, powerKw, isRecup, isDraw, isLocked,
+      );
+    }
+
+    if (_focusMode == DashboardFocusMode.map) {
+      return _buildLandscapeMapZoomLayout(
+        context, ble, m, trip, isLocked,
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
@@ -569,7 +660,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     ],
                                   ),
                                 ),
-                                // Pin & Range
+                                // Pin & Range & Phóng to
                                 Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -590,6 +681,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     Text(
                                       '(${m.kmLeft.toStringAsFixed(0)} km)',
                                       style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    _miniGlassActionBtn(
+                                      icon: Icons.fullscreen_rounded,
+                                      tooltip: 'Phóng to đồng hồ tốc độ',
+                                      onTap: _toggleSpeedZoom,
                                     ),
                                   ],
                                 ),
@@ -680,7 +777,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   flex: 62,
                   child: CockpitLiveMap(
                     currentSpeedKmh: m.speed,
-                    onExpandFullScreen: () => _openFullScreenMap(trip),
+                    onExpandFullScreen: _toggleMapZoom,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -765,6 +862,395 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // =========================================================================
+  // ========== BẢN BỐ CỤC PHÓNG TO ĐỘC LẬP (INDEPENDENT ZOOM MODES) =========
+  // =========================================================================
+
+  /// 1. Phóng to riêng Cụm đồng hồ tốc độ ở chế độ dọc (Portrait Speedometer Zoom)
+  Widget _buildPortraitSpeedZoomLayout(
+    BuildContext context,
+    BleState ble,
+    BikeLogMsg m,
+    TripData trip,
+    double powerKw,
+    bool isRecup,
+    bool isDraw,
+    bool isLocked,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 18),
+      child: Column(
+        children: [
+          Expanded(
+            child: OpticalSignalBloom(
+              isLeft: m.left,
+              isRight: m.right,
+              child: Panel(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+                borderRadius: 22,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final gaugeSize = (constraints.maxHeight * 0.44).clamp(180.0, 280.0);
+                    return Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        // Top bar inside panel: Vehicle name & Exit zoom button
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Flexible(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: const BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: AppColors.tertiary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
+                                      style: GoogleFonts.spaceGrotesk(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.textPrimary,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (m.parking) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.amber.withValues(alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(9999),
+                                      ),
+                                      child: Text(
+                                        'CHỐNG',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.amber,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                  if (isLocked) ...[
+                                    const SizedBox(width: 6),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.error.withValues(alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(9999),
+                                      ),
+                                      child: Text(
+                                        'ĐÃ KHÓA',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.error,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                            _miniGlassActionBtn(
+                              icon: Icons.fullscreen_exit_rounded,
+                              tooltip: 'Thu nhỏ về mặc định',
+                              onTap: _toggleSpeedZoom,
+                            ),
+                          ],
+                        ),
+
+                        // Center: Mode + Large Gauge + Energy bar
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ModeIndicatorHeader(
+                              state: m.state,
+                              isParking: m.parking,
+                              isLocked: isLocked,
+                            ),
+                            const SizedBox(height: 8),
+                            _buildGaugeWithSpeed(m, gaugeSize: gaugeSize),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: constraints.maxWidth.clamp(180.0, 360.0),
+                              child: LuminousEnergyBar(
+                                powerKw: powerKw,
+                                isRecup: isRecup,
+                                isDraw: isDraw,
+                                phaseAmps: m.phase,
+                                voltage: m.voltage > 0 ? m.voltage : null,
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        // Bottom: Metrics row
+                        _buildMetricsRow(m),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          _buildControlButtonsRow(ble, m),
+        ],
+      ),
+    );
+  }
+
+  /// 2. Phóng to riêng Bản đồ GPS ở chế độ dọc (Portrait Map Zoom)
+  Widget _buildPortraitMapZoomLayout(
+    BuildContext context,
+    BleState ble,
+    BikeLogMsg m,
+    TripData trip,
+    bool isLocked,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 18),
+      child: Column(
+        children: [
+          Expanded(
+            child: CockpitLiveMap(
+              height: double.infinity,
+              isFullScreen: true,
+              currentSpeedKmh: m.speed,
+              batteryPercent: m.percent,
+              voltage: m.voltage > 0 ? m.voltage : null,
+              onExpandFullScreen: _toggleMapZoom,
+              onTurnOn: _turnOnBike,
+              onTurnOff: _turnOffBike,
+              onToggleLock: () => _toggleLockBike(ble, m),
+              isLocked: isLocked,
+              powerBusy: _powerBusy,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _buildControlButtonsRow(ble, m),
+        ],
+      ),
+    );
+  }
+
+  /// 3. Phóng to riêng Cụm đồng hồ tốc độ ở chế độ ngang (Landscape Speedometer Zoom - 100% full-width)
+  Widget _buildLandscapeSpeedZoomLayout(
+    BuildContext context,
+    BleState ble,
+    BikeLogMsg m,
+    TripData trip,
+    double powerKw,
+    bool isRecup,
+    bool isDraw,
+    bool isLocked,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      child: OpticalSignalBloom(
+        isLeft: m.left,
+        isRight: m.right,
+        child: Panel(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+          borderRadius: 22,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final gaugeSize = (constraints.maxHeight * 0.52).clamp(130.0, 195.0);
+              return Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Top row: Bike info, Lock status, PIN & Exit zoom button
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Flexible(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 7,
+                              height: 7,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.tertiary,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.textPrimary,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (m.parking) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.amber.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(9999),
+                                ),
+                                child: Text(
+                                  'CHỐNG',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.amber,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (isLocked) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.error.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(9999),
+                                ),
+                                child: Text(
+                                  'ĐÃ KHÓA',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.error,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('PIN: ', style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim)),
+                          Text(
+                            '${m.percent}%',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.tertiary,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text('(${m.kmLeft.toStringAsFixed(0)} km)', style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim)),
+                          const SizedBox(width: 10),
+                          _miniGlassActionBtn(
+                            icon: Icons.fullscreen_exit_rounded,
+                            tooltip: 'Thu nhỏ về mặc định',
+                            onTap: _toggleSpeedZoom,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+
+                  // Center: Mode + Gauge + Energy bar
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ModeIndicatorHeader(
+                        state: m.state,
+                        isParking: m.parking,
+                        isLocked: isLocked,
+                      ),
+                      const SizedBox(height: 4),
+                      _buildGaugeWithSpeed(m, gaugeSize: gaugeSize),
+                      const SizedBox(height: 4),
+                      SizedBox(
+                        width: constraints.maxWidth.clamp(180.0, 420.0),
+                        child: LuminousEnergyBar(
+                          powerKw: powerKw,
+                          isRecup: isRecup,
+                          isDraw: isDraw,
+                          phaseAmps: m.phase,
+                          voltage: m.voltage > 0 ? m.voltage : null,
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // Bottom: Trip A & ODO
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'TRIP A: ${trip.distanceKm.toStringAsFixed(1)} km (${_formatDuration(trip.duration)})',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textDim,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        Text(
+                          'TỔNG ODO: ${m.odo.toStringAsFixed(0)} km',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textDim,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 4. Phóng to riêng Bản đồ GPS ở chế độ ngang (Landscape Map Zoom - 100% full-width)
+  Widget _buildLandscapeMapZoomLayout(
+    BuildContext context,
+    BleState ble,
+    BikeLogMsg m,
+    TripData trip,
+    bool isLocked,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      child: CockpitLiveMap(
+        height: double.infinity,
+        isFullScreen: true,
+        currentSpeedKmh: m.speed,
+        batteryPercent: m.percent,
+        voltage: m.voltage > 0 ? m.voltage : null,
+        onExpandFullScreen: _toggleMapZoom,
+        onTurnOn: _turnOnBike,
+        onTurnOff: _turnOffBike,
+        onToggleLock: () => _toggleLockBike(ble, m),
+        isLocked: isLocked,
+        powerBusy: _powerBusy,
       ),
     );
   }
@@ -933,7 +1419,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       children: [
         CockpitLiveMap(
           currentSpeedKmh: m.speed,
-          onExpandFullScreen: () => _openFullScreenMap(trip),
+          onExpandFullScreen: _toggleMapZoom,
         ),
         const SizedBox(height: 12),
         Panel(
@@ -959,6 +1445,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       ),
                     ),
                   ),
+                  Tooltip(
+                    message: 'Xem toàn bộ lộ trình chi tiết',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => _openFullScreenMap(trip),
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.open_in_new_rounded, size: 16, color: AppColors.primary),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
                   const SizedBox(width: 6),
                   Text(
                     _formatDuration(trip.duration),

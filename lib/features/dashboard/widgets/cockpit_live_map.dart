@@ -21,12 +21,28 @@ class CockpitLiveMap extends StatefulWidget {
   final double currentSpeedKmh;
   final VoidCallback? onExpandFullScreen;
   final double? height;
+  final bool isFullScreen;
+  final int? batteryPercent;
+  final double? voltage;
+  final VoidCallback? onTurnOn;
+  final VoidCallback? onTurnOff;
+  final VoidCallback? onToggleLock;
+  final bool? isLocked;
+  final bool powerBusy;
 
   const CockpitLiveMap({
     super.key,
     required this.currentSpeedKmh,
     this.onExpandFullScreen,
     this.height,
+    this.isFullScreen = false,
+    this.batteryPercent,
+    this.voltage,
+    this.onTurnOn,
+    this.onTurnOff,
+    this.onToggleLock,
+    this.isLocked,
+    this.powerBusy = false,
   });
 
   @override
@@ -157,7 +173,7 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
             ? LatLng(lastPoint.lat, lastPoint.lng)
             : const LatLng(10.7719, 106.7195));
 
-    final mapHeight = widget.height ?? 220.0;
+    final mapHeight = widget.isFullScreen ? widget.height : (widget.height ?? 220.0);
 
     return Container(
       height: mapHeight,
@@ -362,11 +378,15 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
                 ),
                 const SizedBox(width: 5),
 
-                // Nút toàn màn hình
+                // Nút toàn màn hình / thu nhỏ
                 if (widget.onExpandFullScreen != null)
                   _miniGlassBtn(
-                    icon: Icons.fullscreen_rounded,
-                    tooltip: 'Toàn màn hình HUD',
+                    icon: widget.isFullScreen
+                        ? Icons.fullscreen_exit_rounded
+                        : Icons.fullscreen_rounded,
+                    tooltip: widget.isFullScreen
+                        ? 'Thu nhỏ về mặc định'
+                        : 'Phóng to bản đồ',
                     onTap: widget.onExpandFullScreen!,
                   ),
               ],
@@ -374,6 +394,135 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
           ),
         ),
       ),
+
+          // 2.5 FLOATING SPEED HUD PILL (khi phóng to bản đồ toàn màn hình)
+          if (widget.isFullScreen)
+            Positioned(
+              top: 50,
+              left: 10,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                    decoration: BoxDecoration(
+                      color: AppColors.panel.withValues(alpha: 0.94),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.panelBorderBright),
+                      boxShadow: AppColors.cardShadow,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          widget.currentSpeedKmh.toStringAsFixed(0),
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -1.0,
+                            color: AppColors.textPrimary,
+                            height: 1.0,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              'KM/H',
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textDim,
+                              ),
+                            ),
+                            if (widget.batteryPercent != null)
+                              Text(
+                                'PIN ${widget.batteryPercent}%',
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.tertiary,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // 2.6 FLOATING QUICK CONTROLS (khi phóng to bản đồ)
+          if (widget.isFullScreen && widget.onTurnOn != null)
+            Positioned(
+              bottom: 10,
+              left: 10,
+              right: 10,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: AppColors.panel.withValues(alpha: 0.94),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.panelBorderBright),
+                      boxShadow: AppColors.cardShadow,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.tertiary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            onPressed: widget.powerBusy ? null : widget.onTurnOn,
+                            child: const Icon(Icons.power_settings_new_rounded, size: 20),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: widget.currentSpeedKmh > 0.5 ? AppColors.surfaceContainerHigh : AppColors.error,
+                              foregroundColor: widget.currentSpeedKmh > 0.5 ? AppColors.textDim : Colors.white,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            onPressed: (widget.powerBusy || widget.currentSpeedKmh > 0.5) ? null : widget.onTurnOff,
+                            child: Icon(widget.currentSpeedKmh > 0.5 ? Icons.shield_rounded : Icons.power_off_rounded, size: 20),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: widget.isLocked == true ? AppColors.error : AppColors.surfaceContainerHigh,
+                              foregroundColor: widget.isLocked == true ? Colors.white : AppColors.textPrimary,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            onPressed: widget.onToggleLock,
+                            child: Icon(widget.isLocked == true ? Icons.lock_rounded : Icons.lock_open_rounded, size: 20),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // 3. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải)
           Positioned(

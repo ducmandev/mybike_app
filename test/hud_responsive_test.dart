@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mybike_app/ui/gauge.dart';
@@ -101,5 +101,59 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.byType(SpeedGauge), findsOneWidget);
+  });
+
+  testWidgets('DashboardScreen toggles independent speedometer and map zoom modes in portrait', (tester) async {
+    tester.view.physicalSize = const Size(380 * 2.0, 800 * 2.0);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(() => tester.view.resetPhysicalSize());
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: DashboardScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Initially in normal mode: zoom button for speedometer exists
+    final speedZoomBtn = find.byTooltip('Phóng to đồng hồ tốc độ');
+    expect(speedZoomBtn, findsOneWidget);
+
+    // Zoom into Speedometer
+    await tester.tap(speedZoomBtn);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Exit zoom button should appear
+    final exitSpeedZoomBtn = find.byTooltip('Thu nhỏ về mặc định');
+    expect(exitSpeedZoomBtn, findsOneWidget);
+
+    // Unzoom back to normal
+    await tester.tap(exitSpeedZoomBtn);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // Now test map zoom
+    final mapZoomBtn = find.byTooltip('Phóng to bản đồ');
+    expect(mapZoomBtn, findsOneWidget);
+
+    await tester.tap(mapZoomBtn);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // In map zoom mode, unzoom button appears
+    final exitMapZoomBtn = find.byTooltip('Thu nhỏ về mặc định');
+    expect(exitMapZoomBtn, findsWidgets);
+
+    // Unzoom back to normal
+    await tester.tap(exitMapZoomBtn.first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.byTooltip('Phóng to đồng hồ tốc độ'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
