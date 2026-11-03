@@ -1645,7 +1645,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // ══════════════════════════════════════════════════════════════
-              // 1. HEADER: Tên xe máy điện + Nút 1-chạm HUD/Logs/Lab + Badge BLE
+              // 1. HEADER: Tên xe máy điện + Nút 1-chạm Cockpit HUD + Badge BLE
               // ══════════════════════════════════════════════════════════════
               Row(
                 children: [
@@ -1719,21 +1719,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                     icon: const Icon(Icons.speed_rounded, size: 21, color: Color(0xFF0F172A)),
                     onPressed: () => Navigator.of(context).pushNamed('/dashboard'),
                   ),
-                  // Nút mở nhanh Nhật ký BLE
-                  IconButton(
-                    tooltip: 'Nhật ký Bluetooth',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.receipt_long_rounded, size: 20, color: Color(0xFF6366F1)),
-                    onPressed: () => Navigator.of(context).pushNamed('/logs'),
-                  ),
-                  // Nút mở nhanh Firmware Lab
-                  IconButton(
-                    tooltip: 'Phòng Lab Firmware',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.science_rounded, size: 20, color: Color(0xFF8B5CF6)),
-                    onPressed: () => Navigator.of(context).pushNamed('/lab'),
-                  ),
-                  const SizedBox(width: 2),
+                  const SizedBox(width: 4),
                   // Badge Bluetooth Connected hình viên thuốc trắng
                   InkWell(
                     onTap: connected ? null : _handleConnectTap,

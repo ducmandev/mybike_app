@@ -14,8 +14,6 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../core/ble/ble_controller.dart';
 import '../../ui/app_theme.dart';
 import '../../ui/widgets.dart';
-import '../firmware_lab/firmware_lab_screen.dart';
-import '../logs/logs_screen.dart';
 
 class VehicleSettingsScreen extends ConsumerStatefulWidget {
   const VehicleSettingsScreen({super.key});
@@ -114,19 +112,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             color: const Color(0xFF0F172A),
           ),
         ),
-        actions: [
-          IconButton(
-            tooltip: 'Nhật ký Bluetooth',
-            icon: const Icon(Icons.receipt_long_rounded, size: 22, color: Color(0xFF6366F1)),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LogsScreen())),
-          ),
-          IconButton(
-            tooltip: 'Phòng Lab Firmware',
-            icon: const Icon(Icons.science_rounded, size: 22, color: Color(0xFF8B5CF6)),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FirmwareLabScreen())),
-          ),
-          const SizedBox(width: 4),
-        ],
+
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),

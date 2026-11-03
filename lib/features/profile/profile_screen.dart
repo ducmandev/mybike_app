@@ -23,11 +23,77 @@ import '../settings/vehicle_management_screen.dart';
 import '../logs/logs_screen.dart';
 import '../firmware_lab/firmware_lab_screen.dart';
 
-class ProfileScreen extends ConsumerWidget {
+class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ProfileScreen> createState() => _ProfileScreenState();
+}
+
+class _ProfileScreenState extends ConsumerState<ProfileScreen> {
+  bool _showDevMenu = false;
+  int _aboutTapCount = 0;
+  DateTime? _lastTapTime;
+
+  void _handleAboutTap(BuildContext context) {
+    final now = DateTime.now();
+    if (_lastTapTime == null || now.difference(_lastTapTime!) > const Duration(seconds: 2)) {
+      _aboutTapCount = 1;
+    } else {
+      _aboutTapCount++;
+    }
+    _lastTapTime = now;
+
+    if (_aboutTapCount >= 5) {
+      _aboutTapCount = 0;
+      setState(() {
+        _showDevMenu = !_showDevMenu;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            _showDevMenu
+                ? '🔓 Đã mở khóa Menu Kỹ thuật viên (Nhật ký BLE & Phòng Lab)'
+                : '🔒 Đã ẩn Menu Kỹ thuật viên',
+            style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+          ),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    _showAbout(context);
+  }
+
+  void _showAbout(BuildContext context) {
+    showAboutDialog(
+      context: context,
+      applicationName: 'Dat Bike Companion',
+      applicationVersion: 'v2.6.17',
+      applicationIcon: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.asset(
+          'assets/images/bike_logo_3d.png',
+          width: 44,
+          height: 44,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, size: 36, color: Color(0xFF2563EB)),
+        ),
+      ),
+      children: [
+        Text(
+          'Ứng dụng điều khiển xe máy điện Dat Bike (Quantum & Weaver series) tối ưu hóa kết nối BLE và quản lý thông số pin thông minh.',
+          style: GoogleFonts.plusJakartaSans(fontSize: 13),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final ble = ref.watch(bleProvider);
 
     return Scaffold(
@@ -261,59 +327,38 @@ class ProfileScreen extends ConsumerWidget {
 
                     const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
 
-                    // 4. Nhật ký BLE & Xuất Log
-                    _profileListItem(
-                      icon: const Icon(Icons.receipt_long_rounded, size: 22, color: Color(0xFF6366F1)),
-                      title: 'Nhật ký Bluetooth',
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const LogsScreen()),
-                        );
-                      },
-                    ),
+                    if (_showDevMenu) ...[
+                      const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
+                      // 4. Nhật ký BLE & Xuất Log (Ẩn mặc định)
+                      _profileListItem(
+                        icon: const Icon(Icons.receipt_long_rounded, size: 22, color: Color(0xFF6366F1)),
+                        title: 'Nhật ký Bluetooth (Kỹ thuật)',
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const LogsScreen()),
+                          );
+                        },
+                      ),
+                      const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
+                      // 5. Phòng Kiểm Nghiệm Firmware Lab (Ẩn mặc định)
+                      _profileListItem(
+                        icon: const Icon(Icons.science_rounded, size: 22, color: Color(0xFF8B5CF6)),
+                        title: 'Phòng thí nghiệm Lab (Kỹ thuật)',
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const FirmwareLabScreen()),
+                          );
+                        },
+                      ),
+                    ],
 
                     const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
 
-                    // 5. Phòng Kiểm Nghiệm Firmware Lab
-                    _profileListItem(
-                      icon: const Icon(Icons.science_rounded, size: 22, color: Color(0xFF8B5CF6)),
-                      title: 'Phòng thí nghiệm Lab',
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const FirmwareLabScreen()),
-                        );
-                      },
-                    ),
-
-                    const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
-
-                    // 6. Thông tin ứng dụng (About)
+                    // 6. Thông tin ứng dụng (About - Chạm 5 lần để bật/tắt menu kỹ thuật viên)
                     _profileListItem(
                       icon: const Icon(Icons.info_outline_rounded, size: 22, color: Color(0xFF0F172A)),
                       title: 'Thông tin ứng dụng',
-                      onTap: () {
-                        showAboutDialog(
-                          context: context,
-                          applicationName: 'Dat Bike Companion',
-                          applicationVersion: 'v2.2.0 (Phase 2)',
-                          applicationIcon: ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.asset(
-                              'assets/images/bike_logo_3d.png',
-                              width: 44,
-                              height: 44,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, size: 36, color: Color(0xFF2563EB)),
-                            ),
-                          ),
-                          children: [
-                            Text(
-                              'Ứng dụng điều khiển xe máy điện Dat Bike (Quantum & Weaver series) tối ưu hóa kết nối BLE và quản lý thông số pin thông minh.',
-                              style: GoogleFonts.plusJakartaSans(fontSize: 13),
-                            ),
-                          ],
-                        );
-                      },
+                      onTap: () => _handleAboutTap(context),
                     ),
 
                     const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
