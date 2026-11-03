@@ -19,6 +19,7 @@ import 'features/dashboard/dashboard_screen.dart';
 import 'features/battery/battery_diagnostics_screen.dart';
 import 'features/charging/charging_screen.dart';
 import 'features/settings/vehicle_settings_screen.dart';
+import 'features/settings/vehicle_management_screen.dart';
 import 'features/home/home_shell.dart';
 import 'ui/app_theme.dart';
 
@@ -44,6 +45,31 @@ class PreviewBleController extends BleController {
         frameSerial: 'RL9C4NGSSSCC00187',
         lastTelemetry: _telemetry(0),
         trip: _mockTrip(0),
+        savedBikes: [
+          SavedBike(
+            id: 'CC:BA:F9:88:24:01',
+            name: 'Dat Bike Quantum S1',
+            model: 'Quantum S1',
+            licensePlate: '29-A1 999.99',
+            frameSerial: 'RL9C4NGSSSCC00187',
+            lastBatteryPercent: 85,
+            lastOdo: 12450.0,
+            isDefault: true,
+            lastConnectedAt: DateTime.now(),
+          ),
+          SavedBike(
+            id: 'CC:BA:F9:11:45:99',
+            name: 'Dat Bike Weaver++',
+            model: 'Weaver++',
+            licensePlate: '59-X3 888.88',
+            frameSerial: 'RL9WPLUS12345678',
+            lastBatteryPercent: 62,
+            lastOdo: 8900.0,
+            isDefault: false,
+            lastConnectedAt: DateTime.now().subtract(const Duration(days: 2)),
+          ),
+        ],
+        activeBikeId: 'CC:BA:F9:88:24:01',
       );
 
   BleState _next(BleState s) => s.copyWith(
@@ -143,6 +169,7 @@ class DatBikePreviewApp extends StatelessWidget {
         '/battery': (_) => const BatteryDiagnosticsScreen(),
         '/charging': (_) => const ChargingScreen(),
         '/settings': (_) => const VehicleSettingsScreen(),
+        '/garage': (_) => const VehicleManagementScreen(),
       },
     );
   }

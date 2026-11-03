@@ -104,13 +104,17 @@ class StatusPill extends StatelessWidget {
             ),
             const SizedBox(width: 8),
           ],
-          Text(
-            label.toUpperCase(),
-            style: GoogleFonts.plusJakartaSans(
-              color: color,
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.06 * 11,
+          Flexible(
+            child: Text(
+              label.toUpperCase(),
+              style: GoogleFonts.plusJakartaSans(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.06 * 11,
+              ),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
             ),
           ),
         ],

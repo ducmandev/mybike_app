@@ -835,7 +835,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 color: ble.eceMode == 1 ? AppColors.amber : AppColors.tertiary,
               ),
               StatusPill(
-                label: 'TỐC ĐỘ: ${ble.speedLimitMode == 1 ? "Giới hạn 60 km/h" : "Full Power"}',
+                label: 'TỐC ĐỘ: ${ble.speedLimitMode == 1 ? "60 km/h" : "Full Power"}',
                 color: ble.speedLimitMode == 1 ? AppColors.primary : AppColors.textDim,
               ),
               if (ble.fwSpeedLimitRaw != null)
@@ -872,8 +872,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                         ],
                       ),
                       content: Text(
-                        'Khi muốn tắt giới hạn về Full Power, bạn cần tắt máy xe và bật lại để bộ điều tốc VESC giải phóng bộ nhớ RAM.\n\n'
-                        'App sẽ gửi lệnh tắt giới hạn tốc độ và chế độ ECE ngay bây giờ. Sau khi tắt, xe sẽ cho chuyển mode lái trở lại (khi ECE bật, xe KHÔNG cho chuyển mode — verified 24/10).',
+                        'Khi muốn tắt giới hạn về Full Power, bạn cần tắt máy xe và bật lại (power-cycle) để bộ điều tốc VESC giải phóng cấu hình.\n\n'
+                        'App sẽ gửi lệnh thông qua ECE và tắt giới hạn ngay bây giờ. Sau khi tắt, xe sẽ cho chuyển mode lái trở lại bình thường.',
                         style: GoogleFonts.plusJakartaSans(fontSize: 13, height: 1.45, color: AppColors.textPrimary),
                       ),
                       actions: [
@@ -922,7 +922,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '📌 Cơ chế ngầm tự động: Để kích hoạt giới hạn 60 km/h, app sẽ tự động mở cổng ECE → ghi trần tốc độ → đóng cổng ECE lại về mặc định. Nhờ đó, giới hạn tốc độ vẫn hoạt động nhưng xe KHÔNG bị khóa đèn và vẫn chuyển chế độ lái (D/S) bình thường.',
+                    '📌 Cơ chế ngầm tự động: Để kích hoạt giới hạn 60 km/h, app sẽ tự động mở cổng ECE → ghi trần tốc độ 60 km/h → đóng cổng ECE lại về mặc định. Nhờ đó, giới hạn tốc độ vẫn hoạt động nhưng xe KHÔNG bị khóa đèn và vẫn chuyển chế độ lái (D/S) bình thường. Khi muốn tắt hoàn toàn về Full Power, VESC xóa trần trong RAM sau khi tắt mở lại xe.',
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,

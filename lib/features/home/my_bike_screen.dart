@@ -20,6 +20,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../core/ble/ble_controller.dart';
 import '../scan/scan_screen.dart';
 import '../settings/vehicle_settings_screen.dart';
+import '../settings/vehicle_management_screen.dart';
 import '../../ui/geely_icons.dart';
 import 'trip_route_screen.dart';
 
@@ -1329,7 +1330,157 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                if (hasBike)
+                if (ble.savedBikes.isNotEmpty) ...[
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.42,
+                    ),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: ble.savedBikes.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
+                      itemBuilder: (context, idx) {
+                        final bike = ble.savedBikes[idx];
+                        final isConnected = connected && (ble.device?.remoteId.str.toLowerCase() == bike.id.toLowerCase());
+                        final isActive = (ble.activeBikeId?.toLowerCase() == bike.id.toLowerCase()) || isConnected;
+                        final percent = isConnected ? ble.lastTelemetry?.percent : bike.lastBatteryPercent;
+                        final odo = isConnected ? ble.lastTelemetry?.odo : bike.lastOdo;
+
+                        return InkWell(
+                          onTap: () {
+                            if (!isActive || !isConnected) {
+                              sheetRef.read(bleProvider.notifier).switchBike(bike, autoConnect: true);
+                              Navigator.pop(ctx);
+                              _heroSnack('Đang chuyển điều khiển sang ${bike.name}...');
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(16),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: isActive ? const Color(0xFFEFF6FF) : const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: isConnected
+                                    ? const Color(0xFF2563EB)
+                                    : (isActive ? const Color(0xFFBFDBFE) : const Color(0xFFE2E8F0)),
+                                width: isConnected ? 1.8 : 1.2,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(12),
+                                    boxShadow: const [
+                                      BoxShadow(color: Color(0x100F172A), blurRadius: 4, offset: Offset(0, 1)),
+                                    ],
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Image.asset(
+                                    'assets/images/bike_logo_3d.png',
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: Color(0xFF2563EB), size: 22),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Flexible(
+                                            child: Text(
+                                              bike.name,
+                                              style: GoogleFonts.plusJakartaSans(
+                                                fontSize: 14.5,
+                                                fontWeight: FontWeight.w700,
+                                                color: const Color(0xFF0F172A),
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          if (bike.isDefault) ...[
+                                            const SizedBox(width: 6),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFFEF3C7),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              child: Text(
+                                                'MẶC ĐỊNH',
+                                                style: GoogleFonts.plusJakartaSans(fontSize: 8, fontWeight: FontWeight.w800, color: const Color(0xFFB45309)),
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '${bike.model ?? "Dat Bike"}${bike.licensePlate != null ? " · ${bike.licensePlate}" : ""}${percent != null ? " · $percent% pin" : ""}${odo != null && odo > 0 ? " · ${odo.toStringAsFixed(0)} km" : ""}',
+                                        style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF64748B)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                if (isConnected)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2563EB),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.check_rounded, color: Colors.white, size: 12),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'ĐANG ĐIỀU KHIỂN',
+                                          style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white),
+                                        ),
+                                      ],
+                                    ),
+                                  )
+                                else if (isActive)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFDBEAFE),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      'ĐÃ CHỌN',
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: const Color(0xFF1D4ED8)),
+                                    ),
+                                  )
+                                else
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF1F5F9),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      'CHỌN XE',
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: const Color(0xFF64748B)),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ] else if (hasBike)
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
@@ -1345,9 +1496,6 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(12),
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x100F172A), blurRadius: 6, offset: Offset(0, 2)),
-                            ],
                           ),
                           clipBehavior: Clip.antiAlias,
                           child: Image.asset(
@@ -1361,39 +1509,15 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                children: [
-                                  Text(
-                                    ble.bikeName ?? 'Xe Dat Bike',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w700,
-                                      color: const Color(0xFF0F172A),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF2563EB),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Text(
-                                      'ĐANG CHỌN',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.white),
-                                    ),
-                                  ),
-                                ],
+                              Text(
+                                ble.bikeName ?? 'Xe Dat Bike',
+                                style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
                               ),
                               const SizedBox(height: 2),
-                              Text(
-                                infoStr,
-                                style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF475569)),
-                              ),
+                              Text(infoStr, style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF475569))),
                             ],
                           ),
                         ),
-                        const Icon(Icons.check_circle_rounded, color: Color(0xFF2563EB), size: 22),
                       ],
                     ),
                   )
@@ -1411,21 +1535,14 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                         const Icon(Icons.two_wheeler_outlined, size: 40, color: Color(0xFF94A3B8)),
                         const SizedBox(height: 10),
                         Text(
-                          'Chưa có xe nào được liên kết',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: const Color(0xFF0F172A),
-                          ),
+                          'Chưa có xe nào trong nhà xe',
+                          style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Bấm "TÌM & GHÉP ĐÔI XE" bên dưới để quét kết nối xe Dat Bike của bạn',
+                          'Bấm "GHÉP ĐÔI XE MỚI" bên dưới để quét kết nối xe Dat Bike của bạn',
                           textAlign: TextAlign.center,
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 12,
-                            color: const Color(0xFF64748B),
-                          ),
+                          style: GoogleFonts.plusJakartaSans(fontSize: 12, color: const Color(0xFF64748B)),
                         ),
                       ],
                     ),
@@ -1433,34 +1550,51 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
 
                 const SizedBox(height: 20),
 
-                // Nút Tìm & Ghép Đôi Xe BLE (Thanh mảnh & tinh tế)
-                InkWell(
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ScanScreen()),
-                    );
-                  },
-                  borderRadius: BorderRadius.circular(16),
-                  child: Container(
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEFF6FF),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: const Color(0xFFBFDBFE), width: 1.2),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.bluetooth_searching_rounded, size: 18, color: Color(0xFF2563EB)),
-                        const SizedBox(width: 8),
-                        Text(
-                          'TÌM & GHÉP ĐÔI XE (BLUETOOTH BLE)',
-                          style: GoogleFonts.plusJakartaSans(fontSize: 12.5, fontWeight: FontWeight.w700, color: const Color(0xFF2563EB), letterSpacing: 0.5),
+                // 2 nút tiện ích: Quản lý nhà xe & Ghép đôi xe mới
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          side: const BorderSide(color: Color(0xFFCBD5E1)),
                         ),
-                      ],
+                        icon: const Icon(Icons.garage_rounded, size: 18, color: Color(0xFF0F172A)),
+                        label: Text(
+                          'QUẢN LÝ NHÀ XE',
+                          style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: const Color(0xFF0F172A)),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const VehicleManagementScreen()),
+                          );
+                        },
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF2563EB),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        icon: const Icon(Icons.add_rounded, size: 18, color: Colors.white),
+                        label: Text(
+                          'GHÉP ĐÔI XE MỚI',
+                          style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const ScanScreen()),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
               ],
@@ -1552,6 +1686,25 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
+                            if (ble.savedBikes.length > 1) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEFF6FF),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                                ),
+                                child: Text(
+                                  '${ble.savedBikes.length} xe',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: const Color(0xFF2563EB),
+                                  ),
+                                ),
+                              ),
+                            ],
                             const SizedBox(width: 4),
                             const Icon(Icons.swap_horiz_rounded, size: 18, color: Color(0xFF2563EB)),
                           ],

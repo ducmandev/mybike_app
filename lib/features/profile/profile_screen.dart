@@ -19,6 +19,7 @@ import '../battery/battery_diagnostics_screen.dart';
 import '../ota/ota_screen.dart';
 import '../scan/scan_screen.dart';
 import '../settings/vehicle_settings_screen.dart';
+import '../settings/vehicle_management_screen.dart';
 import '../logs/logs_screen.dart';
 import '../firmware_lab/firmware_lab_screen.dart';
 
@@ -195,9 +196,22 @@ class ProfileScreen extends ConsumerWidget {
                 ),
                 child: Column(
                   children: [
-                    // 0. Quản lý xe & Ghép đôi xe Dat Bike
+                    // 0. Quản lý Nhà Xe (Garage)
                     _profileListItem(
-                      icon: const Icon(Icons.bluetooth_searching_rounded, size: 22, color: Color(0xFF2563EB)),
+                      icon: const Icon(Icons.garage_rounded, size: 22, color: Color(0xFF2563EB)),
+                      title: 'Nhà xe của tôi (${ble.savedBikes.length} xe)',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const VehicleManagementScreen()),
+                        );
+                      },
+                    ),
+
+                    const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
+
+                    // 0.1 Ghép đôi xe mới
+                    _profileListItem(
+                      icon: const Icon(Icons.bluetooth_searching_rounded, size: 22, color: Color(0xFF0F172A)),
                       title: 'Ghép đôi xe mới',
                       onTap: () {
                         Navigator.of(context).push(

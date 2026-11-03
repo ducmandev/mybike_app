@@ -14,6 +14,7 @@ import 'features/dashboard/dashboard_screen.dart';
 import 'features/battery/battery_diagnostics_screen.dart';
 import 'features/charging/charging_screen.dart';
 import 'features/settings/vehicle_settings_screen.dart';
+import 'features/settings/vehicle_management_screen.dart';
 import 'features/home/home_shell.dart';
 import 'features/logs/logs_screen.dart';
 import 'features/firmware_lab/firmware_lab_screen.dart';
@@ -57,6 +58,7 @@ class MyBikeApp extends StatelessWidget {
         '/battery': (_) => const BatteryDiagnosticsScreen(),
         '/charging': (_) => const ChargingScreen(),
         '/settings': (_) => const VehicleSettingsScreen(),
+        '/garage': (_) => const VehicleManagementScreen(),
         '/logs': (_) => const LogsScreen(),
         '/lab': (_) => const FirmwareLabScreen(),
       },

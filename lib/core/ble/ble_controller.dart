@@ -20,9 +20,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../proto/bike_log.dart';
 import '../models/trip_gps_point.dart';
+import '../models/saved_bike.dart';
 import '../services/foreground_service.dart';
 import '../services/trip_gps_tracker.dart';
 import '../services/trip_storage_service.dart';
+import '../services/vehicle_storage_service.dart';
 import '../session/bike_session_crypto.dart';
 import '../utils/kalman_filter.dart';
 import 'ble_logger.dart';
@@ -30,6 +32,8 @@ import 'ble_permissions.dart';
 import 'gatt.dart';
 
 export '../models/trip_gps_point.dart';
+export '../models/saved_bike.dart';
+export '../services/vehicle_storage_service.dart';
 
 enum BlePhase { idle, scanning, connecting, connected, reconnecting, disconnected }
 
@@ -253,6 +257,8 @@ class BleState {
   final int? fwSpeedLimitRaw; // u8 từ 0a19a49a
   final int? distanceRawU16; // u16 LE từ 5d681587
   final bool vescProgActive; // bool từ b0ca953d
+  final List<SavedBike> savedBikes; // Danh sách xe trong nhà xe (Garage)
+  final String? activeBikeId; // ID xe đang kích hoạt điều khiển
 
   const BleState({
     required this.phase,
@@ -305,6 +311,8 @@ class BleState {
     this.fwSpeedLimitRaw,
     this.distanceRawU16,
     this.vescProgActive = false,
+    this.savedBikes = const [],
+    this.activeBikeId,
   });
 
   BleState copyWith({
@@ -358,6 +366,8 @@ class BleState {
     int? fwSpeedLimitRaw,
     int? distanceRawU16,
     bool? vescProgActive,
+    List<SavedBike>? savedBikes,
+    String? activeBikeId,
   }) =>
       BleState(
         phase: phase ?? this.phase,
@@ -410,6 +420,8 @@ class BleState {
         fwSpeedLimitRaw: fwSpeedLimitRaw ?? this.fwSpeedLimitRaw,
         distanceRawU16: distanceRawU16 ?? this.distanceRawU16,
         vescProgActive: vescProgActive ?? this.vescProgActive,
+        savedBikes: savedBikes ?? this.savedBikes,
+        activeBikeId: activeBikeId ?? this.activeBikeId,
       );
 }
 
@@ -552,10 +564,27 @@ class BleController extends Notifier<BleState> {
     final reconnMax = prefs.getInt(_kReconnectMaxAttempts) ?? 5;
     final reconnInterval = prefs.getInt(_kReconnectIntervalSeconds) ?? 5;
 
+    final savedBikes = await VehicleStorageService.instance.loadSavedBikes();
+    String? activeId = savedId;
+    String? activeName = savedName;
+
+    if (savedBikes.isNotEmpty) {
+      final defaultBike = savedBikes.firstWhere((b) => b.isDefault, orElse: () => savedBikes.first);
+      if (activeId == null || !savedBikes.any((b) => b.id.toLowerCase() == activeId!.toLowerCase())) {
+        activeId = defaultBike.id;
+        activeName = defaultBike.name;
+      } else {
+        final currentBike = savedBikes.firstWhere((b) => b.id.toLowerCase() == activeId!.toLowerCase());
+        activeName = currentBike.name;
+      }
+    }
+
     final loadedHistory = await TripStorageService.instance.loadAllTrips();
 
     state = state.copyWith(
-      bikeName: (savedId != null && savedName != null) ? savedName : (savedId == null ? null : state.bikeName),
+      savedBikes: savedBikes,
+      activeBikeId: activeId,
+      bikeName: activeName ?? ((savedId != null && savedName != null) ? savedName : (savedId == null ? null : state.bikeName)),
       userName: savedUserName,
       tripHistory: loadedHistory,
       autoLockWalkAway: autoLock,
@@ -584,7 +613,7 @@ class BleController extends Notifier<BleState> {
     // Tự động khôi phục dữ liệu GPS hành trình dở dang nếu trước đó app bị vuốt tắt
     unawaited(TripGpsTracker.instance.restoreUnsavedPoints());
     // Tự động kết nối ngay khi mở app nếu đã từng kết nối xe trước đó
-    if (savedId != null && savedId.isNotEmpty && autoReconn) {
+    if (activeId != null && activeId.isNotEmpty && autoReconn) {
       unawaited(tryRestoreLastBike());
     }
   }
@@ -943,13 +972,13 @@ class BleController extends Notifier<BleState> {
     if (state.phase != BlePhase.connected) {
       state = state.copyWith(
         speedLimitMode: on ? 1 : 0,
-        eceMode: 0,
+        eceMode: on ? 1 : 0,
         fwSpeedLimitRaw: on ? 1 : 0,
       );
       if (on) {
         return '⚠️ Xe chưa kết nối. Đã lưu cấu hình giới hạn tốc độ 60 km/h trên ứng dụng.';
       } else {
-        return '⚠️ Xe chưa kết nối. Đã lưu cấu hình tắt giới hạn (Full Power) trên ứng dụng.';
+        return '⚠️ Xe chưa kết nối. Đã lưu cấu hình tắt giới hạn (Full Power) trên ứng dụng.\nLƯU Ý: Cần khởi động lại xe (power-cycle) để VESC xóa trần trong RAM.';
       }
     }
 
@@ -1227,6 +1256,18 @@ class BleController extends Notifier<BleState> {
     final res = await _writeSetting(Gatt.fwNameChar, bytes, 'tên xe');
     final prefs = await _prefs;
     await prefs.setString(_kLastBikeName, trimmed);
+
+    final currentId = state.activeBikeId ?? state.device?.remoteId.str;
+    if (currentId != null) {
+      final existing = state.savedBikes.where((b) => b.id.toLowerCase() == currentId.toLowerCase()).firstOrNull;
+      if (existing != null) {
+        final updated = existing.copyWith(name: trimmed);
+        final list = await VehicleStorageService.instance.addOrUpdateBike(updated);
+        state = state.copyWith(bikeName: trimmed, savedBikes: list);
+        return res;
+      }
+    }
+
     state = state.copyWith(bikeName: trimmed);
     return res;
   }
@@ -1236,6 +1277,18 @@ class BleController extends Notifier<BleState> {
     final trimmed = name.trim();
     final prefs = await _prefs;
     await prefs.setString(_kLastBikeName, trimmed);
+
+    final currentId = state.activeBikeId ?? state.device?.remoteId.str;
+    if (currentId != null) {
+      final existing = state.savedBikes.where((b) => b.id.toLowerCase() == currentId.toLowerCase()).firstOrNull;
+      if (existing != null) {
+        final updated = existing.copyWith(name: trimmed);
+        final list = await VehicleStorageService.instance.addOrUpdateBike(updated);
+        state = state.copyWith(bikeName: trimmed, savedBikes: list);
+        return;
+      }
+    }
+
     state = state.copyWith(bikeName: trimmed);
   }
 
@@ -3199,7 +3252,10 @@ class BleController extends Notifier<BleState> {
         ? pairingToken!
         : Gatt.defaultPairingToken;
     final prefs = await _prefs;
-    final stored = prefs.getString(_kBikePassword);
+    final perBikePw = (dev != null)
+        ? await VehicleStorageService.instance.getBikePassword(dev.remoteId.str)
+        : null;
+    final stored = perBikePw ?? prefs.getString(_kBikePassword);
     final hasStoredPassword = stored != null && stored.isNotEmpty;
     // PIN ưu tiên: password truyền vào (nếu có) -> password đã lưu trong prefs -> rỗng
     final pin = (password != null && password.isNotEmpty)
@@ -3556,6 +3612,9 @@ class BleController extends Notifier<BleState> {
 
       // Token lên 87efab0d nếu session sống (đồng bộ giờ 44e2bde6 đã thực hiện trong tryPassword)
       if (live && liveKey != null) {
+        if (dev != null && livePw.isNotEmpty) {
+          unawaited(VehicleStorageService.instance.setBikePassword(dev.remoteId.str, livePw));
+        }
         final sessionUuidChar = find(Gatt.sessionUuid);
         if (sessionUuidChar != null) {
           await sessionUuidChar
@@ -3671,6 +3730,11 @@ class BleController extends Notifier<BleState> {
     await _notifySub?.cancel();
     _notifySub = null;
 
+    List<SavedBike> remainingBikes = const [];
+    if (savedId != null) {
+      remainingBikes = await VehicleStorageService.instance.removeBike(savedId);
+    }
+
     await prefs.remove(_kLastBikeId);
     await prefs.remove(_kLastBikeName);
     await prefs.remove(_kBikePassword);
@@ -3678,11 +3742,23 @@ class BleController extends Notifier<BleState> {
     await BleLogger.instance.close();
     unawaited(ForegroundService.stop());
 
-    state = const BleState(
+    String? nextId;
+    String? nextName;
+    if (remainingBikes.isNotEmpty) {
+      final nextBike = remainingBikes.firstWhere((b) => b.isDefault, orElse: () => remainingBikes.first);
+      nextId = nextBike.id;
+      nextName = nextBike.name;
+      await prefs.setString(_kLastBikeId, nextId);
+      await prefs.setString(_kLastBikeName, nextName);
+    }
+
+    state = BleState(
       phase: BlePhase.idle,
       message: 'Đã xóa thông tin xe',
       device: null,
-      bikeName: null,
+      bikeName: nextName,
+      activeBikeId: nextId,
+      savedBikes: remainingBikes,
     );
   }
 
@@ -3873,10 +3949,169 @@ class BleController extends Notifier<BleState> {
   }
 
   Future<void> _saveLastBike(BluetoothDevice device, String? name) async {
+    final devId = device.remoteId.str;
+    final bikeName = name ?? (device.platformName.isNotEmpty ? device.platformName : 'Xe Dat Bike');
+
+    final existingBike = state.savedBikes.where((b) => b.id.toLowerCase() == devId.toLowerCase()).firstOrNull;
+    final updatedBike = (existingBike != null)
+        ? existingBike.copyWith(
+            name: (name != null && name.isNotEmpty) ? name : existingBike.name,
+            originalAdvName: device.platformName.isNotEmpty ? device.platformName : existingBike.originalAdvName,
+            lastConnectedAt: DateTime.now(),
+            lastOdo: state.lastTelemetry?.odo ?? existingBike.lastOdo,
+            lastBatteryPercent: state.lastTelemetry?.percent ?? existingBike.lastBatteryPercent,
+            frameSerial: state.frameSerial ?? existingBike.frameSerial,
+          )
+        : SavedBike(
+            id: devId,
+            name: bikeName,
+            originalAdvName: device.platformName,
+            model: _inferBikeModel(device.platformName, state.bikeModelCode),
+            lastConnectedAt: DateTime.now(),
+            lastOdo: state.lastTelemetry?.odo,
+            lastBatteryPercent: state.lastTelemetry?.percent,
+            frameSerial: state.frameSerial,
+            isDefault: state.savedBikes.isEmpty,
+          );
+
+    final updatedList = await VehicleStorageService.instance.addOrUpdateBike(updatedBike);
+
     final prefs = await _prefs;
-    await prefs.setString(_kLastBikeId, device.remoteId.str);
-    await prefs.setString(_kLastBikeName, name ?? device.platformName);
-    state = state.copyWith(bikeName: name ?? device.platformName);
+    await prefs.setString(_kLastBikeId, devId);
+    await prefs.setString(_kLastBikeName, updatedBike.name);
+
+    state = state.copyWith(
+      savedBikes: updatedList,
+      activeBikeId: devId,
+      bikeName: updatedBike.name,
+    );
+  }
+
+  String _inferBikeModel(String platformName, String? modelCode) {
+    final lower = platformName.toLowerCase();
+    if (modelCode != null && modelCode.isNotEmpty) {
+      if (modelCode.contains('QT_S1') || modelCode.contains('QUANTUM_S1')) return 'Quantum S1';
+      if (modelCode.contains('QT') || modelCode.contains('QUANTUM')) return 'Quantum';
+      if (modelCode.contains('W_PLUS') || modelCode.contains('WEAVER_PLUS')) return 'Weaver++';
+      if (modelCode.contains('W200') || modelCode.contains('WEAVER_200')) return 'Weaver 200';
+    }
+    if (lower.contains('s1') || lower.contains('quantum s1')) return 'Quantum S1';
+    if (lower.contains('quantum')) return 'Quantum';
+    if (lower.contains('weaver++') || lower.contains('weaver plus')) return 'Weaver++';
+    if (lower.contains('weaver 200')) return 'Weaver 200';
+    if (lower.contains('weaver')) return 'Weaver';
+    return 'Quantum';
+  }
+
+  /// Thêm xe mới vào Garage
+  Future<void> addBike(SavedBike bike, {bool connectImmediately = false}) async {
+    final updatedList = await VehicleStorageService.instance.addOrUpdateBike(bike);
+    state = state.copyWith(savedBikes: updatedList);
+    BleLogger.instance.event('garage_bike_added', {'id': bike.id, 'name': bike.name});
+    if (connectImmediately) {
+      await switchBike(bike, autoConnect: true);
+    }
+  }
+
+  /// Cập nhật thông tin xe trong Garage (Đổi tên, model, biển số, mật khẩu, v.v.)
+  Future<void> updateBike(SavedBike bike) async {
+    final updatedList = await VehicleStorageService.instance.addOrUpdateBike(bike);
+    final isActive = (state.activeBikeId?.toLowerCase() == bike.id.toLowerCase()) ||
+                     (state.device?.remoteId.str.toLowerCase() == bike.id.toLowerCase());
+    state = state.copyWith(
+      savedBikes: updatedList,
+      bikeName: isActive ? bike.name : state.bikeName,
+    );
+    if (isActive) {
+      final prefs = await _prefs;
+      await prefs.setString(_kLastBikeName, bike.name);
+    }
+    BleLogger.instance.event('garage_bike_updated', {'id': bike.id, 'name': bike.name});
+  }
+
+  /// Xóa xe khỏi Garage
+  Future<void> deleteBike(String bikeId) async {
+    final isCurrentActive = (state.activeBikeId?.toLowerCase() == bikeId.toLowerCase()) ||
+                           (state.device?.remoteId.str.toLowerCase() == bikeId.toLowerCase());
+
+    if (isCurrentActive && (state.phase == BlePhase.connected || state.phase == BlePhase.connecting)) {
+      await disconnect();
+    }
+
+    final updatedList = await VehicleStorageService.instance.removeBike(bikeId);
+
+    String? nextActiveId;
+    String? nextBikeName;
+    if (updatedList.isNotEmpty) {
+      final defaultBike = updatedList.firstWhere((b) => b.isDefault, orElse: () => updatedList.first);
+      nextActiveId = defaultBike.id;
+      nextBikeName = defaultBike.name;
+    }
+
+    state = state.copyWith(
+      savedBikes: updatedList,
+      activeBikeId: isCurrentActive ? nextActiveId : state.activeBikeId,
+      bikeName: isCurrentActive ? nextBikeName : state.bikeName,
+      message: 'Đã xóa xe khỏi danh sách',
+    );
+
+    final prefs = await _prefs;
+    if (isCurrentActive) {
+      if (nextActiveId != null) {
+        await prefs.setString(_kLastBikeId, nextActiveId);
+        await prefs.setString(_kLastBikeName, nextBikeName ?? 'Xe Dat Bike');
+      } else {
+        await prefs.remove(_kLastBikeId);
+        await prefs.remove(_kLastBikeName);
+      }
+    }
+    BleLogger.instance.event('garage_bike_deleted', {'id': bikeId});
+  }
+
+  /// Đặt xe làm mặc định (tự kết nối khi mở app)
+  Future<void> setDefaultBike(String bikeId) async {
+    final updatedList = await VehicleStorageService.instance.setDefaultBike(bikeId);
+    state = state.copyWith(savedBikes: updatedList);
+    final target = updatedList.firstWhere((b) => b.id.toLowerCase() == bikeId.toLowerCase());
+    final prefs = await _prefs;
+    await prefs.setString(_kLastBikeId, target.id);
+    await prefs.setString(_kLastBikeName, target.name);
+    BleLogger.instance.event('garage_bike_set_default', {'id': bikeId});
+  }
+
+  /// Chuyển đổi điều khiển sang xe khác (Multi-Bike Control)
+  Future<void> switchBike(SavedBike bike, {bool autoConnect = true}) async {
+    BleLogger.instance.event('garage_switch_bike', {'target_id': bike.id, 'target_name': bike.name});
+
+    // Nếu xe này đang kết nối rồi -> chỉ cần đồng bộ activeBikeId
+    if (state.phase == BlePhase.connected && state.device?.remoteId.str.toLowerCase() == bike.id.toLowerCase()) {
+      state = state.copyWith(activeBikeId: bike.id, bikeName: bike.name);
+      return;
+    }
+
+    // Ngắt kết nối xe hiện tại
+    if (state.phase == BlePhase.connected || state.phase == BlePhase.connecting || state.phase == BlePhase.reconnecting) {
+      await disconnect();
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    // Cập nhật state sang xe mới
+    state = state.copyWith(
+      activeBikeId: bike.id,
+      bikeName: bike.name,
+      phase: BlePhase.disconnected,
+      device: null,
+      message: 'Đã chuyển điều khiển sang ${bike.name}',
+    );
+
+    final prefs = await _prefs;
+    await prefs.setString(_kLastBikeId, bike.id);
+    await prefs.setString(_kLastBikeName, bike.name);
+
+    if (autoConnect) {
+      final dev = BluetoothDevice.fromId(bike.id);
+      unawaited(connect(dev, name: bike.name));
+    }
   }
 }
 
