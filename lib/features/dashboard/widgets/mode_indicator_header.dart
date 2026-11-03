@@ -26,9 +26,9 @@ class ModeIndicatorHeader extends StatelessWidget {
       return ('CHÂN CHỐNG HẠ', AppColors.amber);
     }
     return switch (state) {
-      BikeState.super_ => ('SPORT MODE (S)', const Color(0xFFEA580C)),
-      BikeState.drive => ('DRIVE MODE (D)', AppColors.primary),
-      BikeState.turtle => ('ECO MODE', AppColors.tertiary),
+      BikeState.super_ => ('SPORT (S)', const Color(0xFFEA580C)),
+      BikeState.drive => ('DRIVE (D)', AppColors.primary),
+      BikeState.turtle => ('ECO (E)', AppColors.tertiary),
       BikeState.parking => ('ĐỖ XE (PARKING)', AppColors.amber),
       BikeState.reverse => ('LÙI (REVERSE)', const Color(0xFF8B5CF6)),
       BikeState.cruiseControl => ('CRUISE CONTROL', AppColors.secondary),
