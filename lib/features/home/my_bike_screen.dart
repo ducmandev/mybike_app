@@ -23,6 +23,7 @@ import '../settings/vehicle_settings_screen.dart';
 import '../settings/vehicle_management_screen.dart';
 import '../../ui/geely_icons.dart';
 import 'trip_route_screen.dart';
+import '../parking/find_my_bike_screen.dart';
 
 class MyBikeScreen extends ConsumerStatefulWidget {
   const MyBikeScreen({super.key});
@@ -2142,7 +2143,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             activeBorderColor: const Color(0xFFBBF7D0),
                           ),
 
-                          // 3. Tìm Xe Trong Bãi (Còi & Đèn Định Vị - Bật / Tắt 2 chiều)
+                          // 3. Tìm Xe Trong Bãi (Còi & Đèn Định Vị - Mở Precision Radar)
                           _quickActionButton(
                             icon: ble.isFindingBike
                                 ? const Icon(
@@ -2155,7 +2156,15 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                     size: 24,
                                   ),
                             label: ble.isFindingBike ? 'Tắt Còi' : 'Tìm Xe',
-                            onTap: _quickFindBike,
+                            onTap: () {
+                              if (ble.isFindingBike) {
+                                _quickFindBike();
+                              } else {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const FindMyBikeScreen()),
+                                );
+                              }
+                            },
                             active: ble.isFindingBike,
                             activeColor: const Color(0xFFFEF2F2),
                             activeBorderColor: const Color(0xFFFECACA),
@@ -2205,6 +2214,13 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
               const SizedBox(height: 16),
 
               // ══════════════════════════════════════════════════════════════
+              // 4.5. CARD VỊ TRÍ ĐỖ XE & TÌM XE (SMART PARKING)
+              // ══════════════════════════════════════════════════════════════
+              _buildSmartParkingCard(),
+
+              const SizedBox(height: 16),
+
+              // ══════════════════════════════════════════════════════════════
               // 5. CARD CHUYẾN ĐI (Trip Computer & Thống kê hành trình)
               // ══════════════════════════════════════════════════════════════
               _buildTripCard(ble.trip),
@@ -2220,6 +2236,161 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
   // ══════════════════════════════════════════════════════════════════════════
   // WIDGETS CHUYẾN ĐI (TRIP COMPUTER) CHO XE MÁY ĐIỆN DAT BIKE
   // ══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildSmartParkingCard() {
+    final ble = ref.watch(bleProvider);
+    return FutureBuilder<ParkedLocation?>(
+      future: ParkingStorageService.instance.loadParkedLocation(
+        bikeId: ble.device?.remoteId.str,
+      ),
+      builder: (context, snapshot) {
+        final loc = snapshot.data;
+        final now = DateTime.now();
+        final parkedTime = loc?.timestamp ?? now.subtract(const Duration(hours: 1, minutes: 45));
+        final diff = now.difference(parkedTime);
+        final hours = diff.inHours;
+        final mins = diff.inMinutes % 60;
+        final durationText = hours > 0
+            ? 'Đã đỗ ${hours}h ${mins}p'
+            : 'Đã đỗ ${mins}p';
+        final addressText = loc?.note?.isNotEmpty == true
+            ? loc!.note!
+            : (loc?.address ?? 'Vincom Center Đồng Khởi · Hầm B2 - Cột K12');
+
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: const Color(0xFFF1F5F9)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x060F172A),
+                blurRadius: 16,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFDBEAFE)),
+                    ),
+                    child: const Icon(
+                      Icons.local_parking_rounded,
+                      color: Color(0xFF2563EB),
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Vị Trí Đỗ Xe & Tìm Xe',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFF0F172A),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$durationText · Tự động ghim',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: const Color(0xFF64748B),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  InkWell(
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const FindMyBikeScreen()),
+                      );
+                    },
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'Radar',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF2563EB),
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          const Icon(
+                            Icons.radar_rounded,
+                            size: 16,
+                            color: Color(0xFF2563EB),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFF1F5F9)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.place_rounded,
+                      size: 16,
+                      color: Color(0xFFEA580C),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        addressText,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: const Color(0xFF0F172A),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   Widget _buildTripCard(TripData trip) {
     final mins = trip.duration.inMinutes;

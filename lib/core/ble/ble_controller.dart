@@ -25,6 +25,7 @@ import '../services/foreground_service.dart';
 import '../services/trip_gps_tracker.dart';
 import '../services/trip_storage_service.dart';
 import '../services/vehicle_storage_service.dart';
+import '../services/parking_storage_service.dart';
 import '../session/bike_session_crypto.dart';
 import '../utils/kalman_filter.dart';
 import 'ble_logger.dart';
@@ -33,7 +34,9 @@ import 'gatt.dart';
 
 export '../models/trip_gps_point.dart';
 export '../models/saved_bike.dart';
+export '../models/parked_location.dart';
 export '../services/vehicle_storage_service.dart';
+export '../services/parking_storage_service.dart';
 
 enum BlePhase { idle, scanning, connecting, connected, reconnecting, disconnected }
 
@@ -660,6 +663,18 @@ class BleController extends Notifier<BleState> {
   /// Tự động lưu chuyến đi hiện tại vào lịch sử.
   /// QUY TẮC: Chỉ lưu hành trình nếu quãng đường di chuyển từ 1km trở lên (>= 1.0 km).
   /// Nếu di chuyển dưới 1km (< 1.0 km) thì tuyệt đối không lưu hành trình.
+    void _recordParkingSnapshot() {
+    final devId = _device?.remoteId.str ?? '';
+    final name = state.bikeName ?? 'Dat Bike Quantum S1';
+    unawaited(ParkingStorageService.instance.recordParkedLocationOnDisconnect(
+      bikeId: devId,
+      bikeName: name,
+      batteryPercent: state.lastTelemetry?.percent,
+      voltage: state.lastTelemetry?.voltage,
+      isLocked: state.isLocked,
+    ));
+  }
+
   Future<void> _archiveCurrentTripIfMeaningful() async {
     final trip = state.trip;
     final durSec = trip.duration.inSeconds;
@@ -2814,6 +2829,7 @@ class BleController extends Notifier<BleState> {
     try {
       await _sendPowerCommand('0', 'TẮT XE');
       unawaited(_archiveCurrentTripIfMeaningful());
+      _recordParkingSnapshot();
     } finally {
       _isCommandBusy = false;
       _lastCommandCompletedAt = DateTime.now();
@@ -2887,6 +2903,7 @@ class BleController extends Notifier<BleState> {
   Future<void> disconnect() async {
     _manualDisconnect = true;
     await _archiveCurrentTripIfMeaningful();
+    _recordParkingSnapshot();
     TripGpsTracker.instance.stopTracking();
     _cancelReconnect();
     _stopKeepalive();
@@ -3795,6 +3812,7 @@ class BleController extends Notifier<BleState> {
         _batteryChar = null;
         _batteryPollCounter = 0;
         unawaited(_archiveCurrentTripIfMeaningful());
+        _recordParkingSnapshot();
 
         if (_manualDisconnect) {
           // Recovery-disconnect không đóng logger (log giữa chừng phải còn
