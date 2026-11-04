@@ -212,8 +212,8 @@ void main() {
   });
 
   group('VehicleSettingsScreen Safe Speed Limit 60 km/h UI Tests', () {
-    testWidgets('VehicleSettingsScreen shows unified 60 km/h section and VESC RAM notice', (tester) async {
-      tester.view.physicalSize = const Size(360 * 2.0, 1600 * 2.0);
+    testWidgets('VehicleSettingsScreen shows unified 60 km/h section in Advanced section', (tester) async {
+      tester.view.physicalSize = const Size(360 * 2.0, 2200 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -240,22 +240,28 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
 
-      final titleFinder = find.text('AN TOÀN & ĐIỀU KHIỂN');
+      final titleFinder = find.text('AN TOÀN XE');
       await tester.scrollUntilVisible(titleFinder, 300, scrollable: find.byType(Scrollable).first);
       expect(titleFinder, findsOneWidget);
 
+      final advFinder = find.text('NÂNG CAO & VẬN HÀNH THỬ NGHIỆM');
+      await tester.scrollUntilVisible(advFinder, 300, scrollable: find.byType(Scrollable).first);
+      expect(advFinder, findsOneWidget);
+
+      // Mở mục nâng cao
+      await tester.tap(advFinder);
+      await tester.pumpAndSettle();
+
       final limitFinder = find.text('Giới hạn 60 km/h');
+      await tester.scrollUntilVisible(limitFinder, 300, scrollable: find.byType(Scrollable).first);
       expect(limitFinder, findsOneWidget);
 
       final unlimitedFinder = find.text('Không giới hạn');
       expect(unlimitedFinder, findsOneWidget);
-
-      expect(find.textContaining('ECE là "cổng"'), findsOneWidget);
-      expect(find.textContaining('VESC xóa trần trong RAM'), findsOneWidget);
     });
 
-    testWidgets('Tapping Không giới hạn when limited prompts VESC power-cycle dialog', (tester) async {
-      tester.view.physicalSize = const Size(400 * 2.0, 2500 * 2.0);
+    testWidgets('Tapping Không giới hạn when limited prompts power-cycle dialog', (tester) async {
+      tester.view.physicalSize = const Size(400 * 2.0, 3000 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -281,15 +287,22 @@ void main() {
 
       await tester.pumpAndSettle();
 
+      final advFinder = find.text('NÂNG CAO & VẬN HÀNH THỬ NGHIỆM');
+      await tester.scrollUntilVisible(advFinder, 300, scrollable: find.byType(Scrollable).first);
+      await tester.tap(advFinder);
+      await tester.pumpAndSettle();
+
       final unlimitedOption = find.text('Không giới hạn');
+      await tester.scrollUntilVisible(unlimitedOption, 300, scrollable: find.byType(Scrollable).first);
+      await tester.drag(find.byType(Scrollable).first, const Offset(0, -400));
+      await tester.pumpAndSettle();
       expect(unlimitedOption, findsOneWidget);
       await tester.tap(unlimitedOption);
       await tester.pumpAndSettle();
 
-      // Check dialog appears with explanation
+      // Check dialog appears with clean explanation
       expect(find.text('Tắt Giới Hạn Tốc Độ?'), findsOneWidget);
-      expect(find.textContaining('ECE là "cổng"'), findsOneWidget);
-      expect(find.textContaining('VESC xóa trần trong RAM'), findsOneWidget);
+      expect(find.textContaining('tắt máy và khởi động lại xe'), findsOneWidget);
       expect(find.text('XÁC NHẬN TẮT'), findsOneWidget);
     });
   });

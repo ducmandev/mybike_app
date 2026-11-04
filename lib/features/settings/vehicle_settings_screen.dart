@@ -127,11 +127,9 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           _buildTimeSyncCard(ble, connected),
           const SizedBox(height: 16),
 
-          // 3. An toàn & điều khiển — đã verify trên xe thật
-          const SectionTitle('AN TOÀN & ĐIỀU KHIỂN'),
+          // 3. An toàn xe
+          const SectionTitle('AN TOÀN XE'),
           const SizedBox(height: 10),
-          _buildSpeedLimiterCard(ble),
-          const SizedBox(height: 12),
           _buildLockLightsCard(ble, connected),
           const SizedBox(height: 16),
 
@@ -603,7 +601,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
           const SizedBox(height: 12),
           Text(
-            'Gửi tổng số giây trong ngày theo giờ địa phương (0–86399) qua kênh Protected Write (0x44E2BDE6) vào đồng hồ RTC của xe, khắc phục lỗi lệch giờ khi xe ngắt bình hoặc đỗ lâu ngày.',
+            'Đồng bộ giờ điện thoại vào đồng hồ taplo của xe, khắc phục hiện tượng lệch giờ khi xe ngắt bình hoặc đỗ lâu ngày.',
             style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: AppColors.textDim, height: 1.4),
           ),
         ],
@@ -621,33 +619,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Ghi chú kỹ thuật về tính năng còi tìm xe
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.secondary.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.secondary.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.info_outline_rounded, color: AppColors.secondary, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Đặc tả BLE (RE2 verified): Khi xe đang tắt máy, ghi Plain \'1\' vào kênh 0x350D9A82 sẽ phát 1 tiếng còi đánh thức MCU mà không đóng relay nguồn. Kênh 0x87EFAB0D (setBeepUUID) trong fw 1.14.0 chỉ lưu NVS chứ không có hàm phát còi.',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 11.5,
-                      color: AppColors.textPrimary,
-                      height: 1.35,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
+
           Text(
             'Chọn mẫu nhịp chuông kèn khi bấm "Tìm xe" trong bãi đỗ:',
             style: GoogleFonts.plusJakartaSans(fontSize: 12.5, color: AppColors.textDim),
@@ -780,33 +752,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            margin: const EdgeInsets.only(bottom: 12),
-            decoration: BoxDecoration(
-              color: AppColors.tertiary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.tertiary.withValues(alpha: 0.35)),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.verified_rounded, color: AppColors.tertiary, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    '✅ Đã verify trên xe 24/10: ECE là "cổng" của giới hạn — cần bật ECE thì trần 60 km/h mới có hiệu lực. App luôn ghi đồng bộ cả ECE + SpeedLimit.',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.tertiary,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
+
           Text(
             connected ? 'Tùy chọn tốc độ an toàn (ghi xuống xe ngay):' : 'Kết nối xe để ghi giới hạn tốc độ xuống firmware:',
             style: GoogleFonts.plusJakartaSans(fontSize: 12.5, color: AppColors.textDim),
@@ -824,11 +770,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 label: 'TỐC ĐỘ: ${ble.speedLimitMode == 1 ? "60 km/h" : "Full Power"}',
                 color: ble.speedLimitMode == 1 ? AppColors.primary : AppColors.textDim,
               ),
-              if (ble.fwSpeedLimitRaw != null)
-                StatusPill(
-                  label: 'RAW: ${ble.fwSpeedLimitRaw}',
-                  color: AppColors.secondary,
-                ),
+
             ],
           ),
           const SizedBox(height: 12),
@@ -858,8 +800,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                         ],
                       ),
                       content: Text(
-                        'Khi muốn tắt giới hạn về Full Power, bạn cần tắt máy xe và bật lại (power-cycle) để bộ điều tốc VESC giải phóng cấu hình.\n\n'
-                        'App sẽ gửi lệnh thông qua ECE và tắt giới hạn ngay bây giờ. Sau khi tắt, xe sẽ cho chuyển mode lái trở lại bình thường.',
+                        'Khi tắt giới hạn tốc độ, bạn cần tắt máy và khởi động lại xe để kích hoạt lại mức công suất tối đa.\n\n'
+                        'Sau khi khởi động lại, xe sẽ vận hành và chuyển các chế độ lái bình thường.',
                         style: GoogleFonts.plusJakartaSans(fontSize: 13, height: 1.45, color: AppColors.textPrimary),
                       ),
                       actions: [
@@ -894,33 +836,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: AppColors.amber.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: AppColors.amber.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.info_outline_rounded, color: AppColors.amber, size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '📌 Cơ chế ngầm tự động: Để kích hoạt giới hạn 60 km/h, app sẽ tự động mở cổng ECE → ghi trần tốc độ 60 km/h → đóng cổng ECE lại về mặc định. Nhờ đó, giới hạn tốc độ vẫn hoạt động nhưng xe KHÔNG bị khóa đèn và vẫn chuyển chế độ lái (D/S) bình thường. Khi muốn tắt hoàn toàn về Full Power, VESC xóa trần trong RAM sau khi tắt mở lại xe.',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.amber,
-                      height: 1.35,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
+
           const Divider(color: AppColors.panelBorder, height: 1),
           const SizedBox(height: 14),
 
@@ -935,7 +851,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                         style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
                     Text(
-                      'Điều chỉnh độ nhạy ga mượt mà, chở người hay hàng hóa không bị giật (kênh 0xa1d8e7c4)',
+                      'Điều chỉnh độ nhạy tay ga êm mượt, chống giật khi chở người hoặc hàng hóa',
                       style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
                     ),
                   ],
@@ -978,7 +894,6 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
 
   /// Tiện ích xe & Tự động hóa ECU: Tự tắt khi đỗ + Tự bật/tắt theo khoảng cách + Đặt tên + Thẻ NFC.
   Widget _buildUtilityCard(BleState ble, bool connected) {
-    final distLabel = ble.distanceRawU16 != null ? '${ble.distanceRawU16}' : 'Mặc định (8)';
 
     return Panel(
       padding: const EdgeInsets.all(18),
@@ -1017,7 +932,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   children: [
                     Text('TỰ TẮT KHI ĐỖ', style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
-                    Text('Xe tự tắt nguồn sau khi đỗ lâu (idling turn-off 69c79762)',
+                    Text('Xe tự ngắt nguồn an toàn khi đỗ xe quá lâu không sử dụng',
                         style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim)),
                   ],
                 ),
@@ -1041,18 +956,18 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('TỰ BẬT/TẮT THEO KHOẢNG CÁCH (ECU 5d681587)',
+                    Text('TỰ ĐỘNG KHÓA / MỞ THEO KHOẢNG CÁCH',
                         style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
                     Text(
-                      'ECU tự mở khi lại gần & ngắt khi rời xa · Ngưỡng NVS: $distLabel',
+                      'Tự động mở khóa khi bạn lại gần xe và tự khóa an toàn khi rời xa',
                       style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
                     ),
                   ],
                 ),
               ),
               StatusPill(
-                label: ble.distanceMode > 0 ? 'BẬT (NVS: $distLabel)' : 'TẮT',
+                label: ble.distanceMode > 0 ? 'BẬT' : 'TẮT',
                 color: ble.distanceMode > 0 ? AppColors.tertiary : AppColors.textDim,
               ),
             ],
@@ -1072,7 +987,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               const SizedBox(width: 8),
               _buildSegmentOption(
                 label: 'Bật',
-                desc: 'NVS $distLabel',
+                desc: 'Tự nhận diện',
                 isSelected: ble.distanceMode > 0,
                 onTap: connected ? () async {
                   ref.read(bleProvider.notifier).setDistanceMode(1);
@@ -1095,7 +1010,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               ),
               icon: const Icon(Icons.drive_file_rename_outline_rounded, size: 18),
               label: Text(
-                'ĐẶT TÊN XE (lưu flash 88c30d2c)',
+                'ĐỔI TÊN XE',
                 style: GoogleFonts.spaceGrotesk(fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.3),
               ),
               onPressed: connected ? () async {
@@ -1122,8 +1037,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Tên được lưu vào flash xe (firmware setName, tối đa 20 ký tự). '
-                          'Đọc lại tự động sau khi ghi để xác nhận.',
+'Tên xe hiển thị trên ứng dụng và Bluetooth (tối đa 20 ký tự).',
                           style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: AppColors.textDim),
                         ),
                       ],
@@ -1157,7 +1071,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               ),
               icon: const Icon(Icons.credit_card_rounded, size: 18),
               label: Text(
-                'THÊM THẺ NFC MỚI (c75ebe03)',
+                'THÊM THẺ NFC MỚI',
                 style: GoogleFonts.spaceGrotesk(fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.3),
               ),
               onPressed: connected ? () async {
@@ -1167,7 +1081,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                     backgroundColor: AppColors.panel,
                     title: Text('Thêm thẻ NFC mới?', style: GoogleFonts.spaceGrotesk(fontSize: 16)),
                     content: Text(
-                      'App gửi lệnh đăng ký thẻ xuống xe qua cổng c75ebe03 → bạn quẹt THẺ MỚI vào đầu đọc trên xe trong ~10 giây. Firmware sẽ lưu thẻ vào danh sách mở khóa.',
+                      'Ứng dụng sẽ kích hoạt chế độ nhận thẻ → bạn quẹt THẺ MỚI vào đầu đọc trên xe trong vòng 10 giây để ghi nhận thẻ mở khóa.',
                       style: GoogleFonts.plusJakartaSans(fontSize: 12.5, height: 1.4),
                     ),
                     actions: [
@@ -1255,7 +1169,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 children: [
                   Expanded(
                     child: Text(
-                      'CỔNG b0ca953d (VESC PROGRAMMING)',
+                      'CHẾ ĐỘ NẠP ĐỘNG CƠ (VESC DEV MODE)',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.spaceGrotesk(
@@ -1267,14 +1181,14 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   ),
                   const SizedBox(width: 8),
                   StatusPill(
-                    label: ble.vescProgActive ? 'ĐANG KẸT DEV MODE (0x01)' : 'BÌNH THƯỜNG (0x00)',
+                    label: ble.vescProgActive ? 'ĐANG KẸT DEV MODE' : 'BÌNH THƯỜNG',
                     color: ble.vescProgActive ? AppColors.error : AppColors.tertiary,
                   ),
                 ],
               ),
               const SizedBox(height: 4),
               Text(
-                'Đính chính RE2: b0ca953d là công tắc đảo bit (XOR) cờ nạp VESC (cfg+0x62), làm ngắt vescPollTask (IM=0). Khi kẹt ở 0x01, xe sẽ ngừng nhận telemetry động cơ.',
+                'Trạng thái giao tiếp nội bộ với bộ điều khiển động cơ VESC. Nếu xe gặp lỗi không phản hồi thông số động cơ, sử dụng nút khôi phục bên dưới.',
                 style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
               ),
               if (ble.vescProgActive) ...[
@@ -1290,7 +1204,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                     ),
                     icon: const Icon(Icons.restore_rounded, size: 18),
                     label: Text(
-                      'KHÔI PHỤC VỀ NORMAL (0x00)',
+                      'KHÔI PHỤC KẾT NỐI ĐỘNG CƠ',
                       style: GoogleFonts.spaceGrotesk(fontSize: 12.5, fontWeight: FontWeight.w700),
                     ),
                     onPressed: connected
@@ -1313,7 +1227,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
     );
   }
 
-  /// NÂNG CAO (LỆNH NẶNG NGUY HIỂM) — chỉ dành cho kỹ thuật viên
+  /// NÂNG CAO & VẬN HÀNH THỬ NGHIỆM — chỉ dành cho kỹ thuật viên & thử nghiệm
   Widget _buildAdvancedSection(BleState ble, bool connected) {
     return Container(
       decoration: BoxDecoration(
@@ -1330,13 +1244,13 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
             iconColor: AppColors.textDim,
             title: Text(
-              'NÂNG CAO (LỆNH NẶNG NGUY HIỂM)',
+              'NÂNG CAO & VẬN HÀNH THỬ NGHIỆM',
               style: GoogleFonts.spaceGrotesk(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.textDim),
             ),
             subtitle: Padding(
               padding: const EdgeInsets.only(top: 3),
               child: Text(
-                'Tắt hẳn BMS (đỗ lâu) · Khôi phục cài đặt gốc BLE (Factory Reset)',
+                'Vận hành & Giới hạn tốc độ · Tắt hẳn BMS · Khôi phục cài đặt gốc BLE',
                 style: GoogleFonts.plusJakartaSans(fontSize: 10.5, color: AppColors.textDim),
               ),
             ),
@@ -1356,7 +1270,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Các thao tác dưới đây có tác động trực tiếp đến nguồn pin và kết nối của xe — chỉ thực hiện khi thực sự cần thiết.',
+                        'Các tính năng dưới đây can thiệp sâu vào cấu hình xe, nguồn pin và động cơ. Tính năng vận hành & tốc độ chưa phát hành chính thức, người dùng cần cân nhắc rủi ro trước khi thay đổi.',
                         style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim, height: 1.35),
                       ),
                     ),
@@ -1364,7 +1278,11 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 ),
               ),
 
-              // Tắt BMS + Factory reset
+              // 1. Vận hành & Giới hạn tốc độ (chuyển vào mục Nâng cao theo yêu cầu)
+              _buildSpeedLimiterCard(ble),
+              const SizedBox(height: 14),
+
+              // 2. Tắt BMS + Factory reset
               _buildAdvancedCard(ble, connected),
             ],
           ),

@@ -467,73 +467,7 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
               ),
             ),
 
-          // 2.6 FLOATING QUICK CONTROLS (khi phóng to bản đồ)
-          if (widget.isFullScreen && widget.onTurnOn != null)
-            Positioned(
-              bottom: 10,
-              left: 10,
-              right: 10,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppColors.panel.withValues(alpha: 0.94),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: AppColors.panelBorderBright),
-                      boxShadow: AppColors.cardShadow,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.tertiary,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            onPressed: widget.powerBusy ? null : widget.onTurnOn,
-                            child: const Icon(Icons.power_settings_new_rounded, size: 20),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: widget.currentSpeedKmh > 0.5 ? AppColors.surfaceContainerHigh : AppColors.error,
-                              foregroundColor: widget.currentSpeedKmh > 0.5 ? AppColors.textDim : Colors.white,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            onPressed: (widget.powerBusy || widget.currentSpeedKmh > 0.5) ? null : widget.onTurnOff,
-                            child: Icon(widget.currentSpeedKmh > 0.5 ? Icons.shield_rounded : Icons.power_off_rounded, size: 20),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: widget.isLocked == true ? AppColors.error : AppColors.surfaceContainerHigh,
-                              foregroundColor: widget.isLocked == true ? Colors.white : AppColors.textPrimary,
-                              elevation: 0,
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            onPressed: widget.onToggleLock,
-                            child: Icon(widget.isLocked == true ? Icons.lock_rounded : Icons.lock_open_rounded, size: 20),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
+
 
           // 3. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải - To rõ ràng 38x38)
           Positioned(

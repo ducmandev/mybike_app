@@ -1121,26 +1121,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   ) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 6, 14, 18),
-      child: Column(
-        children: [
-          Expanded(
-            child: CockpitLiveMap(
-              height: double.infinity,
-              isFullScreen: true,
-              currentSpeedKmh: m.speed,
-              batteryPercent: m.percent,
-              voltage: m.voltage > 0 ? m.voltage : null,
-              onExpandFullScreen: _toggleMapZoom,
-              onTurnOn: _turnOnBike,
-              onTurnOff: _turnOffBike,
-              onToggleLock: () => _toggleLockBike(ble, m),
-              isLocked: isLocked,
-              powerBusy: _powerBusy,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _buildControlButtonsRow(ble, m),
-        ],
+      child: CockpitLiveMap(
+        height: double.infinity,
+        isFullScreen: true,
+        currentSpeedKmh: m.speed,
+        batteryPercent: m.percent,
+        voltage: m.voltage > 0 ? m.voltage : null,
+        onExpandFullScreen: _toggleMapZoom,
       ),
     );
   }
@@ -1350,11 +1337,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         batteryPercent: m.percent,
         voltage: m.voltage > 0 ? m.voltage : null,
         onExpandFullScreen: _toggleMapZoom,
-        onTurnOn: _turnOnBike,
-        onTurnOff: _turnOffBike,
-        onToggleLock: () => _toggleLockBike(ble, m),
-        isLocked: isLocked,
-        powerBusy: _powerBusy,
       ),
     );
   }
