@@ -45,7 +45,7 @@ class Gatt {
   /// LEGACY_APP_AUTH (4cb05df8) — Protected Read trả 12 byte dữ liệu auth theo phiên.
   /// App gốc KHÔNG ghi char này; tên cũ "onOffBikeChar" là sai.
   static const onOffBikeChar = '4cb05df8-9c3a-4d7e-9b2f-8e1a3c6d5b41';
-  static const legacyAppAuthChar = '4cb05df8-9c3a-4d7e-9b2f-8e1a3c6d5b41';
+  static const legacyAppAuthChar = 'c75ebe03-ea2f-4c0e-a720-1e7112a72d81';
 
   /// AUTH_FEATURE_FLAG (91e84eb0) — Protected Read trả 1 byte tĩnh 0x01.
   static const authFeatureFlagChar = '91e84eb0-dea0-436f-a157-f21d89443b32';

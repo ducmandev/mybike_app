@@ -145,6 +145,29 @@ class BikeSessionCrypto {
         _hmac(utf8.encode(pairingToken), msg).sublist(0, 16));
   }
 
+  /// Tính toán phản hồi xác thực Legacy Auth 16 byte cho các dòng xe đời cũ
+  /// (Weaver 200, Weaver++, Quantum đời đầu) trên cổng LEGACY_APP_AUTH_CHAR (c75ebe03).
+  ///
+  /// Nguồn: đối chiếu từ _fun9980 (connect_full_readable.js:2528):
+  /// - Xe gửi 16 byte challenge.
+  /// - App lấy 15 byte đầu: nonce15 = challenge[0..15].
+  /// - Tạo buffer 21 byte msg = ['DBauth', ...nonce15].
+  /// - Tính HMAC-SHA256 với key = utf8(password), msg = msg(21 byte).
+  /// - Lấy 16 byte đầu tiên ghi ngược lại lên c75ebe03.
+  /// - Xe kiểm tra hợp lệ và trả về status byte 0x01 ở byte thứ 16.
+  static Uint8List computeLegacyAuthResponse({
+    required String password,
+    required Uint8List challenge16,
+  }) {
+    if (challenge16.length < 15) {
+      throw ArgumentError('challenge16 phải có ít nhất 15 bytes');
+    }
+    final nonce15 = challenge16.sublist(0, 15);
+    final msg = Uint8List.fromList([...utf8.encode('DBauth'), ...nonce15]);
+    return Uint8List.fromList(
+        _hmac(utf8.encode(password), msg).sublist(0, 16));
+  }
+
   /// Giải mã challenge từ APP_AUTH_CHAR (c8eaf27b) bằng SHA-256 (64 hex lowercase)
   /// để kết nối lại (Auto-Reconnect) mà không cần quẹt thẻ NFC.
   ///

@@ -228,6 +228,15 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   }
 
   Future<void> _toggleLockBike(BleState ble, BikeLogMsg m) async {
+    if (!ble.bikeModel.supportsImmobilizerLock) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Dòng xe ${ble.bikeModel.displayName} không hỗ trợ khóa chống trộm điện tử.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
     final currentlyLocked = ble.isLocked || m.state == BikeState.lock;
     setState(() => _powerBusy = true);
     try {
@@ -333,13 +342,37 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ),
             const SizedBox(width: 8),
             Flexible(
-              child: Text(
-                (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
-                style: GoogleFonts.spaceGrotesk(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 16,
-                  letterSpacing: 0.5,
-                  color: AppColors.textPrimary,
+              child: Text.rich(
+                TextSpan(
+                  text: (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
+                  style: GoogleFonts.spaceGrotesk(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    letterSpacing: 0.5,
+                    color: AppColors.textPrimary,
+                  ),
+                  children: [
+                    const WidgetSpan(child: SizedBox(width: 6)),
+                    WidgetSpan(
+                      alignment: PlaceholderAlignment.middle,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+                        ),
+                        child: Text(
+                          ble.bikeModel.code,
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -929,26 +962,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
           const SizedBox(width: 8),
 
-          // 3. KHÓA XE (LOCK / UNLOCK - ẨN CÒI)
-          Expanded(
-            child: Tooltip(
-              message: isLocked ? 'Mở khóa an toàn' : 'Khóa xe (Anti-theft)',
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isLocked ? AppColors.error : AppColors.surfaceContainerHigh,
-                  foregroundColor: isLocked ? Colors.white : AppColors.textPrimary,
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                onPressed: _powerBusy ? null : () => _toggleLockBike(ble, m),
-                child: Icon(
-                  isLocked ? Icons.lock_open_rounded : Icons.lock_outline_rounded,
-                  size: 22,
+          // 3. KHÓA XE (LOCK / UNLOCK - ẨN CÒI - CHỈ CHO DÒNG CÓ HỖ TRỢ KHÓA ĐIỆN TỬ)
+          if (ble.bikeModel.supportsImmobilizerLock)
+            Expanded(
+              child: Tooltip(
+                message: isLocked ? 'Mở khóa an toàn' : 'Khóa xe (Anti-theft)',
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isLocked ? AppColors.error : AppColors.surfaceContainerHigh,
+                    foregroundColor: isLocked ? Colors.white : AppColors.textPrimary,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: _powerBusy ? null : () => _toggleLockBike(ble, m),
+                  child: Icon(
+                    isLocked ? Icons.lock_open_rounded : Icons.lock_outline_rounded,
+                    size: 22,
+                  ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );

@@ -457,9 +457,12 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                           'Model: ',
                           style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
                         ),
-                        Text(
-                          ble.bikeModelCode ?? 'QT_S1',
-                          style: GoogleFonts.spaceGrotesk(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                        Expanded(
+                          child: Text(
+                            '${ble.bikeModel.displayName} (${ble.bikeModel.code})',
+                            style: GoogleFonts.spaceGrotesk(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ],
                     ),
@@ -1119,9 +1122,11 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                     Text('KHÓA AN TOÀN (CHỐNG TRỘM)', style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
                     Text(
-                      ble.isLocked
-                          ? 'Đang khóa: cần QUẸT THẺ NFC để mở · Còi hú khi đá chống'
-                          : 'Xe phải TẮT mới khóa — app sẽ tự tắt xe. Sau khóa: quẹt thẻ NFC để mở, còi hú báo động khi xe bị động vào',
+                      !ble.bikeModel.supportsImmobilizerLock
+                          ? 'Dòng xe Weaver không trang bị rơ-le khóa chống trộm điện tử'
+                          : (ble.isLocked
+                              ? 'Đang khóa: cần QUẸT THẺ NFC để mở · Còi hú khi đá chống'
+                              : 'Xe phải TẮT mới khóa — app sẽ tự tắt xe. Sau khóa: quẹt thẻ NFC để mở, còi hú báo động khi xe bị động vào'),
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 11,
                         color: ble.isLocked ? AppColors.error : AppColors.textDim,
@@ -1133,7 +1138,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               Switch(
                 value: ble.isLocked,
                 activeThumbColor: AppColors.error,
-                onChanged: connected ? (v) async {
+                onChanged: (connected && ble.bikeModel.supportsImmobilizerLock) ? (v) async {
                   if (v) {
                     final ok = await showDialog<bool>(
                       context: context,

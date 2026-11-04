@@ -31,6 +31,8 @@ import '../utils/kalman_filter.dart';
 import 'ble_logger.dart';
 import 'ble_permissions.dart';
 import 'gatt.dart';
+import '../models/bike_model_profile.dart';
+export '../models/bike_model_profile.dart';
 
 export '../models/trip_gps_point.dart';
 export '../models/saved_bike.dart';
@@ -262,6 +264,9 @@ class BleState {
   final bool vescProgActive; // bool từ b0ca953d
   final List<SavedBike> savedBikes; // Danh sách xe trong nhà xe (Garage)
   final String? activeBikeId; // ID xe đang kích hoạt điều khiển
+  final BikeModel bikeModel; // Model phân loại (Weaver, Quantum, Quantum S, Era)
+  final bool isLegacyAuth; // Cờ đang chạy luồng xác thực Legacy Auth (c75ebe03)
+  final String? firmwareVersion; // Phiên bản firmware (từ d1da175e, vd "1.14.0")
 
   const BleState({
     required this.phase,
@@ -316,6 +321,9 @@ class BleState {
     this.vescProgActive = false,
     this.savedBikes = const [],
     this.activeBikeId,
+    this.bikeModel = BikeModel.qtS1,
+    this.isLegacyAuth = false,
+    this.firmwareVersion,
   });
 
   BleState copyWith({
@@ -371,6 +379,9 @@ class BleState {
     bool? vescProgActive,
     List<SavedBike>? savedBikes,
     String? activeBikeId,
+    BikeModel? bikeModel,
+    bool? isLegacyAuth,
+    String? firmwareVersion,
   }) =>
       BleState(
         phase: phase ?? this.phase,
@@ -425,6 +436,9 @@ class BleState {
         vescProgActive: vescProgActive ?? this.vescProgActive,
         savedBikes: savedBikes ?? this.savedBikes,
         activeBikeId: activeBikeId ?? this.activeBikeId,
+        bikeModel: bikeModel ?? this.bikeModel,
+        isLegacyAuth: isLegacyAuth ?? this.isLegacyAuth,
+        firmwareVersion: firmwareVersion ?? this.firmwareVersion,
       );
 }
 
@@ -1059,6 +1073,9 @@ class BleController extends Notifier<BleState> {
     final spd = state.lastTelemetry?.speed ?? 0.0;
     if (lock && spd > 0.5) {
       return '⚠️ CẢNH BÁO: Không thể khóa khi xe đang di chuyển (${spd.toStringAsFixed(1)} km/h)!';
+    }
+    if (lock && !state.bikeModel.supportsImmobilizerLock) {
+      return 'Dòng xe ${state.bikeModel.displayName} không hỗ trợ khóa chống trộm điện tử.';
     }
     if (state.phase != BlePhase.connected) {
       state = state.copyWith(isLocked: lock);
@@ -1917,7 +1934,16 @@ class BleController extends Notifier<BleState> {
     _manualDisconnect = false;
     _writeCounter = 0;
     _cancelReconnect();
-    state = BleState(phase: BlePhase.connecting, device: device, bikeName: name);
+    final resolvedModel = BikeModel.resolve(
+      deviceName: name ?? (device.platformName.isNotEmpty ? device.platformName : device.advName),
+      modelString: state.bikeModelCode,
+    );
+    state = BleState(
+      phase: BlePhase.connecting,
+      device: device,
+      bikeName: name,
+      bikeModel: resolvedModel,
+    );
     unawaited(ForegroundService.start(
       title: 'Dat Bike',
       text: 'Đang kết nối với ${name ?? device.platformName}...',
@@ -2530,6 +2556,15 @@ class BleController extends Notifier<BleState> {
           plainHex = BleLogger.hex(decrypted, maxBytes: 96);
         }
       } catch (_) {}
+    } else if (state.isLegacyAuth) {
+      // Legacy firmware: Plaintext telemetry (4B counter + 41B data hoặc 41B data thuần)
+      if (raw.length == 45) {
+        payloadToDecode = Uint8List.fromList(raw.sublist(4));
+        plainHex = BleLogger.hex(payloadToDecode, maxBytes: 96);
+      } else if (raw.length >= 41) {
+        payloadToDecode = Uint8List.fromList(raw.sublist(0, 41));
+        plainHex = BleLogger.hex(payloadToDecode, maxBytes: 96);
+      }
     }
 
     String? dk;
@@ -3003,6 +3038,9 @@ class BleController extends Notifier<BleState> {
   ///    kết nối) để mở. Còi hú khi xe bị động vào (đá chống).
   Future<String> lockBike() async {
     _lastUserCommandAt = DateTime.now();
+    if (!state.bikeModel.supportsImmobilizerLock) {
+      return 'Dòng xe ${state.bikeModel.displayName} không hỗ trợ khóa chống trộm điện tử.';
+    }
     final device = _device;
     if (device == null || state.phase != BlePhase.connected) {
       return 'Xe chưa được kết nối Bluetooth!';
@@ -3297,6 +3335,98 @@ class BleController extends Notifier<BleState> {
   /// ⚠️ Bước 3-4 hiện sẽ THẤT BẠI trên xe thật: công thức auth response chưa
   /// crack được (computeAuthResponse là placeholder). Flow dừng an toàn ngay
   /// khi status != 0x01 — không spam ghi, không gửi lệnh khi chưa xác thực.
+  /// Thực thi xác thực Legacy Auth cho firmware cũ (< SECURE_FW_THRESHOLD / Weaver / Quantum đời đầu)
+  Future<bool> _executeLegacyHandshake({
+    required BluetoothCharacteristic legacyAuthChar,
+    required String password,
+    BluetoothDevice? targetDevice,
+  }) async {
+    BleLogger.instance.event('legacy_handshake_start', {
+      'has_password': password.isNotEmpty,
+      'device': targetDevice?.remoteId.str,
+    });
+
+    try {
+      // 1. Đọc 16 byte challenge từ LEGACY_APP_AUTH (c75ebe03)
+      List<int> challenge = Uint8List(0);
+      try {
+        challenge = await legacyAuthChar
+            .read()
+            .timeout(const Duration(milliseconds: 1000), onTimeout: () => Uint8List(0));
+      } catch (e) {
+        if (_isAuthError(e) && targetDevice != null) {
+          await _ensureBonded(targetDevice, reason: 'legacy auth cần link mã hoá');
+          try {
+            challenge = await legacyAuthChar
+                .read()
+                .timeout(const Duration(milliseconds: 1000), onTimeout: () => Uint8List(0));
+          } catch (_) {}
+        }
+      }
+
+      BleLogger.instance.event('legacy_handshake_challenge', {
+        'hex': BleLogger.hex(challenge),
+        'len': challenge.length,
+      });
+
+      if (challenge.length < 15) {
+        BleLogger.instance.event('legacy_handshake_err', {
+          'error': 'Challenge nhận được < 15 byte (${challenge.length})',
+        });
+        return false;
+      }
+
+      final pwToUse = password.isNotEmpty ? password : '0';
+      final response16 = BikeSessionCrypto.computeLegacyAuthResponse(
+        password: pwToUse,
+        challenge16: Uint8List.fromList(challenge),
+      );
+
+      BleLogger.instance.event('legacy_handshake_write_resp', {
+        'resp_hex': BleLogger.hex(response16),
+      });
+
+      // 2. Ghi 16 byte response lên c75ebe03
+      await legacyAuthChar
+          .write(response16, withoutResponse: false)
+          .timeout(const Duration(milliseconds: 1000));
+
+      await Future.delayed(const Duration(milliseconds: 60));
+
+      // 3. Đọc lại để kiểm tra xác thực
+      final verify = await legacyAuthChar
+          .read()
+          .timeout(const Duration(milliseconds: 1000), onTimeout: () => Uint8List(0));
+
+      final isSuccess = verify.isNotEmpty &&
+          (verify.length >= 16 ? verify[15] == Gatt.authStatusOk : verify[0] != 0);
+
+      BleLogger.instance.event('legacy_handshake_verify', {
+        'hex': BleLogger.hex(verify),
+        'success': isSuccess,
+      });
+
+      if (isSuccess) {
+        _sessionKey = null; // Legacy không dùng HKDF session stream cipher
+        state = state.copyWith(
+          phase: BlePhase.connected,
+          isAuthorized: true,
+          isLegacyAuth: true,
+          dashboardEncrypted: false,
+          sessionKey: null,
+          message: 'Đã xác thực thành công (Legacy Auth)',
+        );
+        unawaited(refreshFwSettings());
+        unawaited(fetchVehicleDiagnostics());
+        return true;
+      }
+      return false;
+    } catch (e) {
+      BleLogger.instance.event('legacy_handshake_failed', {'error': '$e'});
+      return false;
+    }
+  }
+
   Future<bool> authenticateSession({
     BluetoothDevice? targetDevice,
     List<BluetoothCharacteristic>? chars,
@@ -3347,9 +3477,22 @@ class BleController extends Notifier<BleState> {
 
     try {
       final authChar = find(Gatt.authorizationChar);
+      final legacyAuthChar = find(Gatt.legacyAppAuthChar);
+      final appAuthChar = find(Gatt.appAuthChar);
+
+      // Nếu xe không có authChar (5e9a2c71) hoặc là dòng Weaver (chỉ có cổng legacy c75ebe03)
+      if (authChar == null && legacyAuthChar != null) {
+        BleLogger.instance.event('auto_handshake_route', {'engine': 'legacy_auth'});
+        return await _executeLegacyHandshake(
+          legacyAuthChar: legacyAuthChar,
+          password: pin,
+          targetDevice: dev,
+        );
+      }
+
       if (authChar == null) {
         BleLogger.instance.event('auto_handshake_err',
-            {'error': 'Không tìm thấy AUTHORIZATION_CHAR (5e9a2c71)'});
+            {'error': 'Không tìm thấy AUTHORIZATION_CHAR (5e9a2c71) hoặc LEGACY_APP_AUTH (c75ebe03)'});
         return false;
       }
 
@@ -3388,7 +3531,6 @@ class BleController extends Notifier<BleState> {
         'note': status1 == Gatt.authStatusOk ? 'đã auth từ trước' : 'chưa auth'
       });
 
-      final appAuthChar = find(Gatt.appAuthChar);
       Uint8List? acceptedNonce;
 
       if (status1 == Gatt.authStatusOk && !forceRegister) {
