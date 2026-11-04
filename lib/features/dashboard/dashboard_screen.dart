@@ -73,17 +73,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           onTap: onTap,
           child: Container(
-            padding: const EdgeInsets.all(5),
+            width: 38,
+            height: 38,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               color: AppColors.panel.withValues(alpha: 0.94),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(color: AppColors.panelBorderBright, width: 1),
               boxShadow: AppColors.cardShadow,
             ),
-            child: Icon(icon, size: 17, color: AppColors.textPrimary),
+            child: Icon(icon, size: 20, color: AppColors.textPrimary),
           ),
         ),
       ),
@@ -483,24 +485,98 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
                 return Column(
                   children: [
-                    // Mode xe nằm ở chính giữa phía trên taplo tốc độ + Nút phóng to ở góc phải
-                    Stack(
-                      alignment: Alignment.center,
+                    // Top row: 3D Bike Logo + Tên xe bên trái & Nút phóng to bên phải (Rõ ràng, không bị che khuất)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        ModeIndicatorHeader(
-                          state: m.state,
-                          isParking: m.parking,
-                          isLocked: isLocked,
-                        ),
-                        Positioned(
-                          right: 0,
-                          child: _miniGlassActionBtn(
-                            icon: Icons.fullscreen_rounded,
-                            tooltip: 'Phóng to đồng hồ tốc độ',
-                            onTap: _toggleSpeedZoom,
+                        Flexible(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 26,
+                                height: 26,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(7),
+                                  boxShadow: const [
+                                    BoxShadow(color: Color(0x180F172A), blurRadius: 4, offset: Offset(0, 1)),
+                                  ],
+                                ),
+                                clipBehavior: Clip.antiAlias,
+                                child: Image.asset(
+                                  'assets/images/bike_logo_3d.png',
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 18),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.5,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (m.parking) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.amber.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(9999),
+                                  ),
+                                  child: Text(
+                                    'CHỐNG',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.amber,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              if (isLocked) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.error.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(9999),
+                                  ),
+                                  child: Text(
+                                    'ĐÃ KHÓA',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.error,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
+                        const SizedBox(width: 8),
+                        _miniGlassActionBtn(
+                          icon: Icons.fullscreen_rounded,
+                          tooltip: 'Phóng to đồng hồ tốc độ',
+                          onTap: _toggleSpeedZoom,
+                        ),
                       ],
+                    ),
+                    const SizedBox(height: 10),
+
+                    // Mode xe nằm ở chính giữa phía trên taplo tốc độ
+                    ModeIndicatorHeader(
+                      state: m.state,
+                      isParking: m.parking,
+                      isLocked: isLocked,
                     ),
                     const SizedBox(height: 6),
 
@@ -919,11 +995,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Container(
-                                    width: 8,
-                                    height: 8,
-                                    decoration: const BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: AppColors.tertiary,
+                                    width: 26,
+                                    height: 26,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(7),
+                                      boxShadow: const [
+                                        BoxShadow(color: Color(0x180F172A), blurRadius: 4, offset: Offset(0, 1)),
+                                      ],
+                                    ),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: Image.asset(
+                                      'assets/images/bike_logo_3d.png',
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 18),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
@@ -1095,11 +1179,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Container(
-                              width: 7,
-                              height: 7,
-                              decoration: const BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: AppColors.tertiary,
+                              width: 24,
+                              height: 24,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(6),
+                                boxShadow: const [
+                                  BoxShadow(color: Color(0x180F172A), blurRadius: 3, offset: Offset(0, 1)),
+                                ],
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: Image.asset(
+                                'assets/images/bike_logo_3d.png',
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 16),
                               ),
                             ),
                             const SizedBox(width: 6),

@@ -248,157 +248,168 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
             ],
           ),
 
-          // 2. HEADER TOP: MŨI TÊN LA BÀN HƯỚNG ĐI + TỐC ĐỘ GPS ĐỘC LẬP + NÚT CÔNG CỤ
+          // 2. HEADER TOP: MŨI TÊN LA BÀN HƯỚNG ĐI + TỐC ĐỘ GPS ĐỘC LẬP + NÚT CÔNG CỤ (TO RÕ RÀNG 38x38)
           Positioned(
             top: 8,
             left: 8,
             right: 8,
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: SizedBox(
-                width: 540,
-                child: Row(
+            child: Row(
               children: [
-                // Chip Hướng đi la bàn (Mũi tên xoay tự động)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(9999),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
-                      decoration: BoxDecoration(
-                        color: AppColors.panel.withValues(alpha: 0.94),
-                        borderRadius: BorderRadius.circular(9999),
-                        border: Border.all(color: AppColors.panelBorderBright),
-                        boxShadow: AppColors.cardShadow,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Transform.rotate(
-                            angle: (_currentHeading * math.pi) / 180.0,
-                            child: const Icon(
-                              Icons.navigation_rounded,
-                              size: 13,
-                              color: AppColors.primary,
+                // Chips la bàn & tốc độ GPS (co giãn linh hoạt)
+                Flexible(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    physics: const NeverScrollableScrollPhysics(),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Chip Hướng đi la bàn (Mũi tên xoay tự động)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(9999),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: AppColors.panel.withValues(alpha: 0.94),
+                                borderRadius: BorderRadius.circular(9999),
+                                border: Border.all(color: AppColors.panelBorderBright),
+                                boxShadow: AppColors.cardShadow,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Transform.rotate(
+                                    angle: (_currentHeading * math.pi) / 180.0,
+                                    child: const Icon(
+                                      Icons.navigation_rounded,
+                                      size: 14,
+                                      color: AppColors.primary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${_currentHeading.toStringAsFixed(0).padLeft(3, '0')}° ${_shortCardinal(_currentHeading)}',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textPrimary,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                          const SizedBox(width: 4),
-                          Text(
-                            '${_currentHeading.toStringAsFixed(0).padLeft(3, '0')}° ${_shortCardinal(_currentHeading)}',
-                            style: GoogleFonts.spaceGrotesk(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary,
-                              fontFeatures: const [FontFeature.tabularFigures()],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(width: 6),
-
-                // Chip Tốc độ GPS tính riêng biệt (không phụ thuộc BMS)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(9999),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
-                      decoration: BoxDecoration(
-                        color: AppColors.panel.withValues(alpha: 0.94),
-                        borderRadius: BorderRadius.circular(9999),
-                        border: Border.all(
-                          color: isTracking
-                              ? AppColors.tertiary.withValues(alpha: 0.35)
-                              : AppColors.panelBorderBright,
                         ),
-                        boxShadow: AppColors.cardShadow,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: isTracking ? AppColors.tertiary : AppColors.secondary,
+
+                        const SizedBox(width: 6),
+
+                        // Chip Tốc độ GPS tính riêng biệt (không phụ thuộc BMS)
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(9999),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: AppColors.panel.withValues(alpha: 0.94),
+                                borderRadius: BorderRadius.circular(9999),
+                                border: Border.all(
+                                  color: isTracking
+                                      ? AppColors.tertiary.withValues(alpha: 0.35)
+                                      : AppColors.panelBorderBright,
+                                ),
+                                boxShadow: AppColors.cardShadow,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 7,
+                                    height: 7,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: isTracking ? AppColors.tertiary : AppColors.secondary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    'GPS: ${_currentGpsSpeed.toStringAsFixed(1)}',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textPrimary,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    'km/h',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textDim,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
-                          const SizedBox(width: 5),
-                          Text(
-                            'GPS: ${_currentGpsSpeed.toStringAsFixed(1)}',
-                            style: GoogleFonts.spaceGrotesk(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w700,
-                              color: AppColors.textPrimary,
-                              fontFeatures: const [FontFeature.tabularFigures()],
-                            ),
-                          ),
-                          const SizedBox(width: 2),
-                          Text(
-                            'km/h',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textDim,
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
 
-                const Spacer(),
+                const SizedBox(width: 8),
 
-                // Nút đổi Map Tile Style
-                _miniGlassBtn(
-                  icon: MapTileService.getStyleIcon(_tileStyle),
-                  tooltip: MapTileService.getStyleName(_tileStyle),
-                  onTap: _cycleTileStyle,
+                // Cụm nút công cụ trên bản đồ (Luôn giữ kích thước 38x38 đầy đủ, không bị co nhỏ)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Nút đổi Map Tile Style
+                    _miniGlassBtn(
+                      icon: MapTileService.getStyleIcon(_tileStyle),
+                      tooltip: MapTileService.getStyleName(_tileStyle),
+                      onTap: _cycleTileStyle,
+                    ),
+                    const SizedBox(width: 6),
+
+                    // Nút tải bản đồ offline
+                    _miniGlassBtn(
+                      icon: Icons.download_for_offline_rounded,
+                      tooltip: 'Tải bản đồ offline',
+                      onTap: () {
+                        OfflineMapSheet.show(
+                          context,
+                          currentMapBounds: _mapController.camera.visibleBounds,
+                        );
+                      },
+                    ),
+                    if (widget.onExpandFullScreen != null) ...[
+                      const SizedBox(width: 6),
+                      // Nút toàn màn hình / thu nhỏ
+                      _miniGlassBtn(
+                        icon: widget.isFullScreen
+                            ? Icons.fullscreen_exit_rounded
+                            : Icons.fullscreen_rounded,
+                        tooltip: widget.isFullScreen
+                            ? 'Thu nhỏ về mặc định'
+                            : 'Phóng to bản đồ',
+                        onTap: widget.onExpandFullScreen!,
+                      ),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 5),
-
-                // Nút tải bản đồ offline
-                _miniGlassBtn(
-                  icon: Icons.download_for_offline_rounded,
-                  tooltip: 'Tải bản đồ offline',
-                  onTap: () {
-                    OfflineMapSheet.show(
-                      context,
-                      currentMapBounds: _mapController.camera.visibleBounds,
-                    );
-                  },
-                ),
-                const SizedBox(width: 5),
-
-                // Nút toàn màn hình / thu nhỏ
-                if (widget.onExpandFullScreen != null)
-                  _miniGlassBtn(
-                    icon: widget.isFullScreen
-                        ? Icons.fullscreen_exit_rounded
-                        : Icons.fullscreen_rounded,
-                    tooltip: widget.isFullScreen
-                        ? 'Thu nhỏ về mặc định'
-                        : 'Phóng to bản đồ',
-                    onTap: widget.onExpandFullScreen!,
-                  ),
               ],
             ),
           ),
-        ),
-      ),
 
           // 2.5 FLOATING SPEED HUD PILL (khi phóng to bản đồ toàn màn hình)
           if (widget.isFullScreen)
             Positioned(
-              top: 50,
+              top: 54,
               left: 10,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
@@ -524,24 +535,24 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
               ),
             ),
 
-          // 3. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải)
+          // 3. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải - To rõ ràng 38x38)
           Positioned(
-            bottom: (_gpsSpeedHistory.length >= 2) ? 42 : 12,
+            bottom: (_gpsSpeedHistory.length >= 2) ? 46 : 12,
             right: 8,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _miniGlassBtn(
                   icon: Icons.my_location_rounded,
-                  iconColor: _isLocating ? AppColors.primary : AppColors.textDim,
+                  iconColor: _isLocating ? AppColors.primary : AppColors.textPrimary,
                   isActive: _isLocating,
                   tooltip: 'Vị trí của tôi',
                   onTap: () => _locateMe(moveCamera: true),
                 ),
-                const SizedBox(height: 5),
+                const SizedBox(height: 8),
                 _miniGlassBtn(
                   icon: Icons.navigation_rounded,
-                  iconColor: _followBike ? AppColors.primary : AppColors.textDim,
+                  iconColor: _followBike ? AppColors.primary : AppColors.textPrimary,
                   isActive: _followBike,
                   tooltip: _followBike ? 'Đang bám xe' : 'Tự do xoay bản đồ',
                   onTap: () {
@@ -672,31 +683,37 @@ class _CockpitLiveMapState extends State<CockpitLiveMap> {
     Color? iconColor,
     bool isActive = false,
   }) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(9999),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-        child: Container(
-          width: 30,
-          height: 30,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: isActive ? const Color(0xFFEFF6FF) : AppColors.panel.withValues(alpha: 0.92),
-            border: Border.all(
-              color: isActive ? AppColors.primary : AppColors.panelBorderBright,
-              width: 1,
+    return Tooltip(
+      message: tooltip ?? '',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+              child: Container(
+                width: 38,
+                height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: isActive ? const Color(0xFFEFF6FF) : AppColors.panel.withValues(alpha: 0.94),
+                  border: Border.all(
+                    color: isActive ? AppColors.primary : AppColors.panelBorderBright,
+                    width: 1,
+                  ),
+                  boxShadow: AppColors.cardShadow,
+                ),
+                child: Icon(
+                  icon,
+                  color: iconColor ?? (isActive ? AppColors.primary : AppColors.textPrimary),
+                  size: 20,
+                ),
+              ),
             ),
-            boxShadow: AppColors.cardShadow,
-          ),
-          child: IconButton(
-            padding: EdgeInsets.zero,
-            icon: Icon(
-              icon,
-              color: iconColor ?? (isActive ? AppColors.primary : AppColors.textDim),
-              size: 15,
-            ),
-            tooltip: tooltip,
-            onPressed: onTap,
           ),
         ),
       ),

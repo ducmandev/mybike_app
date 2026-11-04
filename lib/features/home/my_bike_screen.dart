@@ -2246,16 +2246,20 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
       builder: (context, snapshot) {
         final loc = snapshot.data;
         final now = DateTime.now();
-        final parkedTime = loc?.timestamp ?? now.subtract(const Duration(hours: 1, minutes: 45));
-        final diff = now.difference(parkedTime);
-        final hours = diff.inHours;
-        final mins = diff.inMinutes % 60;
-        final durationText = hours > 0
-            ? 'Đã đỗ ${hours}h ${mins}p'
-            : 'Đã đỗ ${mins}p';
+        final parkedTime = loc?.timestamp;
+        final durationText = parkedTime != null
+            ? (() {
+                final diff = now.difference(parkedTime);
+                final hours = diff.inHours;
+                final mins = diff.inMinutes % 60;
+                return hours > 0 ? 'Đã đỗ ${hours}h ${mins}p' : 'Đã đỗ ${mins}p';
+              })()
+            : 'Chưa có dữ liệu đỗ xe';
         final addressText = loc?.note?.isNotEmpty == true
             ? loc!.note!
-            : (loc?.address ?? 'Vincom Center Đồng Khởi · Hầm B2 - Cột K12');
+            : (loc?.address?.isNotEmpty == true
+                ? loc!.address!
+                : 'Chưa có thông tin vị trí đỗ xe');
 
         return Container(
           width: double.infinity,

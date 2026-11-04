@@ -62,19 +62,28 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
 
     if (mounted) {
       setState(() {
-        _parkedLocation = loc ??
-            ParkedLocation(
-              latitude: TripGpsTracker.instance.currentPoint?.lat ?? 10.7769,
-              longitude: TripGpsTracker.instance.currentPoint?.lng ?? 106.7009,
-              timestamp: DateTime.now().subtract(const Duration(hours: 2, minutes: 18)),
+        if (loc != null) {
+          _parkedLocation = loc;
+        } else {
+          final curLat = TripGpsTracker.instance.currentPoint?.lat ?? TripGpsTracker.instance.lastPosition?.latitude;
+          final curLng = TripGpsTracker.instance.currentPoint?.lng ?? TripGpsTracker.instance.lastPosition?.longitude;
+          if (curLat != null && curLng != null) {
+            _parkedLocation = ParkedLocation(
+              latitude: curLat,
+              longitude: curLng,
+              timestamp: DateTime.now(),
               bikeId: ble.device?.remoteId.str ?? 'default_bike',
               bikeName: ble.bikeName ?? 'Dat Bike Quantum S1',
-              batteryPercent: ble.lastTelemetry?.percent ?? 82,
-              voltage: ble.lastTelemetry?.voltage ?? 72.4,
-              address: 'Vincom Center Đồng Khởi · Hầm B2 - Cột K12',
-              note: 'Cột K12 · Hầm B2',
+              batteryPercent: ble.lastTelemetry?.percent,
+              voltage: ble.lastTelemetry?.voltage,
+              address: null,
+              note: null,
               isLocked: ble.isLocked,
             );
+          } else {
+            _parkedLocation = null;
+          }
+        }
       });
       _updateCalculatedMetrics();
     }
@@ -561,11 +570,15 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                       child: Text(
                         _parkedLocation?.note?.isNotEmpty == true
                             ? _parkedLocation!.note!
-                            : (_parkedLocation?.address ?? 'Vincom Đồng Khởi · Hầm B2 - Cột K12'),
+                            : (_parkedLocation?.address?.isNotEmpty == true
+                                ? _parkedLocation!.address!
+                                : 'Chưa có thông tin điểm đỗ xe'),
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary,
+                          color: (_parkedLocation?.note?.isNotEmpty == true || _parkedLocation?.address?.isNotEmpty == true)
+                              ? AppColors.textPrimary
+                              : AppColors.textDim,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -630,11 +643,13 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
               ),
               const SizedBox(width: 4),
               Text(
-                '${_estimatedDistance.toStringAsFixed(0)}m đi bộ',
+                _parkedLocation != null
+                    ? '${_estimatedDistance.toStringAsFixed(0)}m đi bộ'
+                    : 'Chưa lưu điểm đỗ',
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: isLandscape ? 10 : 11,
                   fontWeight: FontWeight.w700,
-                  color: AppColors.primary,
+                  color: _parkedLocation != null ? AppColors.primary : AppColors.textDim,
                 ),
               ),
             ],
