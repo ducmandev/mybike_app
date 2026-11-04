@@ -828,13 +828,18 @@ class BleController extends Notifier<BleState> {
 
   Future<void>? _gattChain;
 
-  /// Hàng đợi tuần tự các thao tác GATT read/write chống đụng độ lỗi 129 / 133
-  Future<T> _enqueueGatt<T>(Future<T> Function() action) {
+  /// Hàng đợi tuần tự các thao tác GATT read/write chống đụng độ lỗi 129 / 133 trên Android & CoreBluetooth iOS.
+  /// Bổ sung explicit timeout (mặc định 3500ms) để không bao giờ bị nghẽn chuỗi Future vô hạn khi thiết bị ngắt kết nối/bận.
+  Future<T> _enqueueGatt<T>(Future<T> Function() action, {Duration timeout = const Duration(milliseconds: 3500)}) {
     final prev = _gattChain ?? Future.value();
     final completer = Completer<T>();
     _gattChain = prev.catchError((_) {}).then((_) async {
       try {
-        completer.complete(await action());
+        final res = await action().timeout(
+          timeout,
+          onTimeout: () => throw TimeoutException('GATT operation timed out after ${timeout.inMilliseconds}ms'),
+        );
+        completer.complete(res);
       } catch (e, st) {
         completer.completeError(e, st);
       }
@@ -917,7 +922,10 @@ class BleController extends Notifier<BleState> {
           characteristicUuid: uuid,
           data: data,
         );
-        await c.write(frame, withoutResponse: false);
+        await c.write(frame, withoutResponse: false).timeout(
+          const Duration(milliseconds: 2500),
+          onTimeout: () => throw TimeoutException('Ghi setting $label quá 2.5s không phản hồi'),
+        );
         BleLogger.instance.event('setting_write', {
           'char': uuid,
           'label': label,
@@ -2234,8 +2242,15 @@ class BleController extends Notifier<BleState> {
       BleLogger.instance.event('keepalive_watchdog_restart', {});
       _startKeepalive();
     }
+    // ƯU TIÊN KÊNH BLUETOOTH CHO LỆNH NGƯỜI DÙNG:
+    // Nếu đang xử lý lệnh nguồn hoặc lệnh cài đặt, bỏ qua lượt poll này để giải phóng băng thông GATT
+    if (_isCommandBusy) return;
+
     try {
-      final raw = await _enqueueGatt(() => c.read());
+      final raw = await _enqueueGatt(
+        () => c.read().timeout(const Duration(milliseconds: 1800)),
+        timeout: const Duration(milliseconds: 2000),
+      );
       _handleDashboardPayload(raw);
     } catch (e) {
       BleLogger.instance.event('poll_error', {'error': '$e'});
@@ -2482,12 +2497,15 @@ class BleController extends Notifier<BleState> {
   /// Đọc dữ liệu chi tiết Battery Log (207 byte) từ xe
   Future<void> fetchBatteryDetails() async {
     final dev = _device;
-    if (dev == null || state.phase != BlePhase.connected) return;
+    if (dev == null || state.phase != BlePhase.connected || _isCommandBusy) return;
     _batteryChar ??= _findCharacteristic(Gatt.batteryLogCharacteristic);
     final bChar = _batteryChar;
     if (bChar == null) return;
     try {
-      final raw = await _enqueueGatt(() => bChar.read());
+      final raw = await _enqueueGatt(
+        () => bChar.read().timeout(const Duration(milliseconds: 1800)),
+        timeout: const Duration(milliseconds: 2000),
+      );
       _handleBatteryPayload(raw);
     } catch (e) {
       BleLogger.instance.event('battery_read_err', {'error': '$e'});
@@ -2789,16 +2807,9 @@ class BleController extends Notifier<BleState> {
       });
       throw Exception('Xe đang khóa an toàn — mở khóa trước khi bật');
     }
-    // Nếu xe đã đang bật nguồn rồi (isBikeOn == true), bỏ qua lệnh để không làm toggle tắt xe
-    if (tele?.isBikeOn == true) {
-      BleLogger.instance.event('power_skipped', {
-        'reason': 'xe đã đang bật nguồn rồi',
-      });
-      return;
-    }
     await _waitWhileCommandBusy();
     if (_isCommandBusy) {
-      throw Exception('Xe đang xử lý lệnh trước đó, vui lòng đợi 1 giây...');
+      throw Exception('Xe đang xử lý lệnh trước đó, vui lòng thử lại sau 1 giây');
     }
     await _throttleCommand();
     _isCommandBusy = true;
@@ -2813,16 +2824,9 @@ class BleController extends Notifier<BleState> {
   /// Lệnh TẮT XE — plain '0' (0x30) + protected '0'.
   Future<void> turnOffBike() async {
     _lastUserCommandAt = DateTime.now();
-    // Nếu xe đã đang tắt nguồn rồi, không gửi thêm lệnh tắt
-    if (state.lastTelemetry != null && !state.lastTelemetry!.isBikeOn) {
-      BleLogger.instance.event('power_skipped', {
-        'reason': 'xe đã đang tắt nguồn rồi',
-      });
-      return;
-    }
     await _waitWhileCommandBusy();
     if (_isCommandBusy) {
-      throw Exception('Xe đang xử lý lệnh trước đó, vui lòng đợi 1 giây...');
+      throw Exception('Xe đang xử lý lệnh trước đó, vui lòng thử lại sau 1 giây');
     }
     await _throttleCommand();
     _isCommandBusy = true;
@@ -2866,21 +2870,56 @@ class BleController extends Notifier<BleState> {
       throw Exception('Không tìm thấy cổng điều khiển nguồn xe (7f13fe5c)');
     }
 
-    await _enqueueGatt(() async {
-      final frame = BikeSessionCrypto.buildProtectedWrite(
-        sessionKey: _sessionKey!,
-        counter: _writeCounter++,
-        characteristicUuid: pwrChar.uuid.str128,
-        data: value.codeUnits,
-      );
-      await pwrChar.write(frame, withoutResponse: false);
-      BleLogger.instance.event('power_command', {
-        'target': 'powerOnOffChar (7f13fe5c)',
-        'uuid': pwrChar.uuid.str128,
-        'val': value,
-        'counter': _writeCounter - 1,
-      });
-    });
+    // Tạm hoãn keepalive để tránh race-condition lệch sessionKey hoặc counter giữa chừng
+    _keepaliveBusy = true;
+    Object? lastErr;
+    bool success = false;
+
+    try {
+      // Cơ chế gửi tin cậy với 2 lần thử (retry 1 lần sau 200ms nếu CoreBluetooth trên iOS bị trễ/busy)
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await _enqueueGatt(() async {
+            final frame = BikeSessionCrypto.buildProtectedWrite(
+              sessionKey: _sessionKey!,
+              counter: _writeCounter++,
+              characteristicUuid: pwrChar.uuid.str128,
+              data: value.codeUnits,
+            );
+            // Explicit timeout 2500ms chống treo vô hạn trên iOS CoreBluetooth
+            await pwrChar.write(frame, withoutResponse: false).timeout(
+              const Duration(milliseconds: 2500),
+              onTimeout: () => throw TimeoutException('Ghi lệnh $label quá 2.5s không phản hồi'),
+            );
+            BleLogger.instance.event('power_command', {
+              'target': 'powerOnOffChar (7f13fe5c)',
+              'uuid': pwrChar.uuid.str128,
+              'val': value,
+              'attempt': attempt,
+              'counter': _writeCounter - 1,
+            });
+          }, timeout: const Duration(milliseconds: 3000));
+          success = true;
+          break;
+        } catch (e) {
+          lastErr = e;
+          BleLogger.instance.event('power_command_retry', {
+            'attempt': attempt,
+            'val': value,
+            'error': '$e',
+          });
+          if (attempt < 2) {
+            await Future.delayed(const Duration(milliseconds: 200));
+          }
+        }
+      }
+    } finally {
+      _keepaliveBusy = false;
+    }
+
+    if (!success) {
+      throw Exception(lastErr ?? 'Không thể gửi lệnh $label tới xe');
+    }
 
     // Cập nhật Optimistic UI ngay lập tức để nút Bật/Tắt phản hồi tức thì (<150ms)
     final curTele = state.lastTelemetry;
@@ -2892,8 +2931,8 @@ class BleController extends Notifier<BleState> {
       message: 'Đã gửi lệnh $label',
     );
 
-    // Kích hoạt đọc lại Dashboard sau 150ms để đồng bộ trạng thái thật từ MCU
-    Future.delayed(const Duration(milliseconds: 150), () {
+    // Kích hoạt đọc lại Dashboard sau 250ms để đồng bộ trạng thái thật từ MCU
+    Future.delayed(const Duration(milliseconds: 250), () {
       if (state.phase == BlePhase.connected) {
         unawaited(_pollDashboard());
       }
@@ -3201,28 +3240,34 @@ class BleController extends Notifier<BleState> {
     if (authChar == null) return;
     _keepaliveBusy = true;
     try {
-      final resp = BikeSessionCrypto.computeAuthResponse(
-        pairingToken: Gatt.defaultPairingToken,
-        nonce15: nonce,
-      );
-      await authChar.write(resp, withoutResponse: false);
-      final post = await authChar.read();
-      _sessionKey = BikeSessionCrypto.deriveSessionKey(
-        pairingToken: Gatt.defaultPairingToken,
-        password: _activePassword,
-        challenge: nonce,
-      );
-      _writeCounter = 0;
-      if (post.length == 16) {
-        _lastAuthNonce15 = Uint8List.fromList(post.sublist(0, 15));
-      }
-      _keepaliveCount++;
-      if (_keepaliveCount == 1 || _keepaliveCount % 20 == 0) {
-        BleLogger.instance.event('keepalive', {
-          'n': _keepaliveCount,
-          'answered': BleLogger.hex(nonce),
-        });
-      }
+      await _enqueueGatt(() async {
+        final resp = BikeSessionCrypto.computeAuthResponse(
+          pairingToken: Gatt.defaultPairingToken,
+          nonce15: nonce,
+        );
+        await authChar.write(resp, withoutResponse: false).timeout(
+              const Duration(milliseconds: 2000),
+            );
+        final post = await authChar.read().timeout(
+              const Duration(milliseconds: 2000),
+            );
+        _sessionKey = BikeSessionCrypto.deriveSessionKey(
+          pairingToken: Gatt.defaultPairingToken,
+          password: _activePassword,
+          challenge: nonce,
+        );
+        _writeCounter = 0;
+        if (post.length == 16) {
+          _lastAuthNonce15 = Uint8List.fromList(post.sublist(0, 15));
+        }
+        _keepaliveCount++;
+        if (_keepaliveCount == 1 || _keepaliveCount % 20 == 0) {
+          BleLogger.instance.event('keepalive', {
+            'n': _keepaliveCount,
+            'answered': BleLogger.hex(nonce),
+          });
+        }
+      }, timeout: const Duration(milliseconds: 3000));
     } catch (e) {
       BleLogger.instance.event('keepalive_error', {'error': '$e'});
       _stopKeepalive();

@@ -111,7 +111,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   Future<void> _turnOnBike() async {
     setState(() => _powerBusy = true);
     try {
-      await ref.read(bleProvider.notifier).turnOnBike();
+      await ref.read(bleProvider.notifier).turnOnBike().timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => throw TimeoutException('Lệnh mở xe quá thời gian phản hồi (4s). Vui lòng thử lại.'),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -200,7 +203,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
     setState(() => _powerBusy = true);
     try {
-      await ref.read(bleProvider.notifier).turnOffBike();
+      await ref.read(bleProvider.notifier).turnOffBike().timeout(
+        const Duration(seconds: 4),
+        onTimeout: () => throw TimeoutException('Lệnh tắt xe quá thời gian phản hồi (4s). Vui lòng thử lại.'),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -224,7 +230,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     setState(() => _powerBusy = true);
     try {
       if (currentlyLocked) {
-        final res = await ref.read(bleProvider.notifier).unlockBike();
+        final res = await ref.read(bleProvider.notifier).unlockBike().timeout(
+          const Duration(seconds: 4),
+          onTimeout: () => 'Lệnh mở khóa quá thời gian chờ (4s). Vui lòng thử lại.',
+        );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -234,7 +243,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
         );
       } else {
-        final res = await ref.read(bleProvider.notifier).lockBike();
+        final res = await ref.read(bleProvider.notifier).lockBike().timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => 'Lệnh khóa xe quá thời gian chờ (5s). Vui lòng thử lại.',
+        );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

@@ -72,7 +72,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'Dat Bike Companion',
-      applicationVersion: 'v2.6.22',
+      applicationVersion: 'v2.6.23',
       applicationIcon: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: Image.asset(
