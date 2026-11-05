@@ -20,18 +20,19 @@ class VehicleStorageService {
     try {
       final prefs = await _prefs;
       final raw = prefs.getString(_kSavedBikesKey);
-      if (raw != null && raw.trim().isNotEmpty) {
+      if (raw != null) {
+        if (raw.trim().isEmpty) return <SavedBike>[];
         final decoded = jsonDecode(raw) as List<dynamic>;
         final bikes = decoded
             .map((e) => SavedBike.fromJson(e as Map<String, dynamic>))
             .where((b) => b.id.trim().isNotEmpty)
             .toList();
-        if (bikes.isNotEmpty) {
-          return bikes;
-        }
+        // Trả về ngay lập tức kể cả khi danh sách rỗng (người dùng đã xóa hết xe)
+        // Tuyệt đối không chạy xuống nhánh legacy migration bên dưới!
+        return bikes;
       }
 
-      // Tự động chuyển đổi từ dữ liệu cũ nếu chưa có danh sách
+      // Tự động chuyển đổi từ dữ liệu cũ NẾU VÀ CHỈ NẾU chưa từng có key _kSavedBikesKey (lần đầu nâng cấp)
       final legacyId = prefs.getString(_kLegacyLastBikeId);
       if (legacyId != null && legacyId.trim().isNotEmpty) {
         final legacyName = prefs.getString(_kLegacyLastBikeName) ?? 'Xe Dat Bike';
@@ -62,12 +63,36 @@ class VehicleStorageService {
       final jsonList = bikes.map((b) => b.toJson()).toList();
       await prefs.setString(_kSavedBikesKey, jsonEncode(jsonList));
 
-      // Đồng bộ xe mặc định / đầu tiên sang legacy key để tương thích ngược
-      final defaultBike = bikes.firstWhere((b) => b.isDefault, orElse: () => bikes.isNotEmpty ? bikes.first : const SavedBike(id: '', name: ''));
-      if (defaultBike.id.isNotEmpty) {
-        await prefs.setString(_kLegacyLastBikeId, defaultBike.id);
-        await prefs.setString(_kLegacyLastBikeName, defaultBike.name);
+      if (bikes.isEmpty) {
+        // Khi xóa hết xe, xóa sạch legacy keys để tránh xe cũ tự hồi sinh
+        await prefs.remove(_kLegacyLastBikeId);
+        await prefs.remove(_kLegacyLastBikeName);
+        await prefs.remove(_kLegacyPassword);
+      } else {
+        // Đồng bộ xe mặc định / đầu tiên sang legacy key để tương thích ngược
+        final defaultBike = bikes.firstWhere((b) => b.isDefault, orElse: () => bikes.first);
+        if (defaultBike.id.isNotEmpty) {
+          await prefs.setString(_kLegacyLastBikeId, defaultBike.id);
+          await prefs.setString(_kLegacyLastBikeName, defaultBike.name);
+        }
       }
+    } catch (_) {}
+  }
+
+  /// Xóa toàn bộ dữ liệu xe và mật khẩu trong storage (về trạng thái ban đầu)
+  Future<void> clearAllBikes() async {
+    try {
+      final prefs = await _prefs;
+      await prefs.remove(_kLegacyLastBikeId);
+      await prefs.remove(_kLegacyLastBikeName);
+      await prefs.remove(_kLegacyPassword);
+      final allKeys = prefs.getKeys();
+      for (final key in allKeys) {
+        if (key.startsWith(_kPerBikePasswordPrefix)) {
+          await prefs.remove(key);
+        }
+      }
+      await prefs.setString(_kSavedBikesKey, '[]');
     } catch (_) {}
   }
 

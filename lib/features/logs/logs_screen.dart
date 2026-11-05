@@ -57,10 +57,52 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
     });
   }
 
+  Rect? _shareOrigin() {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize) {
+      return box.localToGlobal(Offset.zero) & box.size;
+    }
+    final size = MediaQuery.of(context).size;
+    return Rect.fromLTWH(0, 0, size.width, size.height / 2);
+  }
+
   Future<void> _share(File f) async {
     await SharePlus.instance.share(
-      ShareParams(files: [XFile(f.path)], text: 'BLE session log — Dat Bike'),
+      ShareParams(
+        files: [XFile(f.path)],
+        text: 'BLE session log — Dat Bike',
+        sharePositionOrigin: _shareOrigin(),
+      ),
     );
+  }
+
+  Future<void> _copyLatestLog() async {
+    if (_files.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chưa có file log nào để sao chép.')),
+      );
+      return;
+    }
+    final targetFile = _selected ?? _files.first;
+    try {
+      final text = await targetFile.readAsString();
+      final lines = text.split('\n').where((l) => l.trim().isNotEmpty).toList();
+      final takeLines = lines.length > 80 ? lines.sublist(lines.length - 80) : lines;
+      await Clipboard.setData(ClipboardData(text: takeLines.join('\n')));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📋 Đã sao chép ${takeLines.length} dòng log mới nhất vào bộ nhớ tạm!'),
+          backgroundColor: AppColors.tertiary,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Lỗi sao chép log: $e'), backgroundColor: AppColors.error),
+      );
+    }
   }
 
   Future<void> _exportAll() async {
@@ -72,6 +114,7 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
           ShareParams(
             files: _files.map((f) => XFile(f.path)).toList(),
             text: 'BLE session logs — Dat Bike',
+            sharePositionOrigin: _shareOrigin(),
           ),
         );
         return;
@@ -258,23 +301,44 @@ class _LogsScreenState extends ConsumerState<LogsScreen> {
                     ),
                   ],
                   const SizedBox(height: 14),
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      shape: const StadiumBorder(),
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                    ),
-                    icon: _exporting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
-                          )
-                        : const Icon(Icons.download_rounded, size: 18),
-                    label: Text(
-                      'Export toàn bộ → Downloads/DatBikeLogs',
-                      style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600, fontSize: 13),
-                    ),
-                    onPressed: _files.isEmpty || _exporting ? null : _exportAll,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            shape: const StadiumBorder(),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          ),
+                          icon: _exporting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+                                )
+                              : const Icon(Icons.download_rounded, size: 18),
+                          label: Text(
+                            'Export toàn bộ',
+                            style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600, fontSize: 13),
+                          ),
+                          onPressed: _files.isEmpty || _exporting ? null : _exportAll,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            shape: const StadiumBorder(),
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          ),
+                          icon: const Icon(Icons.copy_all_rounded, size: 18),
+                          label: Text(
+                            'Sao chép log mới',
+                            style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w600, fontSize: 13),
+                          ),
+                          onPressed: _files.isEmpty ? null : _copyLatestLog,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),

@@ -154,12 +154,19 @@ class ParkingStorageService {
     }
   }
 
-  /// Xóa vị trí đỗ khi người dùng đã lấy xe khởi hành
+  /// Xóa vị trí đỗ khi người dùng đã lấy xe khởi hành hoặc xóa xe khỏi nhà xe
   Future<void> clearParkedLocation({String? bikeId}) async {
     try {
       final prefs = await _prefs;
       if (bikeId != null && bikeId.isNotEmpty) {
         await prefs.remove('$_kParkingPrefix$bikeId');
+      } else {
+        final keys = prefs.getKeys();
+        for (final k in keys) {
+          if (k.startsWith(_kParkingPrefix)) {
+            await prefs.remove(k);
+          }
+        }
       }
       await prefs.remove(_kDefaultParkingKey);
     } catch (_) {}

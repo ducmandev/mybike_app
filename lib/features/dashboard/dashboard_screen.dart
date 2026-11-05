@@ -110,12 +110,17 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     super.dispose();
   }
 
+  String _cleanErrorMsg(dynamic e) {
+    final s = e.toString();
+    return s.replaceFirst(RegExp(r'^(Exception|TimeoutException):\s*'), '');
+  }
+
   Future<void> _turnOnBike() async {
     setState(() => _powerBusy = true);
     try {
       await ref.read(bleProvider.notifier).turnOnBike().timeout(
-        const Duration(seconds: 4),
-        onTimeout: () => throw TimeoutException('Lệnh mở xe quá thời gian phản hồi (4s). Vui lòng thử lại.'),
+        const Duration(seconds: 6),
+        onTimeout: () => throw TimeoutException('Lệnh mở xe quá thời gian phản hồi (6s). Vui lòng thử lại.'),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -128,7 +133,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Lỗi mở xe: $e'), backgroundColor: AppColors.error),
+        SnackBar(content: Text('Lỗi mở xe: ${_cleanErrorMsg(e)}'), backgroundColor: AppColors.error),
       );
     } finally {
       if (mounted) setState(() => _powerBusy = false);
@@ -206,8 +211,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     setState(() => _powerBusy = true);
     try {
       await ref.read(bleProvider.notifier).turnOffBike().timeout(
-        const Duration(seconds: 4),
-        onTimeout: () => throw TimeoutException('Lệnh tắt xe quá thời gian phản hồi (4s). Vui lòng thử lại.'),
+        const Duration(seconds: 6),
+        onTimeout: () => throw TimeoutException('Lệnh tắt xe quá thời gian phản hồi (6s). Vui lòng thử lại.'),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -220,7 +225,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Lỗi tắt xe: $e'), backgroundColor: AppColors.error),
+        SnackBar(content: Text('Lỗi tắt xe: ${_cleanErrorMsg(e)}'), backgroundColor: AppColors.error),
       );
     } finally {
       if (mounted) setState(() => _powerBusy = false);
@@ -242,8 +247,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     try {
       if (currentlyLocked) {
         final res = await ref.read(bleProvider.notifier).unlockBike().timeout(
-          const Duration(seconds: 4),
-          onTimeout: () => 'Lệnh mở khóa quá thời gian chờ (4s). Vui lòng thử lại.',
+          const Duration(seconds: 6),
+          onTimeout: () => 'Lệnh mở khóa quá thời gian chờ (6s). Vui lòng thử lại.',
         );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -255,8 +260,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         );
       } else {
         final res = await ref.read(bleProvider.notifier).lockBike().timeout(
-          const Duration(seconds: 5),
-          onTimeout: () => 'Lệnh khóa xe quá thời gian chờ (5s). Vui lòng thử lại.',
+          const Duration(seconds: 6),
+          onTimeout: () => 'Lệnh khóa xe quá thời gian chờ (6s). Vui lòng thử lại.',
         );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -270,7 +275,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Lỗi thao tác khóa xe: $e'), backgroundColor: AppColors.error),
+        SnackBar(content: Text('Lỗi thao tác khóa xe: ${_cleanErrorMsg(e)}'), backgroundColor: AppColors.error),
       );
     } finally {
       if (mounted) setState(() => _powerBusy = false);

@@ -391,9 +391,65 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
             onPressed: () async {
               Navigator.pop(ctx);
               await ref.read(bleProvider.notifier).deleteBike(bike.id);
-              _snack('Đã xóa ${bike.name} khỏi nhà xe');
+              if (!mounted) return;
+              final isIos = Theme.of(context).platform == TargetPlatform.iOS;
+              if (isIos) {
+                _snack('Đã xóa ${bike.name} khỏi ứng dụng. Nếu muốn quên hoàn toàn ghép đôi hệ thống trên iPhone, hãy vào Cài đặt iOS > Bluetooth > chọn biểu tượng (i) cạnh tên xe > Quên thiết bị này.');
+              } else {
+                _snack('Đã xóa ${bike.name} khỏi nhà xe');
+              }
             },
             child: Text('XÁC NHẬN XÓA', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Hộp thoại xác nhận xóa toàn bộ xe
+  void _confirmDeleteAllBikes() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Color(0xFFEF4444), size: 24),
+            const SizedBox(width: 8),
+            Text(
+              'Xóa toàn bộ xe?',
+              style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, fontSize: 17, color: const Color(0xFFEF4444)),
+            ),
+          ],
+        ),
+        content: Text(
+          'Bạn có chắc chắn muốn xóa TOÀN BỘ xe khỏi nhà xe không?\n'
+          'Toàn bộ cấu hình, vị trí đỗ, và mật khẩu liên kết sẽ bị xóa sạch khỏi ứng dụng.',
+          style: GoogleFonts.plusJakartaSans(fontSize: 13.5, color: const Color(0xFF475569), height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('HỦY', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await ref.read(bleProvider.notifier).deleteAllSavedBikes();
+              if (!mounted) return;
+              final isIos = Theme.of(context).platform == TargetPlatform.iOS;
+              if (isIos) {
+                _snack('Đã xóa toàn bộ xe khỏi ứng dụng. Nếu muốn quên hoàn toàn ghép đôi hệ thống trên iPhone, hãy vào Cài đặt iOS > Bluetooth > chọn biểu tượng (i) cạnh tên xe > Quên thiết bị này.');
+              } else {
+                _snack('Đã xóa toàn bộ xe khỏi nhà xe');
+              }
+            },
+            child: Text('XÓA TẤT CẢ', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700)),
           ),
         ],
       ),
@@ -458,6 +514,20 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
           ],
         ),
         actions: [
+          if (bikes.isNotEmpty)
+            IconButton(
+              tooltip: 'Xóa toàn bộ xe đã lưu',
+              icon: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEE2E2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFECACA)),
+                ),
+                child: const Icon(Icons.delete_sweep_rounded, color: Color(0xFFEF4444), size: 20),
+              ),
+              onPressed: _confirmDeleteAllBikes,
+            ),
           IconButton(
             tooltip: 'Thêm xe mới',
             icon: Container(
@@ -909,18 +979,34 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
                   ),
 
                 // Nút chỉnh sửa
-                IconButton(
-                  tooltip: 'Chỉnh sửa thông tin',
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.edit_outlined, size: 19, color: Color(0xFF2563EB)),
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: const Color(0xFF2563EB),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  label: Text('Sửa', style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w600)),
                   onPressed: () => _showEditBikeDialog(bike),
                 ),
 
-                // Nút xóa
-                IconButton(
-                  tooltip: 'Xóa khỏi nhà xe',
-                  visualDensity: VisualDensity.compact,
-                  icon: const Icon(Icons.delete_outline_rounded, size: 19, color: Color(0xFFEF4444)),
+                const SizedBox(width: 4),
+
+                // Nút xóa xe với nhãn rõ ràng
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: const Color(0xFFEF4444),
+                    side: const BorderSide(color: Color(0xFFFECACA)),
+                    backgroundColor: const Color(0xFFFEF2F2),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  ),
+                  icon: const Icon(Icons.delete_outline_rounded, size: 16, color: Color(0xFFEF4444)),
+                  label: Text(
+                    'Xóa xe',
+                    style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: const Color(0xFFEF4444)),
+                  ),
                   onPressed: () => _confirmDeleteBike(bike),
                 ),
               ],

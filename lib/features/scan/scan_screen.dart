@@ -51,12 +51,7 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     Gatt.programmingService.toLowerCase(),
     Gatt.chargingService.toLowerCase(),
     '0000ffe0-0000-1000-8000-00805f9b34fb',
-    '0000180a-0000-1000-8000-00805f9b34fb',
-    '00001800-0000-1000-8000-00805f9b34fb',
-    '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
     'ffe0',
-    '180a',
-    '1800',
   };
 
   @override
@@ -205,6 +200,20 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
         combined.contains('kinetic');
   }
 
+  bool _isDatBikeName(String name) {
+    final lower = name.trim().toLowerCase().replaceAll('.', ' ');
+    return lower.contains('dat bik') ||
+        lower.contains('datbike') ||
+        lower.contains('quantum') ||
+        lower.contains('weaver') ||
+        lower.contains('era') ||
+        lower.startsWith('db-') ||
+        lower.startsWith('db ') ||
+        lower.contains('db-quantum') ||
+        lower.contains('stitch') ||
+        lower.contains('kinetic');
+  }
+
   /// Quét các thiết bị đã kết nối với hệ thống iOS hoặc đang kết nối
   Future<void> _fetchSystemAndConnectedDevices() async {
     final searchServices = [
@@ -214,11 +223,6 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
       Guid(Gatt.otaService),
       Guid(Gatt.programmingService),
       Guid(Gatt.chargingService),
-      Guid('1800'),
-      Guid('180a'),
-      Guid('180f'),
-      Guid('ffe0'),
-      Guid('6e400001-b5a3-f393-e0a9-e50e24dcca9e'),
     ];
 
     List<BluetoothDevice> sysList = [];
@@ -227,16 +231,45 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
     } catch (_) {}
 
     final connList = FlutterBluePlus.connectedDevices;
-    final all = <BluetoothDevice>{...sysList, ...connList};
 
-    if (all.isEmpty || !mounted) return;
+    // Lấy danh sách xe đã lưu trong garage để kiểm tra
+    final savedBikes = ref.read(bleProvider).savedBikes;
+    final savedIds = savedBikes.map((b) => b.id.toLowerCase()).toSet();
+    if (_lastBikeId != null) {
+      savedIds.add(_lastBikeId!.toLowerCase());
+    }
+
+    final validDevices = <BluetoothDevice>[];
+    for (final dev in <BluetoothDevice>{...sysList, ...connList}) {
+      final idLower = dev.remoteId.str.toLowerCase();
+      final platName = dev.platformName.trim();
+      final matchesSaved = savedIds.contains(idLower);
+      final matchesName = _isDatBikeName(platName);
+
+      // Chỉ hiển thị thiết bị nếu hệ thống iOS xác nhận chứa Service của Dat Bike,
+      // hoặc ID đã từng lưu trong ứng dụng, hoặc có tên quảng bá đặc trưng Dat Bike.
+      if (sysList.contains(dev) || matchesSaved || matchesName) {
+        validDevices.add(dev);
+      }
+    }
+
+    if (validDevices.isEmpty || !mounted) return;
 
     setState(() {
       _systemResults.clear();
-      for (final dev in all) {
-        final name = dev.platformName.isNotEmpty
-            ? dev.platformName
-            : 'Xe Dat Bike (Hệ thống)';
+      for (final dev in validDevices) {
+        String name = dev.platformName.trim();
+        if (name.isEmpty) {
+          final savedMatch = savedBikes.firstWhere(
+            (b) => b.id.toLowerCase() == dev.remoteId.str.toLowerCase(),
+            orElse: () => SavedBike(id: '', name: _lastBikeName ?? ''),
+          );
+          if (savedMatch.name.isNotEmpty) {
+            name = savedMatch.name;
+          }
+        }
+        if (name.isEmpty) continue; // Tuyệt đối không gán 'Xe Dat Bike (Hệ thống)' giả
+
         final synthetic = ScanResult(
           device: dev,
           advertisementData: AdvertisementData(
@@ -519,6 +552,65 @@ class _ScanScreenState extends ConsumerState<ScanScreen> {
                         ],
                       ),
                     ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline_rounded,
+                          color: AppColors.error, size: 22),
+                      tooltip: 'Xóa / Quên xe này',
+                      onPressed: () async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: AppColors.panel,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20)),
+                            title: Text(
+                              'Quên xe đã kết nối?',
+                              style: GoogleFonts.spaceGrotesk(
+                                  fontWeight: FontWeight.w700),
+                            ),
+                            content: Text(
+                              'Bạn có chắc chắn muốn xóa xe "${_lastBikeName ?? "này"}" khỏi bộ nhớ ứng dụng?',
+                              style: GoogleFonts.plusJakartaSans(
+                                  color: AppColors.textDim, fontSize: 14),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: Text('HỦY',
+                                    style: GoogleFonts.plusJakartaSans(
+                                        color: AppColors.textDim)),
+                              ),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.error,
+                                  foregroundColor: Colors.white,
+                                  shape: const StadiumBorder(),
+                                ),
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: Text('QUÊN XE',
+                                    style: GoogleFonts.spaceGrotesk(
+                                        fontWeight: FontWeight.w700)),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm == true) {
+                          await ref.read(bleProvider.notifier).forgetBike();
+                          if (!mounted) return;
+                          setState(() {
+                            _lastBikeId = null;
+                            _lastBikeName = null;
+                          });
+                          messenger.showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Đã xóa / quên xe đã kết nối gần nhất.')),
+                          );
+                        }
+                      },
+                    ),
+                    const SizedBox(width: 4),
                     _directConnecting
                         ? const SizedBox(
                             width: 20,

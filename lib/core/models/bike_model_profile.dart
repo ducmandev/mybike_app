@@ -64,6 +64,7 @@ enum BikeModel {
 
   /// Xe có bộ điều khiển sạc thông minh đa cấp (ChargerOp Standard/Fast/Boost) qua bo PCU không?
   bool get supportsChargerOp => generation == BikeGeneration.gen4Era;
+  bool get supportsChargingProfile => supportsChargerOp;
 
   /// Xe có đầu đọc thẻ NFC vật lý ở đầu xe / taplo không?
   bool get hasNfcTaplo => generation != BikeGeneration.gen1Weaver;

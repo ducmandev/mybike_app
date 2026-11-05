@@ -72,7 +72,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'Dat Bike Companion',
-      applicationVersion: 'v2.6.26',
+      applicationVersion: 'v2.6.29',
       applicationIcon: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: Image.asset(
@@ -403,6 +403,50 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         );
                       },
                     ),
+
+                    const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
+
+                    // 8. Xóa / Quên xe đã kết nối
+                    _profileListItem(
+                      icon: const Icon(Icons.delete_forever_rounded, size: 22, color: Color(0xFFEF4444)),
+                      title: 'Xóa / Quên xe đã kết nối',
+                      textColor: const Color(0xFFEF4444),
+                      onTap: () {
+                        showDialog(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                            title: Text('Quên Xe Đã Kết Nối', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: const Color(0xFFEF4444))),
+                            content: Text(
+                              'Hành động này sẽ ngắt kết nối và xóa thông tin xe "${ble.bikeName ?? "hiện tại"}" khỏi ứng dụng.\n\nTrên iOS: Hãy vào Cài đặt > Bluetooth > Quên thiết bị này để hủy ghép đôi hệ thống hoàn toàn.',
+                              style: GoogleFonts.plusJakartaSans(fontSize: 14),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx),
+                                child: Text('HỦY', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: const Color(0xFF64748B))),
+                              ),
+                              FilledButton(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: const Color(0xFFEF4444),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                onPressed: () async {
+                                  Navigator.pop(ctx);
+                                  await ref.read(bleProvider.notifier).forgetBike();
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('Đã xóa thông tin xe đã kết nối')),
+                                    );
+                                  }
+                                },
+                                child: Text('XÓA / QUÊN XE', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700)),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -521,6 +565,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     required Widget icon,
     required String title,
     required VoidCallback onTap,
+    Color? textColor,
   }) {
     return InkWell(
       onTap: onTap,
@@ -540,17 +585,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 title,
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 14.5,
-                  fontWeight: FontWeight.w500,
-                  color: const Color(0xFF0F172A),
+                  fontWeight: textColor != null ? FontWeight.w600 : FontWeight.w500,
+                  color: textColor ?? const Color(0xFF0F172A),
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 22,
-              color: Color(0xFF94A3B8),
+              color: textColor?.withValues(alpha: 0.6) ?? const Color(0xFF94A3B8),
             ),
           ],
         ),

@@ -2,11 +2,13 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart' hide Path;
+import '../scan/scan_screen.dart';
 
 import '../../core/ble/ble_controller.dart';
 import '../../core/services/map_tile_service.dart';
@@ -25,6 +27,11 @@ class FindMyBikeScreen extends ConsumerStatefulWidget {
 }
 
 class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
+  static const String _kHapticEnabledKey = 'find_bike_haptic_enabled_v1';
+  bool _isHapticEnabled = true;
+
+  SavedBike? _selectedSavedBike;
+  BikeModel? _selectedModelOverride;
   ParkedLocation? _parkedLocation;
   Position? _userPosition;
   StreamSubscription<Position>? _positionSub;
@@ -41,6 +48,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   void initState() {
     super.initState();
     _mapController = MapController();
+    _loadHapticSetting();
     _loadInitialParkingLocation();
     _startPositionListening();
     _startHapticHeartbeat();
@@ -52,6 +60,56 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
     _hapticTimer?.cancel();
     _bloomTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _loadHapticSetting() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool(_kHapticEnabledKey);
+      if (enabled != null && mounted) {
+        setState(() {
+          _isHapticEnabled = enabled;
+        });
+        if (!_isHapticEnabled) {
+          _hapticTimer?.cancel();
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleHaptic() async {
+    final next = !_isHapticEnabled;
+    setState(() {
+      _isHapticEnabled = next;
+    });
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kHapticEnabledKey, next);
+    } catch (_) {}
+
+    if (next) {
+      HapticFeedback.lightImpact();
+      _startHapticHeartbeat();
+    } else {
+      _hapticTimer?.cancel();
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              next ? '📳 Đã BẬT rung phản hồi radar' : '📴 Đã TẮT rung phản hồi radar',
+              style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            duration: const Duration(milliseconds: 1400),
+          ),
+        );
+    }
   }
 
   Future<void> _loadInitialParkingLocation() async {
@@ -73,7 +131,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
               longitude: curLng,
               timestamp: DateTime.now(),
               bikeId: ble.device?.remoteId.str ?? 'default_bike',
-              bikeName: ble.bikeName ?? 'Dat Bike Quantum S1',
+              bikeName: ble.bikeName ?? _getEffectiveBikeName(ble),
               batteryPercent: ble.lastTelemetry?.percent,
               voltage: ble.lastTelemetry?.voltage,
               address: null,
@@ -143,8 +201,17 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   /// Nhịp rung xúc giác Haptic phản hồi theo cự ly phong cách Apple AirTag
   void _startHapticHeartbeat() {
     _hapticTimer?.cancel();
+    if (!_isHapticEnabled) return;
+
     _hapticTimer = Timer.periodic(const Duration(milliseconds: 700), (_) {
-      if (!mounted) return;
+      if (!mounted || !_isHapticEnabled) return;
+      final ble = ref.read(bleProvider);
+      final isBleConnected = ble.phase == BlePhase.connected;
+      final hasGpsLock = _userPosition != null && _parkedLocation != null;
+
+      // Tránh rung giả: chỉ rung khi đang kết nối BLE hoặc có tọa độ GPS thực tế
+      if (!isBleConnected && !hasGpsLock) return;
+
       if (_estimatedDistance <= 1.5) {
         HapticFeedback.heavyImpact();
       } else if (_estimatedDistance <= 6.0) {
@@ -181,7 +248,9 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
 
   void _triggerChirp() {
     ref.read(bleProvider.notifier).findBike();
-    HapticFeedback.lightImpact();
+    if (_isHapticEnabled) {
+      HapticFeedback.lightImpact();
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -198,7 +267,9 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   Future<void> _triggerUnlock() async {
     final notifier = ref.read(bleProvider.notifier);
     final msg = await notifier.unlockBike();
-    HapticFeedback.heavyImpact();
+    if (_isHapticEnabled) {
+      HapticFeedback.heavyImpact();
+    }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -334,6 +405,380 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
     );
   }
 
+  String _getEffectiveBikeName(BleState ble) {
+    if (_selectedSavedBike != null) {
+      final modelStr = _selectedModelOverride?.displayName ?? _selectedSavedBike!.model;
+      if (modelStr != null && modelStr.isNotEmpty && !_selectedSavedBike!.name.toLowerCase().contains(modelStr.toLowerCase())) {
+        return '${_selectedSavedBike!.name} ($modelStr)';
+      }
+      return _selectedSavedBike!.name;
+    }
+
+    final activeSaved = ble.savedBikes.where((b) => ble.device != null && b.id.toLowerCase() == ble.device!.remoteId.str.toLowerCase()).firstOrNull;
+    if (activeSaved != null) {
+      return activeSaved.name;
+    }
+
+    if (ble.bikeName != null && ble.bikeName!.trim().isNotEmpty) {
+      return ble.bikeName!;
+    }
+
+    if (_selectedModelOverride != null) {
+      return _selectedModelOverride!.displayName;
+    }
+
+    if (_parkedLocation?.bikeName != null &&
+        _parkedLocation!.bikeName.isNotEmpty &&
+        _parkedLocation!.bikeName != 'Dat Bike Quantum S1' &&
+        _parkedLocation!.bikeName != 'DAT BIKE QUANTUM S1') {
+      return _parkedLocation!.bikeName;
+    }
+
+    if (ble.savedBikes.isNotEmpty) {
+      return ble.savedBikes.first.name;
+    }
+
+    return 'Chưa kết nối xe — Chạm để kết nối / chọn dòng xe';
+  }
+
+  bool _isNoBike(BleState ble) {
+    return ble.device == null &&
+        ble.bikeName == null &&
+        ble.savedBikes.isEmpty &&
+        _selectedSavedBike == null &&
+        _selectedModelOverride == null &&
+        (_parkedLocation?.bikeName == null ||
+            _parkedLocation!.bikeName == 'Dat Bike Quantum S1' ||
+            _parkedLocation!.bikeName == 'DAT BIKE QUANTUM S1');
+  }
+
+  String _getBatteryDisplay(BleState ble) {
+    final percent = _parkedLocation?.batteryPercent ?? ble.lastTelemetry?.percent;
+    final voltage = _parkedLocation?.voltage ?? ble.lastTelemetry?.voltage;
+    if (percent != null) {
+      final voltStr = voltage != null ? ' (${voltage.toStringAsFixed(1)}V)' : '';
+      return 'PIN: $percent%$voltStr';
+    }
+    return 'PIN: --%';
+  }
+
+  Widget _buildNoBikeBanner(BuildContext context, BleState ble) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFFED7AA)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFEDD5),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.two_wheeler_rounded,
+              color: Color(0xFFEA580C),
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Chưa kết nối với xe nào',
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: const Color(0xFF9A3412),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Kết nối Bluetooth hoặc chọn dòng xe để tìm vị trí đỗ chính xác.',
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 11,
+                    color: const Color(0xFFC2410C),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              TextButton(
+                style: TextButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ScanScreen()),
+                  );
+                },
+                child: Text(
+                  'Kết nối ngay',
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              InkWell(
+                onTap: () => _openBikeSelectionBottomSheet(context, ble),
+                child: Text(
+                  'Chọn dòng xe',
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.primary,
+                    decoration: TextDecoration.underline,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _openBikeSelectionBottomSheet(BuildContext context, BleState ble) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (bottomSheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final savedBikes = ble.savedBikes;
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.75,
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 12, bottom: 8),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.two_wheeler_rounded, color: AppColors.primary),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'CHỌN XE & DÒNG XE TÌM KIẾM',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, size: 20),
+                          onPressed: () => Navigator.pop(bottomSheetContext),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: ListView(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                      children: [
+                        if (savedBikes.isNotEmpty) ...[
+                          Text(
+                            'XE ĐÃ LƯU (${savedBikes.length})',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textDim,
+                              letterSpacing: 1.0,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          ...savedBikes.map((bike) {
+                            final isCurrent = _selectedSavedBike?.id == bike.id ||
+                                (_selectedSavedBike == null && ble.device?.remoteId.str == bike.id);
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              decoration: BoxDecoration(
+                                color: isCurrent ? const Color(0xFFEFFDF5) : AppColors.surfaceContainer,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: isCurrent ? AppColors.tertiary : AppColors.surfaceContainerHigh,
+                                  width: isCurrent ? 1.5 : 1.0,
+                                ),
+                              ),
+                              child: ListTile(
+                                leading: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: isCurrent ? AppColors.tertiary : Colors.white,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    Icons.electric_moped_rounded,
+                                    size: 20,
+                                    color: isCurrent ? Colors.white : AppColors.primary,
+                                  ),
+                                ),
+                                title: Text(
+                                  bike.name,
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  'Model: ${bike.model ?? "Chưa rõ"} · ID: ${bike.id.length > 8 ? bike.id.substring(0, 8) : bike.id}...',
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 11,
+                                    color: AppColors.textDim,
+                                  ),
+                                ),
+                                trailing: isCurrent
+                                    ? const Icon(Icons.check_circle_rounded, color: AppColors.tertiary)
+                                    : const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.textMuted),
+                                onTap: () async {
+                                  setState(() {
+                                    _selectedSavedBike = bike;
+                                    _selectedModelOverride = null;
+                                  });
+                                  Navigator.pop(bottomSheetContext);
+                                  await ref.read(bleProvider.notifier).switchBike(bike);
+                                  final loc = await ParkingStorageService.instance.loadParkedLocation(bikeId: bike.id);
+                                  if (mounted) {
+                                    setState(() {
+                                      _parkedLocation = loc;
+                                    });
+                                    _updateCalculatedMetrics();
+                                  }
+                                },
+                              ),
+                            );
+                          }),
+                          const SizedBox(height: 16),
+                        ],
+                        Text(
+                          'CHỌN DÒNG XE DAT BIKE',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textDim,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Chọn loại xe của bạn nếu chưa kết nối Bluetooth',
+                          style: GoogleFonts.spaceGrotesk(
+                            fontSize: 11,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: BikeModel.values.map((model) {
+                            final isModelSelected = _selectedModelOverride == model ||
+                                (_selectedModelOverride == null && ble.bikeModel == model && _selectedSavedBike == null);
+                            return ChoiceChip(
+                              label: Text(model.displayName),
+                              labelStyle: GoogleFonts.spaceGrotesk(
+                                fontSize: 12,
+                                fontWeight: isModelSelected ? FontWeight.w700 : FontWeight.w500,
+                                color: isModelSelected ? Colors.white : AppColors.textPrimary,
+                              ),
+                              selected: isModelSelected,
+                              selectedColor: AppColors.primary,
+                              backgroundColor: AppColors.surfaceContainer,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20),
+                                side: BorderSide(
+                                  color: isModelSelected ? AppColors.primary : AppColors.surfaceContainerHigh,
+                                ),
+                              ),
+                              onSelected: (selected) {
+                                if (selected) {
+                                  setState(() {
+                                    _selectedModelOverride = model;
+                                    _selectedSavedBike = null;
+                                  });
+                                  Navigator.pop(bottomSheetContext);
+                                }
+                              },
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 24),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          onPressed: () {
+                            Navigator.pop(bottomSheetContext);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (_) => const ScanScreen()),
+                            );
+                          },
+                          icon: const Icon(Icons.bluetooth_searching_rounded),
+                          label: Text(
+                            'Quét & Kết Nối Xe Mới',
+                            style: GoogleFonts.spaceGrotesk(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ble = ref.watch(bleProvider);
@@ -350,29 +795,62 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
           color: AppColors.textPrimary,
           onPressed: () => Navigator.pop(context),
         ),
-        title: Column(
-          children: [
-            Text(
-              'TÌM XE & VỊ TRÍ ĐỖ',
-              style: GoogleFonts.spaceGrotesk(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
-                letterSpacing: 0.5,
-              ),
+        title: InkWell(
+          onTap: () => _openBikeSelectionBottomSheet(context, ble),
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'TÌM XE & VỊ TRÍ ĐỖ',
+                        style: GoogleFonts.spaceGrotesk(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: AppColors.primary,
+                      ),
+                    ],
+                  ),
+                ),
+                Text(
+                  _getEffectiveBikeName(ble),
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: _isNoBike(ble) ? const Color(0xFFEA580C) : AppColors.textDim,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
             ),
-            Text(
-              ble.bikeName ?? _parkedLocation?.bikeName ?? 'DAT BIKE QUANTUM S1',
-              style: GoogleFonts.spaceGrotesk(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDim,
-              ),
-            ),
-          ],
+          ),
         ),
         centerTitle: true,
         actions: [
+          IconButton(
+            tooltip: _isHapticEnabled ? 'Tắt rung radar' : 'Bật rung radar',
+            icon: Icon(
+              _isHapticEnabled ? Icons.vibration_rounded : Icons.mobile_off_rounded,
+              size: 20,
+              color: _isHapticEnabled ? AppColors.primary : AppColors.textDim,
+            ),
+            onPressed: _toggleHaptic,
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 14),
             child: Center(
@@ -451,6 +929,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
+                if (_isNoBike(ble)) _buildNoBikeBanner(context, ble),
                 _buildRadarCard(ble, isConnected),
                 const SizedBox(height: 16),
                 _buildMiniMapCard(height: 240),
@@ -490,42 +969,56 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Expanded(
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: AppColors.tertiary,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Flexible(
-                          child: Text(
-                            _parkedLocation?.bikeName ?? 'DAT BIKE QUANTUM S1',
-                            style: GoogleFonts.spaceGrotesk(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 0.6,
-                              color: AppColors.textPrimary,
+                    child: InkWell(
+                      onTap: () => _openBikeSelectionBottomSheet(context, ble),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: isConnected
+                                  ? AppColors.tertiary
+                                  : (_isNoBike(ble) ? const Color(0xFFEA580C) : AppColors.primary),
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              _getEffectiveBikeName(ble),
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.6,
+                                color: _isNoBike(ble) ? const Color(0xFFEA580C) : AppColors.textPrimary,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          const Icon(
+                            Icons.swap_horiz_rounded,
+                            size: 14,
+                            color: AppColors.primary,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    'PIN: ${_parkedLocation?.batteryPercent ?? ble.lastTelemetry?.percent ?? 82}% (${_parkedLocation?.voltage?.toStringAsFixed(1) ?? "72.4"}V)',
+                    _getBatteryDisplay(ble),
                     style: GoogleFonts.spaceGrotesk(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
                       color: AppColors.textDim,
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  _buildHapticToggleChip(),
                 ],
               ),
               if (!isLandscape) const SizedBox(height: 12),
@@ -790,6 +1283,48 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildHapticToggleChip() {
+    return InkWell(
+      onTap: _toggleHaptic,
+      borderRadius: BorderRadius.circular(12),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: _isHapticEnabled
+              ? AppColors.primary.withValues(alpha: 0.12)
+              : AppColors.surfaceContainerHigh.withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: _isHapticEnabled
+                ? AppColors.primary.withValues(alpha: 0.3)
+                : AppColors.surfaceContainerHigh,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              _isHapticEnabled ? Icons.vibration_rounded : Icons.mobile_off_rounded,
+              size: 13,
+              color: _isHapticEnabled ? AppColors.primary : AppColors.textDim,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              _isHapticEnabled ? 'RUNG: BẬT' : 'RUNG: TẮT',
+              style: GoogleFonts.spaceGrotesk(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.4,
+                color: _isHapticEnabled ? AppColors.primary : AppColors.textDim,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

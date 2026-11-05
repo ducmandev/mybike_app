@@ -102,10 +102,11 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
   }
 
   void _heroSnack(String msg, {String? actionLabel, VoidCallback? onAction, Duration? duration}) {
+    final cleanMsg = msg.replaceFirst(RegExp(r'^(Exception|TimeoutException):\s*'), '');
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
-        content: Text(msg, style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w500)),
+        content: Text(cleanMsg, style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w500)),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         duration: duration ?? const Duration(milliseconds: 1800),
@@ -1474,6 +1475,43 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                       style: GoogleFonts.plusJakartaSans(fontSize: 9, fontWeight: FontWeight.w700, color: const Color(0xFF64748B)),
                                     ),
                                   ),
+                                const SizedBox(width: 4),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 20),
+                                  tooltip: 'Xóa xe này',
+                                  constraints: const BoxConstraints(),
+                                  padding: const EdgeInsets.all(6),
+                                  onPressed: () async {
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (dCtx) => AlertDialog(
+                                        backgroundColor: Colors.white,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                        title: Text('Xóa xe khỏi danh sách?', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, fontSize: 17, color: const Color(0xFFEF4444))),
+                                        content: Text('Bạn có chắc chắn muốn xóa "${bike.name}" khỏi danh sách nhà xe?', style: GoogleFonts.plusJakartaSans(color: const Color(0xFF475569), fontSize: 14)),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(dCtx, false),
+                                            child: Text('HỦY', style: GoogleFonts.plusJakartaSans(color: const Color(0xFF64748B))),
+                                          ),
+                                          ElevatedButton(
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: const Color(0xFFEF4444),
+                                              foregroundColor: Colors.white,
+                                              shape: const StadiumBorder(),
+                                            ),
+                                            onPressed: () => Navigator.pop(dCtx, true),
+                                            child: Text('XÓA XE', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true) {
+                                      await sheetRef.read(bleProvider.notifier).deleteBike(bike.id);
+                                      _heroSnack('Đã xóa "${bike.name}" khỏi nhà xe');
+                                    }
+                                  },
+                                ),
                               ],
                             ),
                           ),
@@ -1518,6 +1556,41 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                               Text(infoStr, style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF475569))),
                             ],
                           ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 22),
+                          tooltip: 'Xóa / Quên xe này',
+                          onPressed: () async {
+                            final confirm = await showDialog<bool>(
+                              context: context,
+                              builder: (dCtx) => AlertDialog(
+                                backgroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                title: Text('Quên xe này?', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, fontSize: 17, color: const Color(0xFFEF4444))),
+                                content: Text('Bạn có chắc muốn quên thông tin xe hiện tại khỏi ứng dụng?', style: GoogleFonts.plusJakartaSans(color: const Color(0xFF475569), fontSize: 14)),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(dCtx, false),
+                                    child: Text('HỦY', style: GoogleFonts.plusJakartaSans(color: const Color(0xFF64748B))),
+                                  ),
+                                  ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFEF4444),
+                                      foregroundColor: Colors.white,
+                                      shape: const StadiumBorder(),
+                                    ),
+                                    onPressed: () => Navigator.pop(dCtx, true),
+                                    child: Text('QUÊN XE', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirm == true) {
+                              await sheetRef.read(bleProvider.notifier).forgetBike();
+                              if (ctx.mounted) Navigator.pop(ctx);
+                              _heroSnack('Đã xóa / quên thông tin xe');
+                            }
+                          },
                         ),
                       ],
                     ),

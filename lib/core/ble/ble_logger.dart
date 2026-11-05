@@ -21,14 +21,33 @@ class BleLogger {
   IOSink? _sink;
   File? _file;
   int _eventCount = 0;
+  bool _isFlushing = false;
+  final List<String> _pendingLines = [];
 
   bool get active => _sink != null;
   File? get file => _file;
   int get eventCount => _eventCount;
 
+  void _safeFlush() {
+    final sink = _sink;
+    if (sink == null || _isFlushing) return;
+    _isFlushing = true;
+    sink.flush().catchError((_) {}).whenComplete(() {
+      _isFlushing = false;
+      if (_pendingLines.isNotEmpty && _sink != null) {
+        for (final l in _pendingLines) {
+          _sink!.writeln(l);
+        }
+        _pendingLines.clear();
+        _safeFlush();
+      }
+    });
+  }
+
   Future<File?> startSession() async {
     try {
       await close();
+      _pendingLines.clear();
       final dir = await _logDir();
       final ts = DateTime.now()
           .toIso8601String()
@@ -53,6 +72,12 @@ class BleLogger {
     final sink = _sink;
     _sink = null;
     try {
+      if (!_isFlushing && _pendingLines.isNotEmpty && sink != null) {
+        for (final l in _pendingLines) {
+          sink.writeln(l);
+        }
+        _pendingLines.clear();
+      }
       await sink?.flush();
       await sink?.close();
     } catch (_) {}
@@ -97,18 +122,27 @@ class BleLogger {
         'type': type,
         ...data,
       });
-      sink.writeln(line);
       _eventCount++;
-      // fire-and-forget — lỗi flush không ảnh hưởng BLE
-      unawaited(sink.flush().catchError((_) {}));
+      if (_isFlushing) {
+        _pendingLines.add(line);
+      } else {
+        sink.writeln(line);
+        _safeFlush();
+      }
     } catch (_) {
       // Encode lỗi cũng phải để lại dấu vết — không được im lặng mất event
       try {
-        sink.writeln(jsonEncode({
+        final errLine = jsonEncode({
           'ts': DateTime.now().toIso8601String(),
           'type': type,
           'log_err': 'encode_failed',
-        }));
+        });
+        if (_isFlushing) {
+          _pendingLines.add(errLine);
+        } else {
+          sink.writeln(errLine);
+          _safeFlush();
+        }
       } catch (_) {}
     }
   }

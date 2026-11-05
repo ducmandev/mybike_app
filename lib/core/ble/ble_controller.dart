@@ -455,6 +455,7 @@ class BleController extends Notifier<BleState> {
   BluetoothCharacteristic? _dashChar;
   BluetoothCharacteristic? _batteryChar;
   int _batteryPollCounter = 0;
+  int _rssiPollCounter = 0;
   bool _manualDisconnect = false;
   bool _reconnectPending = false;
   int _reconnectAttempts = 0;
@@ -474,6 +475,8 @@ class BleController extends Notifier<BleState> {
   bool _establishBusy = false; // mutex: 1 handshake/lúc — chống double-flow
   bool _restoreBusy = false; // mutex: 1 restore/lúc — chống khởi động song song
   bool _isCommandBusy = false; // mutex: chống gửi dồn dập nhiều lệnh tới BMS
+  int _pendingUserCommands = 0; // số lượng lệnh điều khiển của user đang chờ hoặc đang chạy
+  bool get _hasPendingUserCommand => _pendingUserCommands > 0 || _isCommandBusy;
   DateTime? _lastCommandCompletedAt; // mốc hoàn tất lệnh trước (cooldown bus CAN/BMS)
 
   /// KEEPALIVE TẮT MẶC ĐỊNH (2026-10-20): bản log 13h49 giữ được session
@@ -677,12 +680,14 @@ class BleController extends Notifier<BleState> {
   /// Tự động lưu chuyến đi hiện tại vào lịch sử.
   /// QUY TẮC: Chỉ lưu hành trình nếu quãng đường di chuyển từ 1km trở lên (>= 1.0 km).
   /// Nếu di chuyển dưới 1km (< 1.0 km) thì tuyệt đối không lưu hành trình.
-    void _recordParkingSnapshot() {
+  void _recordParkingSnapshot() {
+    if (_device == null && state.bikeName == null) return;
     final devId = _device?.remoteId.str ?? '';
-    final name = state.bikeName ?? 'Dat Bike Quantum S1';
+    final name = state.bikeName;
+    if (name == null || name.trim().isEmpty) return;
     unawaited(ParkingStorageService.instance.recordParkedLocationOnDisconnect(
       bikeId: devId,
-      bikeName: name,
+      bikeName: name.trim(),
       batteryPercent: state.lastTelemetry?.percent,
       voltage: state.lastTelemetry?.voltage,
       isLocked: state.isLocked,
@@ -861,6 +866,61 @@ class BleController extends Notifier<BleState> {
     return completer.future;
   }
 
+  /// Hàng đợi ưu tiên tuyệt đối cho lệnh điều khiển của người dùng (Bật/Tắt xe, Khóa/Mở xe, Tìm xe, Ghi cài đặt).
+  /// Ngay khi gọi, tăng _pendingUserCommands để mọi tác vụ nền (polling, RSSI, telemetry, fw settings)
+  /// phát hiện và tự động nhường quyền ngay lập tức trong 0ms.
+  Future<T> _enqueueUserCommand<T>(
+    Future<T> Function() action, {
+    String tag = 'UserCmd',
+    Duration timeout = const Duration(milliseconds: 2500),
+  }) async {
+    _pendingUserCommands++;
+    try {
+      return await _enqueueGatt(action, timeout: timeout);
+    } finally {
+      if (_pendingUserCommands > 0) {
+        _pendingUserCommands--;
+      }
+    }
+  }
+
+  /// Hàng đợi các tác vụ đọc nền định kỳ (Dashboard telemetry, RSSI, Battery details, FW settings).
+  /// Nhường quyền ngay lập tức trong 0ms nếu có lệnh người dùng đang chờ hoặc đang bận.
+  Future<T?> _enqueueBackgroundRead<T>(
+    Future<T> Function() action, {
+    String tag = 'BgRead',
+    Duration timeout = const Duration(milliseconds: 1500),
+  }) async {
+    if (_hasPendingUserCommand || state.phase != BlePhase.connected) {
+      return null;
+    }
+    return _enqueueGatt<T?>(() async {
+      if (_hasPendingUserCommand || state.phase != BlePhase.connected) {
+        throw StateError('Preempted by user command');
+      }
+      return await action();
+    }, timeout: timeout).catchError((e) {
+      if (e is! StateError) {
+        BleLogger.instance.event('bg_read_err', {'tag': tag, 'error': '$e'});
+      }
+      return null;
+    });
+  }
+
+  /// Ghi characteristic thông minh — tự động nhận diện withoutResponse dựa theo thuộc tính characteristic
+  /// và bọc timeout (mặc định 2000ms) để không bao giờ bị treo vĩnh viễn trên iOS CoreBluetooth.
+  Future<void> _writeCharSmart(
+    BluetoothCharacteristic c,
+    List<int> data, {
+    Duration timeout = const Duration(milliseconds: 2000),
+  }) async {
+    final withoutResp = !c.properties.write && c.properties.writeWithoutResponse;
+    await c.write(data, withoutResponse: withoutResp).timeout(
+      timeout,
+      onTimeout: () => throw TimeoutException('Ghi characteristic ${c.uuid.str128} quá ${timeout.inMilliseconds}ms không phản hồi'),
+    );
+  }
+
   /// Bảng expectedLength chuẩn theo Ghidra RE2 để cắt Stale-Tail buffer
   static int? expectedLengthForUuid(String uuid) {
     final clean = uuid.replaceAll('-', '').toLowerCase();
@@ -889,10 +949,10 @@ class BleController extends Notifier<BleState> {
   // ------------------------------------------------------------------
 
   /// Ghi 1 lệnh setting xuống xe: protected write [counter][data][tag4]
-  /// lên char trong service MASTER_CONFIG. Đọc giá trị hiện tại trước,
-  /// ghi, rồi ĐỌC LẠI verify (disasm 23/10: các handler chỉ nhận '0'/'1'
-  /// ASCII — giá trị lưu raw u8/u16). Trả về thông điệp kết quả cho UI.
-  Future<String> _writeSetting(String uuid, List<int> data, String label) async {
+  /// lên char trong service MASTER_CONFIG qua _enqueueUserCommand và _writeCharSmart.
+  /// Mặc định verifyRead = false để trả về kết quả tức thì (< 80ms) khi BLE ATT Write Response xác nhận.
+  /// Chỉ kích hoạt verifyRead khi cần xác minh firmware NVS parse value mới.
+  Future<String> _writeSetting(String uuid, List<int> data, String label, {bool verifyRead = false}) async {
     if (state.phase != BlePhase.connected || !state.isAuthorized) {
       return 'Xe chưa kết nối/xác thực — không ghi được $label';
     }
@@ -906,87 +966,67 @@ class BleController extends Notifier<BleState> {
     if (_sessionKey == null) {
       return 'Chưa có session key — không ghi được $label';
     }
-    return _enqueueGatt(() async {
-      // Đọc giá trị hiện tại để log đối chiếu (char trả cipher khi session sống)
-      String oldHex = '';
-      try {
-        final cur = await c.read().timeout(
-            const Duration(milliseconds: 1200), onTimeout: () => Uint8List(0));
-        final dec = (cur.length >= 4)
-            ? BikeSessionCrypto.decryptProtectedRead(
-                sessionKey: _sessionKey!,
-                characteristicUuid: uuid,
-                response: cur,
-                expectedLength: expectedLengthForUuid(uuid),
-              )
-            : Uint8List(0);
-        oldHex = dec.isEmpty ? '' : BleLogger.hex(dec, maxBytes: 16);
-        BleLogger.instance.event('setting_read_current', {
-          'char': uuid,
-          'label': label,
-          'hex': BleLogger.hex(cur, maxBytes: 48),
-          'dec_hex': dec.isEmpty ? '' : BleLogger.hex(dec, maxBytes: 48),
-          'dec_utf8': BleLogger.tryUtf8(dec) ?? '',
-        });
-      } catch (_) {}
+    return _enqueueUserCommand(() async {
+      final cnt = _writeCounter;
       try {
         final frame = BikeSessionCrypto.buildProtectedWrite(
           sessionKey: _sessionKey!,
-          counter: _writeCounter++,
+          counter: cnt,
           characteristicUuid: uuid,
           data: data,
         );
-        await c.write(frame, withoutResponse: false).timeout(
-          const Duration(milliseconds: 2500),
-          onTimeout: () => throw TimeoutException('Ghi setting $label quá 2.5s không phản hồi'),
-        );
+        await _writeCharSmart(c, frame, timeout: const Duration(milliseconds: 2000));
+        _writeCounter++;
         BleLogger.instance.event('setting_write', {
           'char': uuid,
           'label': label,
           'data': String.fromCharCodes(data),
-          'counter': _writeCounter - 1,
+          'counter': cnt,
         });
-        // Đọc lại verify — firmware parse xong mới trả giá trị mới (đợi ~150ms)
-        await Future.delayed(const Duration(milliseconds: 150));
-        String newHex = '';
-        try {
-          final re = await c.read().timeout(
-              const Duration(milliseconds: 1200), onTimeout: () => Uint8List(0));
-          final dec = (re.length >= 4)
-              ? BikeSessionCrypto.decryptProtectedRead(
-                  sessionKey: _sessionKey!,
-                  characteristicUuid: uuid,
-                  response: re,
-                  expectedLength: expectedLengthForUuid(uuid),
-                )
-              : Uint8List(0);
-          newHex = dec.isEmpty ? '' : BleLogger.hex(dec, maxBytes: 16);
-          BleLogger.instance.event('setting_verify_read', {
-            'char': uuid,
-            'label': label,
-            'hex': BleLogger.hex(re, maxBytes: 48),
-            'dec_hex': dec.isEmpty ? '' : BleLogger.hex(dec, maxBytes: 48),
-            'old': oldHex,
-            'new': newHex,
-          });
-        } catch (e) {
-          BleLogger.instance.event('setting_verify_read_err', {
-            'char': uuid, 'label': label, 'error': '$e',
-          });
+
+        if (verifyRead) {
+          // Đọc lại verify — firmware parse xong mới trả giá trị mới (đợi ~60ms)
+          await Future.delayed(const Duration(milliseconds: 60));
+          String newHex = '';
+          try {
+            final re = await c.read().timeout(
+              const Duration(milliseconds: 800),
+              onTimeout: () => Uint8List(0),
+            );
+            final dec = (re.length >= 4)
+                ? BikeSessionCrypto.decryptProtectedRead(
+                    sessionKey: _sessionKey!,
+                    characteristicUuid: uuid,
+                    response: re,
+                    expectedLength: expectedLengthForUuid(uuid),
+                  )
+                : Uint8List(0);
+            newHex = dec.isEmpty ? '' : BleLogger.hex(dec, maxBytes: 16);
+            BleLogger.instance.event('setting_verify_read', {
+              'char': uuid,
+              'label': label,
+              'hex': BleLogger.hex(re, maxBytes: 48),
+              'dec_hex': dec.isEmpty ? '' : BleLogger.hex(dec, maxBytes: 48),
+              'new': newHex,
+            });
+          } catch (e) {
+            // Verify read lỗi trên iOS không được coi là ghi thất bại nếu write đã thành công
+            BleLogger.instance.event('setting_verify_read_err', {
+              'char': uuid, 'label': label, 'error': '$e',
+            });
+          }
+          final tail = newHex.isNotEmpty ? ' — xe xác nhận: $newHex' : '';
+          return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})$tail';
         }
-        final tail = newHex.isEmpty
-            ? ''
-            : (newHex == oldHex
-                ? ' — xe vẫn trả $newHex (giá trị chưa đổi)'
-                : ' — xe xác nhận: $oldHex → $newHex');
-        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})$tail';
+
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
       } catch (e) {
         BleLogger.instance.event('setting_write_err', {
           'char': uuid, 'label': label, 'error': '$e',
         });
         return 'Lỗi ghi $label: $e';
       }
-    });
+    }, tag: 'WriteSetting_$label');
   }
 
   /// Giới hạn tốc độ an toàn (60 km/h) — cơ chế chuỗi ngầm tự động (ECE Gateway Sequence).
@@ -1022,7 +1062,7 @@ class BleController extends Notifier<BleState> {
     try {
       // BƯỚC 1: Mở cổng ECE để firmware cho phép ghi cấu hình giới hạn tốc độ
       final msgOpenEce = await _writeSetting(Gatt.eceModeChar, [0x31], 'mở cổng ECE');
-      await Future.delayed(const Duration(milliseconds: 150));
+      await Future.delayed(const Duration(milliseconds: 60));
 
       // BƯỚC 2: Ghi giá trị giới hạn tốc độ ('1' = 60 km/h, '0' = Full Power mặc định)
       final msgSpeed = await _writeSetting(
@@ -1030,7 +1070,7 @@ class BleController extends Notifier<BleState> {
         [on ? 0x31 : 0x30],
         on ? 'bật giới hạn 60 km/h' : 'tắt giới hạn tốc độ (Full Power)',
       );
-      await Future.delayed(const Duration(milliseconds: 150));
+      await Future.delayed(const Duration(milliseconds: 60));
 
       // BƯỚC 3: Đóng cổng ECE lại về '0' để giải phóng đèn và chuyển mode lái hoạt động bình thường
       final msgCloseEce = await _writeSetting(Gatt.eceModeChar, [0x30], 'đóng cổng ECE');
@@ -1170,13 +1210,19 @@ class BleController extends Notifier<BleState> {
   /// vài char không ra kết quả dù key đúng — cần so sánh với offline).
   Future<Uint8List> readFwSettingRaw(String uuid, String label) async {
     final empty = Uint8List(0);
-    if (state.phase != BlePhase.connected) return empty;
+    if (state.phase != BlePhase.connected || _hasPendingUserCommand) return empty;
     final c = _findCharacteristic(uuid);
     if (c == null) return empty;
     try {
-      final raw = await _enqueueGatt(() => c.read().timeout(
-          const Duration(milliseconds: 1200), onTimeout: () => Uint8List(0)));
-      if (raw.length < 4) return empty;
+      final raw = await _enqueueBackgroundRead(
+        () => c.read().timeout(
+          const Duration(milliseconds: 1200),
+          onTimeout: () => Uint8List(0),
+        ),
+        tag: 'FwSettingRead_$label',
+        timeout: const Duration(milliseconds: 1500),
+      );
+      if (raw == null || raw.length < 4) return empty;
       if (_sessionKey == null) return empty;
       final dec = BikeSessionCrypto.decryptProtectedRead(
         sessionKey: _sessionKey!,
@@ -1199,15 +1245,23 @@ class BleController extends Notifier<BleState> {
   /// Đồng bộ toàn bộ settings thật từ xe về BleState (gọi khi mở màn hình
   /// settings / sau khi kết nối). Giá trị raw u8/u16 — map 0/1 sang bool.
   Future<void> refreshFwSettings() async {
-    if (state.phase != BlePhase.connected || _sessionKey == null) return;
+    if (state.phase != BlePhase.connected || _sessionKey == null || _hasPendingUserCommand) return;
     final speed = await readFwSettingRaw(Gatt.speedLimitChar, 'giới hạn tốc độ');
+    if (_hasPendingUserCommand) return;
     final ece = await readFwSettingRaw(Gatt.eceModeChar, 'chế độ ECE');
+    if (_hasPendingUserCommand) return;
     final grab = await readFwSettingRaw(Gatt.grabModeChar, 'chế độ Grab');
+    if (_hasPendingUserCommand) return;
     final idling =
         await readFwSettingRaw(Gatt.idlingTurnOffChar, 'tự tắt khi đỗ');
+    if (_hasPendingUserCommand) return;
     final dist =
         await readFwSettingRaw(Gatt.distanceChar, 'khoảng cách tự bật/tắt');
-    final chgDec = await readFwSettingRaw(Gatt.chargingProfileChar, 'profile sạc');
+    if (_hasPendingUserCommand) return;
+    final chgDec = state.bikeModel.supportsChargingProfile
+        ? await readFwSettingRaw(Gatt.chargingProfileChar, 'profile sạc')
+        : const <int>[];
+    if (_hasPendingUserCommand) return;
     final vescProgDec = await readFwSettingRaw(Gatt.vescProgrammingChar, 'vesc programming');
     final isLockedVal = await readLockStatus();
 
@@ -1332,23 +1386,27 @@ class BleController extends Notifier<BleState> {
     state = state.copyWith(bikeName: trimmed);
   }
 
-  /// Đọc trọn bộ thông tin định danh & snapshot VESC (đã qua _enqueueGatt + cắt Stale-Tail)
+  /// Đọc trọn bộ thông tin định danh & snapshot VESC (đã qua _enqueueBackgroundRead + cắt Stale-Tail)
   Future<void> fetchVehicleDiagnostics() async {
-    if (state.phase != BlePhase.connected || _sessionKey == null) return;
+    if (state.phase != BlePhase.connected || _sessionKey == null || _hasPendingUserCommand) return;
 
     // 1. Model xe (4aae98e9)
     final modelDec = await readFwSettingRaw(Gatt.bikeModelChar, 'bike_model');
+    if (_hasPendingUserCommand) return;
     final modelStr = modelDec.isEmpty ? null : BleLogger.tryUtf8(modelDec)?.trim();
 
     // 2. Manifest 3 boards (73d50009)
     final mfDec = await readFwSettingRaw(Gatt.boardManifestChar, 'board_manifest');
+    if (_hasPendingUserCommand) return;
     final mfStr = mfDec.isEmpty ? null : BleLogger.tryUtf8(mfDec)?.trim();
 
     // 3. Serial khung xe (041d5a06)
     await readDeviceSerial();
+    if (_hasPendingUserCommand) return;
 
     // 4. Tên xe lưu trong NVS (88c30d2c)
     final fwName = await readFwBikeName();
+    if (_hasPendingUserCommand) return;
 
     // 5. VESC Snapshot 12B = 3 x float32 LE (35a9b4f6)
     double? vI, vV, vDuty;
@@ -1430,11 +1488,16 @@ class BleController extends Notifier<BleState> {
 
   Future<String?> readDeviceSerial() async {
     final dev = _device;
-    if (dev == null || state.phase != BlePhase.connected) return null;
+    if (dev == null || state.phase != BlePhase.connected || _hasPendingUserCommand) return null;
     final c = _findCharacteristic(Gatt.deviceSerialChar);
     if (c == null) return null;
     try {
-      final raw = await _enqueueGatt(() => c.read());
+      final raw = await _enqueueBackgroundRead(
+        () => c.read().timeout(const Duration(milliseconds: 1500)),
+        tag: 'DeviceSerialRead',
+        timeout: const Duration(milliseconds: 1800),
+      );
+      if (raw == null) return null;
       // Log raw hex để nghiên cứu offline (serial có thể bị mã hóa session)
       BleLogger.instance.event('device_serial_read_raw', {
         'len': raw.length,
@@ -1728,15 +1791,17 @@ class BleController extends Notifier<BleState> {
   Future<void> _forceSendPowerOff() async {
     final pwrChar = _findPowerCmdChar();
     if (pwrChar != null && _sessionKey != null) {
-      await _enqueueGatt(() async {
+      await _enqueueUserCommand(() async {
+        final cnt = _writeCounter;
         final frame = BikeSessionCrypto.buildProtectedWrite(
           sessionKey: _sessionKey!,
-          counter: _writeCounter++,
+          counter: cnt,
           characteristicUuid: pwrChar.uuid.str128,
           data: '0'.codeUnits,
         );
-        await pwrChar.write(frame, withoutResponse: false);
-      });
+        await _writeCharSmart(pwrChar, frame, timeout: const Duration(milliseconds: 2000));
+        _writeCounter++;
+      }, tag: 'ForcePowerOff');
       BleLogger.instance.event('power_command', {
         'target': 'powerOnOffChar (7f13fe5c)',
         'val': '0',
@@ -1976,12 +2041,12 @@ class BleController extends Notifier<BleState> {
     // ≈ 45s) để vào ngay khoảnh khắc xe mở khoá — app gốc cũng chỉ nhanh vì
     // nối lại liên tục.
     var recovered = false;
-    for (var cycle = 1; cycle <= 5 && !recovered; cycle++) {
+    for (var cycle = 1; cycle <= 3 && !recovered; cycle++) {
       if (cycle > 1) {
         state = state.copyWith(
           phase: BlePhase.reconnecting,
           message: 'Xe giữ khoá phiên sau lần kết nối bị đứt — đang thử lại '
-              '($cycle/5, mỗi 3s)...',
+              '($cycle/3, mỗi 3s)...',
         );
         BleLogger.instance
             .event('auth_recovery_wait', {'cycle': cycle, 'delay_s': 3});
@@ -2014,28 +2079,14 @@ class BleController extends Notifier<BleState> {
       }
     }
     if (recovered) return;
-    try {
-      final ok = await _establish(device);
-      if (ok && state.isAuthorized) {
-        await _saveLastBike(device, name);
-        _watchConnection(device);
-        state = state.copyWith(phase: BlePhase.connected, isAuthorized: true, message: null);
-        unawaited(ForegroundService.start(
-          title: 'Dat Bike: ${state.bikeName ?? device.platformName}',
-          text: 'Đã kết nối Bluetooth — Sẵn sàng điều khiển',
-        ));
-        _failStreak = 0;
-        return;
-      } else {
-        throw Exception(state.message ?? 'Không thể xác thực phiên xe sau 5 chu kỳ thử lại');
-      }
-    } catch (e) {
-      BleLogger.instance.event('connect_failed', {'error': '$e'});
-      state = state.copyWith(
-          phase: BlePhase.disconnected, message: 'Kết nối thất bại: $e');
-      unawaited(ForegroundService.stop());
-      rethrow;
-    }
+    final err = state.message ?? 'Không thể xác thực phiên xe sau 3 chu kỳ thử lại';
+    BleLogger.instance.event('connect_failed', {'error': err});
+    state = state.copyWith(
+      phase: BlePhase.disconnected,
+      message: 'Kết nối thất bại: $err',
+    );
+    unawaited(ForegroundService.stop());
+    throw Exception(err);
   }
 
   Future<bool> _establish(BluetoothDevice device) async {
@@ -2248,8 +2299,12 @@ class BleController extends Notifier<BleState> {
         Duration(milliseconds: Gatt.dashboardPollMs), (_) => _pollDashboard());
     await _pollDashboard(); // đọc ngay 1 lần
     if (state.isAuthorized) {
-      unawaited(refreshFwSettings());
-      unawaited(fetchVehicleDiagnostics());
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (state.phase == BlePhase.connected && state.isAuthorized) {
+          unawaited(refreshFwSettings());
+          unawaited(fetchVehicleDiagnostics());
+        }
+      });
     }
     return state.isAuthorized;
   }
@@ -2269,39 +2324,50 @@ class BleController extends Notifier<BleState> {
       _startKeepalive();
     }
     // ƯU TIÊN KÊNH BLUETOOTH CHO LỆNH NGƯỜI DÙNG:
-    // Nếu đang xử lý lệnh nguồn hoặc lệnh cài đặt, bỏ qua lượt poll này để giải phóng băng thông GATT
-    if (_isCommandBusy) return;
+    // Nếu có lệnh người dùng đang chờ hoặc đang bận, bỏ qua lượt poll này để giải phóng hoàn toàn băng thông GATT
+    if (_hasPendingUserCommand) return;
 
     try {
-      final raw = await _enqueueGatt(
-        () => c.read().timeout(const Duration(milliseconds: 1800)),
-        timeout: const Duration(milliseconds: 2000),
+      final raw = await _enqueueBackgroundRead(
+        () => c.read().timeout(const Duration(milliseconds: 1500)),
+        tag: 'DashboardRead',
+        timeout: const Duration(milliseconds: 1800),
       );
-      _handleDashboardPayload(raw);
+      if (raw != null && raw.isNotEmpty) {
+        _handleDashboardPayload(raw);
+      }
     } catch (e) {
       BleLogger.instance.event('poll_error', {'error': '$e'});
     }
 
-    // Định kỳ đọc Battery Log (207 byte) mỗi 3 chu kỳ đo
+    // Định kỳ đọc Battery Log (207 byte) mỗi 5 chu kỳ đo (giảm tải kênh BLE)
     _batteryPollCounter++;
-    if (_batteryPollCounter >= 3) {
+    if (_batteryPollCounter >= 5) {
       _batteryPollCounter = 0;
       unawaited(fetchBatteryDetails());
     }
 
-    try {
-      final dev = _device;
-      if (dev != null) {
-        final curRssi = await dev.readRssi();
-        final filtered = _rssiKalman.filter(curRssi.toDouble());
-        _smoothedRssi = filtered;
-        state = state.copyWith(
-          rssi: curRssi,
-          filteredRssi: filtered.round(),
-        );
-        _checkAutoLockAndAlert();
-      }
-    } catch (_) {}
+    // Định kỳ đọc RSSI mỗi 2 chu kỳ đo (chống nghẽn CoreBluetooth trên iOS)
+    _rssiPollCounter++;
+    if (_rssiPollCounter >= 2) {
+      _rssiPollCounter = 0;
+      try {
+        final dev = _device;
+        if (dev != null && !_hasPendingUserCommand) {
+          final curRssi = await dev.readRssi().timeout(
+            const Duration(milliseconds: 500),
+            onTimeout: () => throw TimeoutException('readRssi timeout'),
+          );
+          final filtered = _rssiKalman.filter(curRssi.toDouble());
+          _smoothedRssi = filtered;
+          state = state.copyWith(
+            rssi: curRssi,
+            filteredRssi: filtered.round(),
+          );
+          _checkAutoLockAndAlert();
+        }
+      } catch (_) {}
+    }
   }
 
   void _checkAutoLockAndAlert() {
@@ -2523,16 +2589,19 @@ class BleController extends Notifier<BleState> {
   /// Đọc dữ liệu chi tiết Battery Log (207 byte) từ xe
   Future<void> fetchBatteryDetails() async {
     final dev = _device;
-    if (dev == null || state.phase != BlePhase.connected || _isCommandBusy) return;
+    if (dev == null || state.phase != BlePhase.connected || _hasPendingUserCommand) return;
     _batteryChar ??= _findCharacteristic(Gatt.batteryLogCharacteristic);
     final bChar = _batteryChar;
     if (bChar == null) return;
     try {
-      final raw = await _enqueueGatt(
-        () => bChar.read().timeout(const Duration(milliseconds: 1800)),
-        timeout: const Duration(milliseconds: 2000),
+      final raw = await _enqueueBackgroundRead(
+        () => bChar.read().timeout(const Duration(milliseconds: 1500)),
+        tag: 'BatteryRead',
+        timeout: const Duration(milliseconds: 1800),
       );
-      _handleBatteryPayload(raw);
+      if (raw != null && raw.isNotEmpty) {
+        _handleBatteryPayload(raw);
+      }
     } catch (e) {
       BleLogger.instance.event('battery_read_err', {'error': '$e'});
     }
@@ -2804,12 +2873,12 @@ class BleController extends Notifier<BleState> {
     }
   }
 
-  /// Chờ tối thiểu 300ms kể từ lần gửi lệnh trước để bảo đảm MCU và CAN bus
+  /// Chờ tối thiểu 100ms kể từ lần gửi lệnh trước để bảo đảm MCU và CAN bus
   /// truyền tin cậy tới BMS, không bị nghẽn mailbox hoặc rớt gói tin BMS.
   Future<void> _throttleCommand() async {
     if (_lastCommandCompletedAt != null) {
       final elapsed = DateTime.now().difference(_lastCommandCompletedAt!);
-      const minInterval = Duration(milliseconds: 300);
+      const minInterval = Duration(milliseconds: 100);
       if (elapsed < minInterval) {
         final waitMs = minInterval.inMilliseconds - elapsed.inMilliseconds;
         BleLogger.instance.event('cmd_throttle_wait', {'wait_ms': waitMs});
@@ -2819,11 +2888,11 @@ class BleController extends Notifier<BleState> {
   }
 
   /// Chờ nếu đang có lệnh BLE trước đó chưa hoàn tất (tránh văng Exception làm đứt auto-lock).
-  Future<void> _waitWhileCommandBusy({int maxWaitMs = 2500}) async {
+  Future<void> _waitWhileCommandBusy({int maxWaitMs = 1500}) async {
     var waited = 0;
     while (_isCommandBusy && waited < maxWaitMs) {
-      await Future.delayed(const Duration(milliseconds: 100));
-      waited += 100;
+      await Future.delayed(const Duration(milliseconds: 50));
+      waited += 50;
     }
   }
 
@@ -2848,8 +2917,18 @@ class BleController extends Notifier<BleState> {
     }
     await _throttleCommand();
     _isCommandBusy = true;
+    if (tele != null) {
+      tele.state = BikeState.parking;
+      state = state.copyWith(lastTelemetry: tele, message: 'Đang mở xe…');
+    }
     try {
       await _sendPowerCommand('1', 'MỞ XE');
+    } catch (e) {
+      if (tele != null) {
+        tele.state = BikeState.off;
+        state = state.copyWith(lastTelemetry: tele);
+      }
+      rethrow;
     } finally {
       _isCommandBusy = false;
       _lastCommandCompletedAt = DateTime.now();
@@ -2865,10 +2944,21 @@ class BleController extends Notifier<BleState> {
     }
     await _throttleCommand();
     _isCommandBusy = true;
+    final tele = state.lastTelemetry;
+    if (tele != null) {
+      tele.state = BikeState.off;
+      state = state.copyWith(lastTelemetry: tele, message: 'Đang tắt xe…');
+    }
     try {
       await _sendPowerCommand('0', 'TẮT XE');
       unawaited(_archiveCurrentTripIfMeaningful());
       _recordParkingSnapshot();
+    } catch (e) {
+      if (tele != null) {
+        tele.state = BikeState.parking;
+        state = state.copyWith(lastTelemetry: tele);
+      }
+      rethrow;
     } finally {
       _isCommandBusy = false;
       _lastCommandCompletedAt = DateTime.now();
@@ -2911,29 +3001,27 @@ class BleController extends Notifier<BleState> {
     bool success = false;
 
     try {
-      // Cơ chế gửi tin cậy với 2 lần thử (retry 1 lần sau 200ms nếu CoreBluetooth trên iOS bị trễ/busy)
+      // Cơ chế gửi tin cậy với 2 lần thử (retry 1 lần sau 150ms nếu CoreBluetooth trên iOS bị trễ/busy)
       for (int attempt = 1; attempt <= 2; attempt++) {
         try {
-          await _enqueueGatt(() async {
+          await _enqueueUserCommand(() async {
+            final cnt = _writeCounter;
             final frame = BikeSessionCrypto.buildProtectedWrite(
               sessionKey: _sessionKey!,
-              counter: _writeCounter++,
+              counter: cnt,
               characteristicUuid: pwrChar.uuid.str128,
               data: value.codeUnits,
             );
-            // Explicit timeout 2500ms chống treo vô hạn trên iOS CoreBluetooth
-            await pwrChar.write(frame, withoutResponse: false).timeout(
-              const Duration(milliseconds: 2500),
-              onTimeout: () => throw TimeoutException('Ghi lệnh $label quá 2.5s không phản hồi'),
-            );
+            await _writeCharSmart(pwrChar, frame, timeout: const Duration(milliseconds: 2000));
+            _writeCounter++;
             BleLogger.instance.event('power_command', {
               'target': 'powerOnOffChar (7f13fe5c)',
               'uuid': pwrChar.uuid.str128,
               'val': value,
               'attempt': attempt,
-              'counter': _writeCounter - 1,
+              'counter': cnt,
             });
-          }, timeout: const Duration(milliseconds: 3000));
+          }, tag: 'PowerCmd', timeout: const Duration(milliseconds: 2500));
           success = true;
           break;
         } catch (e) {
@@ -2944,7 +3032,7 @@ class BleController extends Notifier<BleState> {
             'error': '$e',
           });
           if (attempt < 2) {
-            await Future.delayed(const Duration(milliseconds: 200));
+            await Future.delayed(const Duration(milliseconds: 150));
           }
         }
       }
@@ -3067,7 +3155,7 @@ class BleController extends Notifier<BleState> {
       } catch (e) {
         return 'Không tắt được xe để khóa: $e\n→ Hãy tắt xe thủ công rồi bấm khóa lại.';
       }
-      await Future.delayed(const Duration(seconds: 2));
+      await Future.delayed(const Duration(milliseconds: 700));
     }
     // Bước 2: ARM khóa an toàn
     try {
@@ -3106,21 +3194,28 @@ class BleController extends Notifier<BleState> {
 
     try {
       if (_sessionKey != null) {
+        final cnt = _writeCounter;
         final frame = BikeSessionCrypto.buildProtectedWrite(
           sessionKey: _sessionKey!,
-          counter: _writeCounter++,
+          counter: cnt,
           characteristicUuid: Gatt.currentTimeChar,
           data: payload,
         );
-        await _enqueueGatt(() => timeChar.write(frame, withoutResponse: false));
+        await _enqueueUserCommand(() async {
+          await _writeCharSmart(timeChar, frame, timeout: const Duration(milliseconds: 2000));
+          _writeCounter++;
+        }, tag: 'SyncTime');
         BleLogger.instance.event('sync_time_success', {
           'type': 'protected',
           'secondsLocal': totalSecondsLocal,
           'timeLocal': localTime.toIso8601String(),
-          'counter': _writeCounter - 1,
+          'counter': cnt,
         });
       } else {
-        await _enqueueGatt(() => timeChar.write(payload, withoutResponse: false));
+        await _enqueueUserCommand(
+          () => _writeCharSmart(timeChar, payload, timeout: const Duration(milliseconds: 2000)),
+          tag: 'SyncTime',
+        );
         BleLogger.instance.event('sync_time_success', {
           'type': 'plain',
           'secondsLocal': totalSecondsLocal,
@@ -3232,7 +3327,11 @@ class BleController extends Notifier<BleState> {
       return;
     }
     try {
-      await _enqueueGatt(() => sw.write('1'.codeUnits, withoutResponse: false));
+      await _enqueueUserCommand(
+        () => _writeCharSmart(sw, '1'.codeUnits, timeout: const Duration(milliseconds: 1500)),
+        tag: 'FindBikeHonk',
+        timeout: const Duration(milliseconds: 1800),
+      );
       BleLogger.instance.event('find_bike_honk', {
         'target': 'powerSwitchChar',
         'note': 'single plain 1 = honk (LAB verified)',
@@ -3263,7 +3362,7 @@ class BleController extends Notifier<BleState> {
   /// doc nonce moi. Xe derive lai sessionKey tai auth write (reset counter)
   /// nen app re-derive bang CHINH nonce vua tra loi roi cap nhat nonce moi.
   Future<void> _runKeepaliveCycle() async {
-    if (_keepaliveBusy || !state.isAuthorized) return;
+    if (_keepaliveBusy || !state.isAuthorized || _hasPendingUserCommand) return;
     final nonce = _lastAuthNonce15;
     final dev = _device;
     if (nonce == null || dev == null || _activePassword.isEmpty) return;
@@ -3416,8 +3515,6 @@ class BleController extends Notifier<BleState> {
           sessionKey: null,
           message: 'Đã xác thực thành công (Legacy Auth)',
         );
-        unawaited(refreshFwSettings());
-        unawaited(fetchVehicleDiagnostics());
         return true;
       }
       return false;
@@ -3838,8 +3935,6 @@ class BleController extends Notifier<BleState> {
         );
 
         BleLogger.instance.event('auto_handshake_success');
-        unawaited(refreshFwSettings());
-        unawaited(fetchVehicleDiagnostics());
         return true;
       } else {
         _sessionKey = null;
@@ -4236,12 +4331,28 @@ class BleController extends Notifier<BleState> {
 
   /// Xóa xe khỏi Garage
   Future<void> deleteBike(String bikeId) async {
+    final prefs = await _prefs;
+    final savedId = prefs.getString(_kLastBikeId);
     final isCurrentActive = (state.activeBikeId?.toLowerCase() == bikeId.toLowerCase()) ||
-                           (state.device?.remoteId.str.toLowerCase() == bikeId.toLowerCase());
+                           (state.device?.remoteId.str.toLowerCase() == bikeId.toLowerCase()) ||
+                           (savedId?.toLowerCase() == bikeId.toLowerCase());
 
-    if (isCurrentActive && (state.phase == BlePhase.connected || state.phase == BlePhase.connecting)) {
-      await disconnect();
+    if (isCurrentActive) {
+      final d = _device ?? (savedId != null ? BluetoothDevice.fromId(savedId) : null);
+      if (d != null) {
+        try {
+          await d.removeBond();
+        } catch (_) {}
+        try {
+          await d.disconnect();
+        } catch (_) {}
+      }
+      if (state.phase == BlePhase.connected || state.phase == BlePhase.connecting) {
+        await disconnect();
+      }
     }
+
+    await ParkingStorageService.instance.clearParkedLocation(bikeId: bikeId);
 
     final updatedList = await VehicleStorageService.instance.removeBike(bikeId);
 
@@ -4253,24 +4364,95 @@ class BleController extends Notifier<BleState> {
       nextBikeName = defaultBike.name;
     }
 
-    state = state.copyWith(
-      savedBikes: updatedList,
-      activeBikeId: isCurrentActive ? nextActiveId : state.activeBikeId,
-      bikeName: isCurrentActive ? nextBikeName : state.bikeName,
-      message: 'Đã xóa xe khỏi danh sách',
-    );
-
-    final prefs = await _prefs;
-    if (isCurrentActive) {
-      if (nextActiveId != null) {
-        await prefs.setString(_kLastBikeId, nextActiveId);
-        await prefs.setString(_kLastBikeName, nextBikeName ?? 'Xe Dat Bike');
-      } else {
-        await prefs.remove(_kLastBikeId);
-        await prefs.remove(_kLastBikeName);
+    if (updatedList.isEmpty) {
+      state = state.copyWith(
+        savedBikes: const [],
+        activeBikeId: null,
+        bikeName: null,
+        device: null,
+        lastTelemetry: null,
+        frameSerial: null,
+        bikeModelCode: null,
+        message: 'Đã xóa xe khỏi danh sách',
+      );
+      await prefs.remove(_kLastBikeId);
+      await prefs.remove(_kLastBikeName);
+      await prefs.remove(_kBikePassword);
+    } else {
+      state = state.copyWith(
+        savedBikes: updatedList,
+        activeBikeId: isCurrentActive ? nextActiveId : state.activeBikeId,
+        bikeName: isCurrentActive ? nextBikeName : state.bikeName,
+        message: 'Đã xóa xe khỏi danh sách',
+      );
+      if (isCurrentActive) {
+        if (nextActiveId != null) {
+          await prefs.setString(_kLastBikeId, nextActiveId);
+          await prefs.setString(_kLastBikeName, nextBikeName ?? 'Xe Dat Bike');
+        } else {
+          await prefs.remove(_kLastBikeId);
+          await prefs.remove(_kLastBikeName);
+        }
       }
     }
     BleLogger.instance.event('garage_bike_deleted', {'id': bikeId});
+  }
+
+  /// Xóa toàn bộ xe đã lưu trong Garage và đưa app về trạng thái sạch hoàn toàn
+  Future<void> deleteAllSavedBikes() async {
+    _manualDisconnect = true;
+    _cancelReconnect();
+    _stopKeepalive();
+    _findBikeTimeoutTimer?.cancel();
+    _findBikeTimeoutTimer = null;
+    _findBikePeriodicTimer?.cancel();
+    _findBikePeriodicTimer = null;
+    _sessionKey = null;
+
+    final prefs = await _prefs;
+    final savedId = prefs.getString(_kLastBikeId);
+    final d = _device ?? (savedId != null ? BluetoothDevice.fromId(savedId) : null);
+    if (d != null) {
+      try {
+        await d.removeBond();
+      } catch (_) {}
+      try {
+        await d.disconnect();
+      } catch (_) {}
+    }
+    for (final dev in FlutterBluePlus.connectedDevices) {
+      try {
+        await dev.disconnect();
+      } catch (_) {}
+    }
+
+    await _connSub?.cancel();
+    _connSub = null;
+    await _notifySub?.cancel();
+    _notifySub = null;
+
+    await VehicleStorageService.instance.clearAllBikes();
+    await ParkingStorageService.instance.clearParkedLocation();
+
+    await prefs.remove(_kLastBikeId);
+    await prefs.remove(_kLastBikeName);
+    await prefs.remove(_kBikePassword);
+
+    await BleLogger.instance.close();
+    unawaited(ForegroundService.stop());
+
+    state = BleState(
+      phase: BlePhase.idle,
+      message: 'Đã xóa toàn bộ xe khỏi danh sách',
+      device: null,
+      bikeName: null,
+      activeBikeId: null,
+      savedBikes: const [],
+      lastTelemetry: null,
+      frameSerial: null,
+      bikeModelCode: null,
+    );
+    BleLogger.instance.event('garage_all_bikes_deleted', {});
   }
 
   /// Đặt xe làm mặc định (tự kết nối khi mở app)

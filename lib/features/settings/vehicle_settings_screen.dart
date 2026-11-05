@@ -14,6 +14,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../core/ble/ble_controller.dart';
 import '../../ui/app_theme.dart';
 import '../../ui/widgets.dart';
+import 'vehicle_management_screen.dart';
 
 class VehicleSettingsScreen extends ConsumerStatefulWidget {
   const VehicleSettingsScreen({super.key});
@@ -153,6 +154,13 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
 
           // 6. Nâng cao (lệnh nặng)
           _buildAdvancedSection(ble, connected),
+          const SizedBox(height: 16),
+
+          // 7. Quản lý & Quên xe
+          const SectionTitle('QUẢN LÝ XE'),
+          const SizedBox(height: 10),
+          _buildVehicleManagementCard(ble),
+          const SizedBox(height: 40),
         ],
       ),
     );
@@ -1641,6 +1649,111 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildVehicleManagementCard(BleState ble) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.panelBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Nhà xe của bạn (${ble.savedBikes.length} xe)',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Quản lý danh sách xe đã lưu hoặc chuyển điều khiển xe',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11.5,
+                        color: AppColors.textDim,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppColors.primary),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const VehicleManagementScreen()),
+                  );
+                },
+                child: Text(
+                  'NHÀ XE',
+                  style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary),
+                ),
+              ),
+            ],
+          ),
+          const Divider(color: AppColors.panelBorder, height: 24),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.error,
+                side: BorderSide(color: AppColors.error.withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: const Icon(Icons.delete_forever_rounded, size: 18),
+              label: Text(
+                'XÓA / QUÊN XE ĐÃ KẾT NỐI',
+                style: GoogleFonts.spaceGrotesk(fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+              ),
+              onPressed: () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: AppColors.panel,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    title: Text(
+                      'Quên xe đã kết nối?',
+                      style: GoogleFonts.spaceGrotesk(fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.error),
+                    ),
+                    content: Text(
+                      'Hành động này sẽ ngắt kết nối và xóa thông tin xe "${ble.bikeName ?? "hiện tại"}" khỏi ứng dụng.\n\nTrên iOS: Hãy vào Cài đặt > Bluetooth > chọn biểu tượng (i) cạnh tên xe > Quên thiết bị này để hủy ghép đôi hệ thống hoàn toàn.',
+                      style: GoogleFonts.plusJakartaSans(fontSize: 12.5, height: 1.4),
+                    ),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
+                      FilledButton(
+                        style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('Xóa / Quên'),
+                      ),
+                    ],
+                  ),
+                );
+                if (ok == true && mounted) {
+                  await ref.read(bleProvider.notifier).forgetBike();
+                  _showResult('Đã xóa thông tin xe đã kết nối');
+                }
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

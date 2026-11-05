@@ -191,5 +191,63 @@ void main() {
       expect(find.text('Mở Khóa'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('Toggles haptic feedback on chip and persists to SharedPreferences', (tester) async {
+      SharedPreferences.setMockInitialValues({'find_bike_haptic_enabled_v1': true});
+      tester.view.physicalSize = const Size(360, 780);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      await tester.pumpWidget(
+        const ProviderScope(
+          child: MaterialApp(
+            home: FindMyBikeScreen(),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      // Initial state is ON
+      expect(find.text('RUNG: BẬT'), findsOneWidget);
+
+      // Tap chip to toggle OFF
+      await tester.tap(find.text('RUNG: BẬT'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('RUNG: TẮT'), findsOneWidget);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool('find_bike_haptic_enabled_v1'), isFalse);
+
+      // Tap chip to toggle ON again
+      await tester.tap(find.text('RUNG: TẮT'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('RUNG: BẬT'), findsOneWidget);
+      expect(prefs.getBool('find_bike_haptic_enabled_v1'), isTrue);
+    });
+
+    testWidgets('Loads initial disabled haptic state from SharedPreferences', (tester) async {
+      SharedPreferences.setMockInitialValues({'find_bike_haptic_enabled_v1': false});
+      tester.view.physicalSize = const Size(360, 780);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      await tester.pumpWidget(
+        const ProviderScope(
+          child: MaterialApp(
+            home: FindMyBikeScreen(),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('RUNG: TẮT'), findsOneWidget);
+    });
   });
 }

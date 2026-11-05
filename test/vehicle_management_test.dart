@@ -160,6 +160,47 @@ void main() {
       await VehicleStorageService.instance.removeBikePassword('BIKE_1');
       expect(await VehicleStorageService.instance.getBikePassword('BIKE_1'), 'pass_bike_2'); // fallback to legacy
     });
+
+    test('Deleting all bikes clears legacy keys and prevents resurrection', () async {
+      final bike1 = SavedBike(id: 'BIKE_A', name: 'Quantum A', isDefault: true);
+      await VehicleStorageService.instance.addOrUpdateBike(bike1);
+
+      // Verify bike is saved
+      var list = await VehicleStorageService.instance.loadSavedBikes();
+      expect(list.length, 1);
+
+      // Now remove the only bike
+      list = await VehicleStorageService.instance.removeBike('BIKE_A');
+      expect(list.isEmpty, isTrue);
+
+      // Subsequent load should be completely empty and NOT resurrect legacy bike
+      final reloaded = await VehicleStorageService.instance.loadSavedBikes();
+      expect(reloaded.isEmpty, isTrue);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('last_bike_id'), isNull);
+      expect(prefs.getString('last_bike_name'), isNull);
+    });
+
+    test('clearAllBikes cleans all garage keys, legacy keys, and per-bike passwords', () async {
+      final bike1 = SavedBike(id: 'BIKE_A', name: 'Quantum A', isDefault: true);
+      final bike2 = SavedBike(id: 'BIKE_B', name: 'Weaver B', isDefault: false);
+      await VehicleStorageService.instance.addOrUpdateBike(bike1);
+      await VehicleStorageService.instance.addOrUpdateBike(bike2);
+      await VehicleStorageService.instance.setBikePassword('BIKE_A', 'pwdA');
+      await VehicleStorageService.instance.setBikePassword('BIKE_B', 'pwdB');
+
+      await VehicleStorageService.instance.clearAllBikes();
+
+      final reloaded = await VehicleStorageService.instance.loadSavedBikes();
+      expect(reloaded.isEmpty, isTrue);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('last_bike_id'), isNull);
+      expect(prefs.getString('last_bike_name'), isNull);
+      expect(prefs.getString('bike_pwd_BIKE_A'), isNull);
+      expect(prefs.getString('bike_pwd_BIKE_B'), isNull);
+    });
   });
 
   group('BleState Multi-Bike State Tests', () {
