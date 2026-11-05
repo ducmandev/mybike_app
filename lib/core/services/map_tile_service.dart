@@ -33,6 +33,7 @@ class MapTileService {
       case MapTileStyle.fastCdn:
         return TileLayer(
           urlTemplate: defaultUrlTemplate,
+          subdomains: const ['a', 'b', 'c'],
           userAgentPackageName: 'com.datbike.app',
           maxZoom: 19,
           tileProvider: offlineProvider,
@@ -41,6 +42,7 @@ class MapTileService {
       case MapTileStyle.darkEv:
         return TileLayer(
           urlTemplate: defaultUrlTemplate,
+          subdomains: const ['a', 'b', 'c'],
           userAgentPackageName: 'com.datbike.app',
           maxZoom: 19,
           tileProvider: offlineProvider,
@@ -55,6 +57,7 @@ class MapTileService {
       case MapTileStyle.cyclosm:
         return TileLayer(
           urlTemplate: defaultUrlTemplate,
+          subdomains: const ['a', 'b', 'c'],
           userAgentPackageName: 'com.datbike.app',
           maxZoom: 19,
           tileProvider: offlineProvider,
@@ -63,6 +66,7 @@ class MapTileService {
       case MapTileStyle.osmStandard:
         return TileLayer(
           urlTemplate: defaultUrlTemplate,
+          subdomains: const ['a', 'b', 'c'],
           userAgentPackageName: 'com.datbike.app',
           maxZoom: 19,
           tileProvider: offlineProvider,

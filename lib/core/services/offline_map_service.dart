@@ -65,7 +65,7 @@ class OfflineMapService {
 
   /// URL template gạch bản đồ OpenStreetMap mặc định toàn hệ thống
   static const String defaultTileUrlTemplate =
-      'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 
   Directory? _cacheDir;
   static Directory? _globalCachedDir;
@@ -650,7 +650,7 @@ class OfflineCacheTileProvider extends TileProvider {
   OfflineCacheTileProvider({Map<String, String>? headers})
       : super(
           headers: {
-            'User-Agent': 'DatBikeApp/2.6.30 (mobile-app; contact@dat.bike)',
+            'User-Agent': 'DatBikeApp/2.6.31 (mobile-app; contact@dat.bike)',
             ...?headers,
           },
         );
@@ -748,33 +748,38 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
       }
     } catch (_) {}
 
-    // 2. Nếu chưa có trên máy, tải từ mạng và chỉ cache khi ảnh hợp lệ
-    try {
-      if (Platform.environment.containsKey('FLUTTER_TEST')) {
-        throw Exception('Offline tile in test mode');
-      }
-      final uri = Uri.parse(url);
-      final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 4));
-      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
-      final isImageHeader = contentType.startsWith('image/') || contentType.isEmpty;
+    // 2. Nếu chưa có trên máy, tải từ mạng và chỉ cache khi ảnh hợp lệ (thử tối đa 2 lần với timeout 12s)
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      for (int attempt = 0; attempt < 2; attempt++) {
+        try {
+          final uri = Uri.parse(url);
+          final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 12));
+          final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+          final isImageHeader = contentType.startsWith('image/') || contentType.isEmpty;
 
-      if (response.statusCode == 200 &&
-          isImageHeader &&
-          OfflineMapService.isValidTileImageBytes(response.bodyBytes)) {
-        // Ghi nền bất đồng bộ an toàn vào ổ cứng để không làm giật UI
-        unawaited(
-          file.parent.exists().then((exists) async {
-            if (!exists) {
-              await file.parent.create(recursive: true);
-            }
-            await file.writeAsBytes(response.bodyBytes);
-          }).catchError((_) {}),
-        );
+          if (response.statusCode == 200 &&
+              isImageHeader &&
+              OfflineMapService.isValidTileImageBytes(response.bodyBytes)) {
+            // Ghi nền bất đồng bộ an toàn vào ổ cứng để không làm giật UI
+            unawaited(
+              file.parent.exists().then((exists) async {
+                if (!exists) {
+                  await file.parent.create(recursive: true);
+                }
+                await file.writeAsBytes(response.bodyBytes);
+              }).catchError((_) {}),
+            );
 
-        final buffer = await ui.ImmutableBuffer.fromUint8List(response.bodyBytes);
-        return await decode(buffer);
+            final buffer = await ui.ImmutableBuffer.fromUint8List(response.bodyBytes);
+            return await decode(buffer);
+          }
+        } catch (_) {
+          if (attempt == 0) {
+            await Future.delayed(const Duration(milliseconds: 150));
+          }
+        }
       }
-    } catch (_) {}
+    }
 
     // 3. Fallback pixel trong suốt khi offline hoàn toàn và tile chưa tải
     final transparentPng = Uint8List.fromList([
