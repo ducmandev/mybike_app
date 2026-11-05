@@ -22,6 +22,7 @@ import '../settings/vehicle_settings_screen.dart';
 import '../settings/vehicle_management_screen.dart';
 import '../logs/logs_screen.dart';
 import '../firmware_lab/firmware_lab_screen.dart';
+import '../dashboard/widgets/offline_map_sheet.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
@@ -72,7 +73,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'Dat Bike Companion',
-      applicationVersion: 'v2.6.29',
+      applicationVersion: 'v2.6.30',
       applicationIcon: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: Image.asset(
@@ -322,6 +323,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const OtaScreen()),
                         );
+                      },
+                    ),
+
+                    const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
+
+                    // 3.1 Bản đồ Offline & Xóa bộ nhớ đệm
+                    _profileListItem(
+                      icon: const Icon(Icons.map_outlined, size: 22, color: Color(0xFF0F172A)),
+                      title: 'Bản đồ offline & Bộ nhớ đệm',
+                      onTap: () {
+                        OfflineMapSheet.show(context);
                       },
                     ),
 

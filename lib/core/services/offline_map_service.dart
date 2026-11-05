@@ -9,6 +9,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Thông tin tiến độ tải bản đồ offline
 class DownloadProgress {
@@ -59,6 +60,9 @@ class OfflineMapService {
   OfflineMapService._();
   static final OfflineMapService instance = OfflineMapService._();
 
+  static const String _kSchemaKey = 'offline_tile_cache_schema';
+  static const int _kCurrentSchema = 2;
+
   Directory? _cacheDir;
   static Directory? _globalCachedDir;
   static Completer<Directory>? _dirCompleter;
@@ -72,7 +76,72 @@ class OfflineMapService {
 
   bool get isDownloading => _isDownloading;
 
-  /// Lấy thư mục lưu trữ tile offline trên bộ nhớ thiết bị (Cached đồng bộ chống tắc nghẽn MethodChannel)
+  /// Tạo khóa nhận diện nguồn gạch bản đồ ổn định từ URL template
+  /// Giúp phân vùng độc lập các nguồn tile và phong cách bản đồ khác nhau
+  static String generateSourceKey(String urlTemplate) {
+    if (urlTemplate.trim().isEmpty) return 'default';
+    var clean = urlTemplate.replaceFirst(RegExp(r'^https?://'), '');
+    clean = clean.replaceAll(RegExp(r'\{s\}[\.-]?'), '');
+    clean = clean.replaceAll(RegExp(r'/\{z\}/\{x\}/\{y\}.*$'), '');
+    clean = clean
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '')
+        .toLowerCase();
+    if (clean.isEmpty) clean = 'tile_source';
+
+    var hash = 5381;
+    for (final code in urlTemplate.codeUnits) {
+      hash = ((hash << 5) + hash) + code;
+      hash = hash & 0xFFFFFFFF;
+    }
+    final hexHash = hash.toRadixString(16).padLeft(8, '0').substring(0, 6);
+    return '${clean}_$hexHash';
+  }
+
+  /// Kiểm tra tính hợp lệ của dữ liệu ảnh gạch bản đồ thông qua Magic Bytes
+  /// Chấp nhận: PNG (89 50 4E 47), JPEG (FF D8 FF), WebP (RIFF .... WEBP)
+  static bool isValidTileImageBytes(Uint8List? bytes) {
+    if (bytes == null || bytes.length < 8) return false;
+
+    // 1. PNG: 0x89, 0x50, 0x4E, 0x47
+    if (bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return true;
+    }
+
+    // 2. JPEG: 0xFF, 0xD8, 0xFF
+    if (bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return true;
+    }
+
+    // 3. WebP: 'RIFF' + 4 bytes + 'WEBP'
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 && // R
+        bytes[1] == 0x49 && // I
+        bytes[2] == 0x46 && // F
+        bytes[3] == 0x46 && // F
+        bytes[8] == 0x57 && // W
+        bytes[9] == 0x45 && // E
+        bytes[10] == 0x42 && // B
+        bytes[11] == 0x50) { // P
+      return true;
+    }
+
+    return false;
+  }
+
+  @visibleForTesting
+  static void resetCacheDirForTesting([Directory? dir]) {
+    _globalCachedDir = dir;
+    _dirCompleter = null;
+    instance._cacheDir = dir;
+  }
+
+  /// Lấy thư mục lưu trữ tile offline trên bộ nhớ thiết bị
   Future<Directory> getCacheDirectory() async {
     if (_cacheDir != null) return _cacheDir!;
     if (_globalCachedDir != null) {
@@ -90,6 +159,10 @@ class OfflineMapService {
       }
       _globalCachedDir = dir;
       _cacheDir = dir;
+
+      // Kích hoạt migration schema nền an toàn để xóa sạch file cache legacy dính Carto ở root
+      unawaited(migrateCacheSchemaIfNeeded(targetDir: dir));
+
       _dirCompleter!.complete(dir);
       return dir;
     } catch (e) {
@@ -99,30 +172,63 @@ class OfflineMapService {
     }
   }
 
-  /// Đường dẫn file tile local: {z}_{x}_{y}.png
-  Future<File> getTileFile(int z, int x, int y) async {
-    final dir = await getCacheDirectory();
-    return File('${dir.path}/${z}_${x}_$y.png');
+  /// Tự động di chuyển schema và xóa sạch các file cache legacy ở thư mục gốc
+  Future<void> migrateCacheSchemaIfNeeded({
+    Directory? targetDir,
+    SharedPreferences? prefs,
+  }) async {
+    try {
+      final sp = prefs ?? await SharedPreferences.getInstance();
+      final current = sp.getInt(_kSchemaKey) ?? 0;
+      if (current >= _kCurrentSchema) return;
+
+      final dir = targetDir ?? await getCacheDirectory();
+      if (await dir.exists()) {
+        final entities = dir.listSync(followLinks: false);
+        for (final entity in entities) {
+          final baseName = entity.path.split(Platform.pathSeparator).last;
+          if (baseName == 'v2') continue;
+          try {
+            if (entity is File) {
+              entity.deleteSync();
+            } else if (entity is Directory) {
+              entity.deleteSync(recursive: true);
+            }
+          } catch (_) {}
+        }
+      }
+      await sp.setInt(_kSchemaKey, _kCurrentSchema);
+    } catch (_) {}
   }
 
-  /// Kiểm tra xem 1 tile đã được tải về máy chưa
-  Future<bool> hasTile(int z, int x, int y) async {
-    final file = await getTileFile(z, x, y);
+  /// Đường dẫn file tile local phân vùng theo nguồn: v2/{sourceKey}/{z}_{x}_{y}.png
+  Future<File> getTileFile(int z, int x, int y, {required String sourceKey}) async {
+    final dir = await getCacheDirectory();
+    final safeKey = sourceKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    return File('${dir.path}/v2/$safeKey/${z}_${x}_$y.png');
+  }
+
+  /// Kiểm tra xem 1 tile đã được tải về máy chưa theo nguồn tương ứng
+  Future<bool> hasTile(int z, int x, int y, {required String sourceKey}) async {
+    final file = await getTileFile(z, x, y, sourceKey: sourceKey);
     return file.exists();
   }
 
-  /// Lấy thống kê dung lượng cache offline hiện tại
+  /// Lấy thống kê dung lượng cache offline hiện tại (quét đệ quy toàn bộ thư mục v2)
   Future<({int tileCount, int totalBytes, String sizeText})> getCacheStats() async {
     try {
       final dir = await getCacheDirectory();
       int count = 0;
       int bytes = 0;
       if (await dir.exists()) {
-        final entities = dir.listSync(followLinks: false);
+        final entities = dir.listSync(recursive: true, followLinks: false);
         for (final entity in entities) {
-          if (entity is File && entity.path.endsWith('.png')) {
-            count++;
-            bytes += entity.lengthSync();
+          if (entity is File) {
+            final p = entity.path.toLowerCase();
+            if (p.endsWith('.png') || p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.webp')) {
+              count++;
+              bytes += entity.lengthSync();
+            }
           }
         }
       }
@@ -133,20 +239,16 @@ class OfflineMapService {
     }
   }
 
-  /// Xóa toàn bộ dữ liệu bản đồ offline đã tải
+  /// Xóa toàn bộ dữ liệu bản đồ offline đã tải (xóa đệ quy toàn bộ thư mục con)
   Future<void> clearCache() async {
     try {
       final dir = await getCacheDirectory();
       if (await dir.exists()) {
-        final entities = dir.listSync(followLinks: false);
-        for (final entity in entities) {
-          if (entity is File) {
-            try {
-              entity.deleteSync();
-            } catch (_) {}
-          }
-        }
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
       }
+      await dir.create(recursive: true);
     } catch (_) {}
   }
 
@@ -253,7 +355,11 @@ class OfflineMapService {
 
   Future<File> _getTaskFile() async {
     final dir = await getCacheDirectory();
-    return File('${dir.path}/download_task.json');
+    final v2Dir = Directory('${dir.path}/v2');
+    if (!await v2Dir.exists()) {
+      await v2Dir.create(recursive: true);
+    }
+    return File('${v2Dir.path}/download_task.json');
   }
 
   Future<void> _saveTaskState({
@@ -367,6 +473,7 @@ class OfflineMapService {
 
     final subLen = subdomains.length;
     int subIndex = 0;
+    final sourceKey = generateSourceKey(urlTemplate);
 
     // Chạy đồng thời 4 kết nối song song để tải nhanh
     const concurrency = 4;
@@ -377,18 +484,21 @@ class OfflineMapService {
         final curIndex = index++;
         final tile = tiles[curIndex];
 
-        final file = await getTileFile(tile.z, tile.x, tile.y);
+        final file = await getTileFile(tile.z, tile.x, tile.y, sourceKey: sourceKey);
         if (await file.exists()) {
-          current++;
-          totalBytes += await file.length();
-          notify(DownloadProgress(
-            current: current,
-            total: total,
-            bytes: totalBytes,
-            isRunning: true,
-            regionName: regionName,
-          ));
-          continue;
+          final len = await file.length();
+          if (len > 0) {
+            current++;
+            totalBytes += len;
+            notify(DownloadProgress(
+              current: current,
+              total: total,
+              bytes: totalBytes,
+              isRunning: true,
+              regionName: regionName,
+            ));
+            continue;
+          }
         }
 
         final sub = subdomains[subIndex++ % subLen];
@@ -401,10 +511,15 @@ class OfflineMapService {
         try {
           final res = await http.get(
             Uri.parse(url),
-            headers: {'User-Agent': 'DatBikeApp/2.6.4 (offline-cache)'},
+            headers: {'User-Agent': 'DatBikeApp/2.6.29 (offline-cache)'},
           ).timeout(const Duration(seconds: 8));
 
-          if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+          final contentType = res.headers['content-type']?.toLowerCase() ?? '';
+          final isImageHeader = contentType.startsWith('image/') || contentType.isEmpty;
+
+          if (res.statusCode == 200 &&
+              isImageHeader &&
+              isValidTileImageBytes(res.bodyBytes)) {
             await file.parent.create(recursive: true);
             await file.writeAsBytes(res.bodyBytes);
             totalBytes += res.bodyBytes.length;
@@ -439,7 +554,6 @@ class OfflineMapService {
         regionName: regionName,
       ));
     } else if (_pauseRequested) {
-      // Giữ task file để resume
       notify(DownloadProgress(
         current: current,
         total: total,
@@ -450,7 +564,6 @@ class OfflineMapService {
         regionName: regionName,
       ));
     } else {
-      // Tải xong hoàn toàn
       await clearPendingTask();
       notify(DownloadProgress(
         current: current,
@@ -474,10 +587,12 @@ class OfflineCacheTileProvider extends TileProvider {
   @override
   ImageProvider getImage(TileCoordinates coordinates, TileLayer options) {
     final url = getTileUrl(coordinates, options);
+    final sourceKey = OfflineMapService.generateSourceKey(options.urlTemplate ?? '');
     return OfflineTileImageProvider(
       coordinates: coordinates,
       options: options,
       url: url,
+      sourceKey: sourceKey,
       headers: headers,
     );
   }
@@ -487,12 +602,14 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
   final TileCoordinates coordinates;
   final TileLayer options;
   final String url;
+  final String sourceKey;
   final Map<String, String>? headers;
 
   const OfflineTileImageProvider({
     required this.coordinates,
     required this.options,
     required this.url,
+    required this.sourceKey,
     this.headers,
   });
 
@@ -509,33 +626,43 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
       informationCollector: () => [
         DiagnosticsProperty<String>('URL', url),
         DiagnosticsProperty<TileCoordinates>('Coordinates', coordinates),
+        DiagnosticsProperty<String>('SourceKey', sourceKey),
       ],
     );
   }
 
   Future<ui.Codec> _loadAsync(OfflineTileImageProvider key, ImageDecoderCallback decode) async {
-    // 1. Kiểm tra trong ổ cứng local trước
+    // 1. Kiểm tra trong ổ cứng local trước theo phân vùng sourceKey
     final file = await OfflineMapService.instance.getTileFile(
       coordinates.z,
       coordinates.x,
       coordinates.y,
+      sourceKey: sourceKey,
     );
 
     if (await file.exists()) {
       try {
         final bytes = await file.readAsBytes();
-        if (bytes.isNotEmpty) {
+        if (OfflineMapService.isValidTileImageBytes(bytes)) {
           final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
           return await decode(buffer);
+        } else {
+          // Xóa file rác hoặc file lỗi không phải ảnh hợp lệ
+          unawaited(file.delete().catchError((_) => file));
         }
       } catch (_) {}
     }
 
-    // 2. Nếu chưa có trên máy, tải từ mạng và tự động cache vào ổ cứng
+    // 2. Nếu chưa có trên máy, tải từ mạng và chỉ cache khi ảnh hợp lệ
     try {
       final uri = Uri.parse(url);
       final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 4));
-      if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+      final contentType = response.headers['content-type']?.toLowerCase() ?? '';
+      final isImageHeader = contentType.startsWith('image/') || contentType.isEmpty;
+
+      if (response.statusCode == 200 &&
+          isImageHeader &&
+          OfflineMapService.isValidTileImageBytes(response.bodyBytes)) {
         // Ghi nền bất đồng bộ an toàn vào ổ cứng để không làm giật UI
         unawaited(
           file.parent.exists().then((exists) async {
@@ -569,9 +696,10 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
     if (other.runtimeType != runtimeType) return false;
     return other is OfflineTileImageProvider &&
         other.coordinates == coordinates &&
-        other.url == url;
+        other.url == url &&
+        other.sourceKey == sourceKey;
   }
 
   @override
-  int get hashCode => Object.hash(coordinates, url);
+  int get hashCode => Object.hash(coordinates, url, sourceKey);
 }
