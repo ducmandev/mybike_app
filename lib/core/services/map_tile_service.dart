@@ -10,6 +10,9 @@ enum MapTileStyle {
 }
 
 class MapTileService {
+  /// URL template gạch bản đồ chuẩn toàn hệ thống (OpenStreetMap)
+  static const String defaultUrlTemplate = OfflineMapService.defaultTileUrlTemplate;
+
   /// Matrix đảo màu và xoay hệ màu để biến bản đồ OSM tiêu chuẩn thành bản đồ đêm Dark EV
   /// Tương thích 100% mọi thiết bị, không cần API Key, không phụ thuộc server bên thứ ba
   static const List<double> darkMatrix = <double>[
@@ -29,19 +32,17 @@ class MapTileService {
     switch (style) {
       case MapTileStyle.fastCdn:
         return TileLayer(
-          urlTemplate: 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
-          subdomains: const ['a', 'b', 'c'],
+          urlTemplate: defaultUrlTemplate,
           userAgentPackageName: 'com.datbike.app',
-          maxZoom: 20,
+          maxZoom: 19,
           tileProvider: offlineProvider,
         );
 
       case MapTileStyle.darkEv:
         return TileLayer(
-          urlTemplate: 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png',
-          subdomains: const ['a', 'b', 'c'],
+          urlTemplate: defaultUrlTemplate,
           userAgentPackageName: 'com.datbike.app',
-          maxZoom: 20,
+          maxZoom: 19,
           tileProvider: offlineProvider,
           tileBuilder: (context, tileWidget, tile) {
             return ColorFiltered(
@@ -53,16 +54,15 @@ class MapTileService {
 
       case MapTileStyle.cyclosm:
         return TileLayer(
-          urlTemplate: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
-          subdomains: const ['a', 'b', 'c'],
+          urlTemplate: defaultUrlTemplate,
           userAgentPackageName: 'com.datbike.app',
-          maxZoom: 20,
+          maxZoom: 19,
           tileProvider: offlineProvider,
         );
 
       case MapTileStyle.osmStandard:
         return TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          urlTemplate: defaultUrlTemplate,
           userAgentPackageName: 'com.datbike.app',
           maxZoom: 19,
           tileProvider: offlineProvider,

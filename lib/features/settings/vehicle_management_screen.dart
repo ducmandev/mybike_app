@@ -561,7 +561,7 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
               },
             ),
       bottomNavigationBar: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: const BoxDecoration(
           color: Colors.white,
           border: Border(top: BorderSide(color: Color(0xFFF1F5F9), width: 1)),
@@ -581,9 +581,12 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
                     backgroundColor: const Color(0xFFEFF6FF),
                   ),
                   icon: const Icon(Icons.bluetooth_searching_rounded, size: 18, color: Color(0xFF2563EB)),
-                  label: Text(
-                    'QUÉT XE GẦN ĐÂY',
-                    style: GoogleFonts.plusJakartaSans(fontSize: 12.5, fontWeight: FontWeight.w700, color: const Color(0xFF2563EB)),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'QUÉT XE',
+                      style: GoogleFonts.plusJakartaSans(fontSize: 12.5, fontWeight: FontWeight.w700, color: const Color(0xFF2563EB)),
+                    ),
                   ),
                   onPressed: () {
                     Navigator.of(context).push(
@@ -601,9 +604,12 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
                   icon: const Icon(Icons.add_rounded, size: 18, color: Colors.white),
-                  label: Text(
-                    'THÊM XE MỚI',
-                    style: GoogleFonts.plusJakartaSans(fontSize: 12.5, fontWeight: FontWeight.w700, color: Colors.white),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'THÊM XE',
+                      style: GoogleFonts.plusJakartaSans(fontSize: 12.5, fontWeight: FontWeight.w700, color: Colors.white),
+                    ),
                   ),
                   onPressed: _showAddBikeOptions,
                 ),
@@ -755,10 +761,13 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
                           fontWeight: FontWeight.w500,
                           color: const Color(0xFF64748B),
                         ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
                 ),
+                const SizedBox(width: 8),
                 // Huy hiệu trạng thái kết nối
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -789,8 +798,8 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
                       const SizedBox(width: 5),
                       Text(
                         isConnected
-                            ? 'ĐANG KẾT NỐI'
-                            : (isActive ? 'ĐANG CHỌN' : 'NGOẠI TUYẾN'),
+                            ? 'KẾT NỐI'
+                            : (isActive ? 'ĐANG CHỌN' : 'OFFLINE'),
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 10,
                           fontWeight: FontWeight.w700,
@@ -919,95 +928,158 @@ class _VehicleManagementScreenState extends ConsumerState<VehicleManagementScree
 
           // Thanh hành động (Chuyển xe, Sửa, Đặt mặc định, Xóa)
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
             decoration: const BoxDecoration(
               color: Color(0xFFF8FAFC),
               borderRadius: BorderRadius.vertical(bottom: Radius.circular(19)),
             ),
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                // Nút Chuyển Điều Khiển / Kết Nối
-                if (!isConnected)
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF2563EB),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      visualDensity: VisualDensity.compact,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    icon: const Icon(Icons.swap_horiz_rounded, size: 16),
-                    label: Text(
-                      'ĐIỀU KHIỂN XE NÀY',
-                      style: GoogleFonts.plusJakartaSans(fontSize: 11.5, fontWeight: FontWeight.w700),
-                    ),
-                    onPressed: () async {
-                      await ref.read(bleProvider.notifier).switchBike(bike, autoConnect: true);
-                      _snack('Đang chuyển điều khiển sang ${bike.name}...');
-                    },
-                  )
-                else
-                  OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      visualDensity: VisualDensity.compact,
-                      side: const BorderSide(color: Color(0xFFCBD5E1)),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    icon: const Icon(Icons.link_off_rounded, size: 16, color: Color(0xFF64748B)),
-                    label: Text(
-                      'NGẮT KẾT NỐI',
-                      style: GoogleFonts.plusJakartaSans(fontSize: 11.5, fontWeight: FontWeight.w700, color: const Color(0xFF64748B)),
-                    ),
-                    onPressed: () async {
-                      await ref.read(bleProvider.notifier).disconnect();
-                      _snack('Đã ngắt kết nối với ${bike.name}');
-                    },
-                  ),
-
-                const Spacer(),
-
-                // Đặt làm mặc định
-                if (!bike.isDefault)
-                  IconButton(
-                    tooltip: 'Đặt làm xe mặc định',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.star_outline_rounded, size: 20, color: Color(0xFF64748B)),
-                    onPressed: () async {
-                      await ref.read(bleProvider.notifier).setDefaultBike(bike.id);
-                      _snack('Đã đặt ${bike.name} làm xe mặc định khi mở app');
-                    },
-                  ),
-
-                // Nút chỉnh sửa
-                TextButton.icon(
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    foregroundColor: const Color(0xFF2563EB),
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  ),
-                  icon: const Icon(Icons.edit_outlined, size: 16),
-                  label: Text('Sửa', style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w600)),
-                  onPressed: () => _showEditBikeDialog(bike),
+                // Hàng 1: Nút hành động chính (Kết nối / Chuyển xe / Ngắt kết nối)
+                SizedBox(
+                  width: double.infinity,
+                  child: isConnected
+                      ? OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 9),
+                            side: const BorderSide(color: Color(0xFFCBD5E1)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            backgroundColor: Colors.white,
+                          ),
+                          icon: const Icon(Icons.link_off_rounded, size: 16, color: Color(0xFF64748B)),
+                          label: Text(
+                            'NGẮT KẾT NỐI',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: const Color(0xFF64748B),
+                            ),
+                          ),
+                          onPressed: () async {
+                            await ref.read(bleProvider.notifier).disconnect();
+                            _snack('Đã ngắt kết nối với ${bike.name}');
+                          },
+                        )
+                      : FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF2563EB),
+                            padding: const EdgeInsets.symmetric(vertical: 9),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            elevation: 0,
+                          ),
+                          icon: const Icon(Icons.swap_horiz_rounded, size: 17),
+                          label: Text(
+                            'ĐIỀU KHIỂN XE',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          onPressed: () async {
+                            await ref.read(bleProvider.notifier).switchBike(bike, autoConnect: true);
+                            _snack('Đang chuyển điều khiển sang ${bike.name}...');
+                          },
+                        ),
                 ),
-
-                const SizedBox(width: 4),
-
-                // Nút xóa xe với nhãn rõ ràng
-                OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    foregroundColor: const Color(0xFFEF4444),
-                    side: const BorderSide(color: Color(0xFFFECACA)),
-                    backgroundColor: const Color(0xFFFEF2F2),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  ),
-                  icon: const Icon(Icons.delete_outline_rounded, size: 16, color: Color(0xFFEF4444)),
-                  label: Text(
-                    'Xóa xe',
-                    style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: const Color(0xFFEF4444)),
-                  ),
-                  onPressed: () => _confirmDeleteBike(bike),
+                const SizedBox(height: 8),
+                // Hàng 2: Các thao tác phụ (Mặc định, Sửa, Xóa)
+                Row(
+                  children: [
+                    if (!bike.isDefault)
+                      InkWell(
+                        onTap: () async {
+                          await ref.read(bleProvider.notifier).setDefaultBike(bike.id);
+                          _snack('Đã đặt ${bike.name} làm xe mặc định khi mở app');
+                        },
+                        borderRadius: BorderRadius.circular(6),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.star_outline_rounded, size: 16, color: Color(0xFF64748B)),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Đặt mặc định',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11.5,
+                                  color: const Color(0xFF64748B),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    else
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.star_rounded, size: 16, color: Color(0xFFD97706)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Xe mặc định',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 11.5,
+                                color: const Color(0xFFD97706),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    const Spacer(),
+                    // Nút sửa
+                    InkWell(
+                      onTap: () => _showEditBikeDialog(bike),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.edit_outlined, size: 15, color: Color(0xFF2563EB)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Sửa',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFF2563EB),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Nút xóa
+                    InkWell(
+                      onTap: () => _confirmDeleteBike(bike),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.delete_outline_rounded, size: 15, color: Color(0xFFEF4444)),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Xóa',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                                color: const Color(0xFFEF4444),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),

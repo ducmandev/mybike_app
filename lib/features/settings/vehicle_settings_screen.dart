@@ -1666,34 +1666,51 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
         children: [
           Row(
             children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.garage_rounded, color: AppColors.primary, size: 22),
+              ),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Nhà xe của bạn (${ble.savedBikes.length} xe)',
+                      'Nhà xe (${ble.savedBikes.length} xe)',
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
                         color: AppColors.textPrimary,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      'Quản lý danh sách xe đã lưu hoặc chuyển điều khiển xe',
+                      'Quản lý & chuyển đổi xe',
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 11.5,
                         color: AppColors.textDim,
                       ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
               ),
-              OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: AppColors.primary),
+              const SizedBox(width: 8),
+              FilledButton.tonal(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.primary.withValues(alpha: 0.12),
+                  foregroundColor: AppColors.primary,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  visualDensity: VisualDensity.compact,
                 ),
                 onPressed: () {
                   Navigator.of(context).push(
@@ -1701,8 +1718,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   );
                 },
                 child: Text(
-                  'NHÀ XE',
-                  style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary),
+                  'VÀO NHÀ XE',
+                  style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700),
                 ),
               ),
             ],
@@ -1713,14 +1730,17 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor: AppColors.error,
-                side: BorderSide(color: AppColors.error.withValues(alpha: 0.5)),
-                padding: const EdgeInsets.symmetric(vertical: 12),
+                side: BorderSide(color: AppColors.error.withValues(alpha: 0.4)),
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               icon: const Icon(Icons.delete_forever_rounded, size: 18),
-              label: Text(
-                'XÓA / QUÊN XE ĐÃ KẾT NỐI',
-                style: GoogleFonts.spaceGrotesk(fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+              label: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  'QUÊN XE ĐÃ KẾT NỐI',
+                  style: GoogleFonts.spaceGrotesk(fontSize: 12.5, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                ),
               ),
               onPressed: () async {
                 final ok = await showDialog<bool>(

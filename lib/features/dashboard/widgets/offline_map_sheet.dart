@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../../../core/services/offline_map_service.dart';
+import '../../../core/services/map_tile_service.dart';
 import '../../../core/services/trip_gps_tracker.dart';
 import '../../../ui/app_theme.dart';
 
@@ -113,6 +114,7 @@ class _OfflineMapSheetState extends State<OfflineMapSheet> {
       minZoom: _minZoom,
       maxZoom: _maxZoom,
       regionName: regionName,
+      urlTemplate: MapTileService.defaultUrlTemplate,
     );
 
     final stats = await _service.getCacheStats();
