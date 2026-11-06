@@ -461,6 +461,7 @@ class BleController extends Notifier<BleState> {
   int _reconnectAttempts = 0;
   int _failStreak = 0;
   int _decodeFailStreak = 0;
+  int _dashboardFailStreak = 0;
   int _plainLogCount = 0;
 
   // Keepalive — chu trình 1,2s của app gốc (log vendor 13/10):
@@ -476,7 +477,11 @@ class BleController extends Notifier<BleState> {
   bool _restoreBusy = false; // mutex: 1 restore/lúc — chống khởi động song song
   bool _isCommandBusy = false; // mutex: chống gửi dồn dập nhiều lệnh tới BMS
   int _pendingUserCommands = 0; // số lượng lệnh điều khiển của user đang chờ hoặc đang chạy
-  bool get _hasPendingUserCommand => _pendingUserCommands > 0 || _isCommandBusy;
+  bool get _hasPendingUserCommand =>
+      _pendingUserCommands > 0 ||
+      _isCommandBusy ||
+      (_lastUserCommandAt != null &&
+          DateTime.now().difference(_lastUserCommandAt!) < const Duration(milliseconds: 600));
   DateTime? _lastCommandCompletedAt; // mốc hoàn tất lệnh trước (cooldown bus CAN/BMS)
 
   /// KEEPALIVE TẮT MẶC ĐỊNH (2026-10-20): bản log 13h49 giữ được session
@@ -516,7 +521,7 @@ class BleController extends Notifier<BleState> {
   static const _kChargingProfile = 'fw_charging_profile';
   static const _kUserName = 'user_profile_name';
 
-  final _rssiKalman = KalmanFilter1D(processNoise: 0.008, measurementNoise: 4.0);
+  final _rssiKalman = KalmanFilter1D(processNoise: 0.05, measurementNoise: 3.0);
   double? _smoothedRssi;
   int _autoLockCounter = 0;
   int _theftCounter = 0;
@@ -875,6 +880,7 @@ class BleController extends Notifier<BleState> {
     Duration timeout = const Duration(milliseconds: 2500),
   }) async {
     _pendingUserCommands++;
+    _lastUserCommandAt = DateTime.now();
     try {
       return await _enqueueGatt(action, timeout: timeout);
     } finally {
@@ -1998,6 +2004,7 @@ class BleController extends Notifier<BleState> {
     }
     _manualDisconnect = false;
     _writeCounter = 0;
+    _dashboardFailStreak = 0;
     _cancelReconnect();
     final resolvedModel = BikeModel.resolve(
       deviceName: name ?? (device.platformName.isNotEmpty ? device.platformName : device.advName),
@@ -2144,18 +2151,24 @@ class BleController extends Notifier<BleState> {
       }
     } catch (_) {}
 
-    // 3. Scan nhanh có RemoteId để làm mới BLE cache và connection window của Android
+    // 3. Scan nhanh chủ động (Active Scan 2-3s) trên cả iOS & Android để làm mới BLE cache và bắt kịp gói tin quảng bá
     try {
-      if ((!kIsWeb && !(!kIsWeb && Platform.isIOS)) && !FlutterBluePlus.isScanningNow) {
+      if (!kIsWeb && !FlutterBluePlus.isScanningNow) {
         StreamSubscription? scanSub;
         final completer = Completer<void>();
         scanSub = FlutterBluePlus.scanResults.listen((results) {
           if (results.any((r) => r.device.remoteId == device.remoteId)) {
-            if (!completer.isCompleted) completer.complete();
+            if (!completer.isCompleted) {
+              completer.complete();
+              try {
+                FlutterBluePlus.stopScan();
+              } catch (_) {}
+            }
           }
         });
         await FlutterBluePlus.startScan(
           withRemoteIds: [device.remoteId.str],
+          withServices: [Guid(Gatt.dashboardService)],
           timeout: const Duration(seconds: 3),
           androidScanMode: AndroidScanMode.lowLatency,
         );
@@ -2186,6 +2199,7 @@ class BleController extends Notifier<BleState> {
     await _connectWithCachePrime(device);
     BleLogger.instance.event('connected', {'device_id': device.remoteId.str});
     _writeCounter = 0;
+    _dashboardFailStreak = 0;
     int mtu = 23;
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
@@ -2327,29 +2341,47 @@ class BleController extends Notifier<BleState> {
     // Nếu có lệnh người dùng đang chờ hoặc đang bận, bỏ qua lượt poll này để giải phóng hoàn toàn băng thông GATT
     if (_hasPendingUserCommand) return;
 
+    final pollTimeoutMs = _dashboardFailStreak >= 2 ? 800 : 1500;
     try {
       final raw = await _enqueueBackgroundRead(
-        () => c.read().timeout(const Duration(milliseconds: 1500)),
+        () => c.read().timeout(Duration(milliseconds: pollTimeoutMs)),
         tag: 'DashboardRead',
-        timeout: const Duration(milliseconds: 1800),
+        timeout: Duration(milliseconds: pollTimeoutMs + 300),
       );
       if (raw != null && raw.isNotEmpty) {
+        _dashboardFailStreak = 0;
         _handleDashboardPayload(raw);
+      } else {
+        _dashboardFailStreak++;
       }
     } catch (e) {
-      BleLogger.instance.event('poll_error', {'error': '$e'});
+      _dashboardFailStreak++;
+      BleLogger.instance.event('poll_error', {'error': '$e', 'streak': _dashboardFailStreak});
     }
 
-    // Định kỳ đọc Battery Log (207 byte) mỗi 5 chu kỳ đo (giảm tải kênh BLE)
+    // Cơ chế phát hiện mất kết nối nhanh: Nếu thất bại 2 chu kỳ và thiết bị đã ngắt kết nối thực tế ở tầng OS, ngừng poll ngay
+    if (_dashboardFailStreak >= 2) {
+      final dev = _device;
+      if (dev != null && !dev.isConnected) {
+        BleLogger.instance.event('poll_detected_disconnect', {'device': dev.remoteId.str});
+        return;
+      }
+    }
+
+    // Định kỳ đọc Battery Log (207 byte) mỗi 10 chu kỳ đo (giảm tải kênh BLE & CoreBluetooth iOS)
     _batteryPollCounter++;
-    if (_batteryPollCounter >= 5) {
+    if (_batteryPollCounter >= 10) {
       _batteryPollCounter = 0;
       unawaited(fetchBatteryDetails());
     }
 
-    // Định kỳ đọc RSSI mỗi 2 chu kỳ đo (chống nghẽn CoreBluetooth trên iOS)
+    // Tần suất đọc RSSI: Khi xe đang khóa hoặc đang tắt máy, đọc mỗi chu kỳ đo (1s)
+    // để phát hiện walk-up tức thì (< 800ms); khi xe đang chạy bình thường, đọc mỗi 2 chu kỳ đo (chống nghẽn CoreBluetooth trên iOS)
+    final tele = state.lastTelemetry;
+    final isStandstillOrLocked = state.isLocked || (tele?.state == BikeState.lock) || (tele?.isBikeOn != true);
+    final rssiThresholdCycles = isStandstillOrLocked ? 1 : 2;
     _rssiPollCounter++;
-    if (_rssiPollCounter >= 2) {
+    if (_rssiPollCounter >= rssiThresholdCycles) {
       _rssiPollCounter = 0;
       try {
         final dev = _device;
@@ -2400,10 +2432,14 @@ class BleController extends Notifier<BleState> {
     // ===== TỰ ĐỘNG THEO CỰ LY =====
     final userRecent = _lastUserCommandAt != null &&
         DateTime.now().difference(_lastUserCommandAt!) < const Duration(seconds: 10);
-    final autoAllowed = !_autoSecureBusy && !_isCommandBusy && !userRecent && !justConnected;
+    // Auto-Lock và Anti-Theft cần bảo vệ chống khóa nhầm khi vừa kết nối ở xa (justConnected)
+    final autoLockAllowed = !_autoSecureBusy && !_isCommandBusy && !userRecent && !justConnected;
+    // Walk-Up Unlock KHÔNG bị chặn bởi justConnected — nếu người dùng vừa bước tới và điện thoại kết nối BLE
+    // với RSSI >= nearThreshold, xe phải MỞ KHÓA NGAY LẬP TỨC
+    final walkUpAllowed = !_autoSecureBusy && !_isCommandBusy && !userRecent;
 
     // (c) CHỐNG TRỘM ≥5m: Chỉ kích hoạt khi user ĐÃ TỪNG Ở GẦN XE và sau đó rời xa
-    if (state.antiTheft5m && autoAllowed && isBikeOn && _hasBeenNearBike) {
+    if (state.antiTheft5m && autoLockAllowed && isBikeOn && _hasBeenNearBike) {
       if (rssi <= -78) {
         _theftCounter++;
         if (_theftCounter >= 5) {
@@ -2419,7 +2455,7 @@ class BleController extends Notifier<BleState> {
     }
 
     // (a) AUTO-SECURE rời xa: Chỉ kích hoạt khi user ĐÃ TỪNG Ở GẦN XE và sau đó đi ra xa
-    if (state.autoLockWalkAway && autoAllowed && isBikeOn && speed <= 0.5 && _hasBeenNearBike) {
+    if (state.autoLockWalkAway && autoLockAllowed && isBikeOn && speed <= 0.5 && _hasBeenNearBike) {
       const lockThresholds = [-75.0, -83.0, -90.0];
       final targetThreshold = state.autoLockRssiThreshold ??
           lockThresholds[state.autoLockDistance.clamp(0, 2)];
@@ -2438,7 +2474,7 @@ class BleController extends Notifier<BleState> {
     }
 
     // (b) WALK-UP UNLOCK & BẬT XE SẴN KHI TỚI GẦN
-    if (state.walkUpUnlock && autoAllowed) {
+    if (state.walkUpUnlock && walkUpAllowed) {
       // KIỂM TRA STATUS THỰC TẾ:
       // Chỉ thực hiện khi xe đang khóa hoặc (muốn tự bật điện và xe đang tắt).
       // Nếu xe ĐÃ MỞ SẴN (không khóa và đã bật) -> Tuyệt đối không gửi lệnh tắt hay bật lại!
@@ -2448,7 +2484,7 @@ class BleController extends Notifier<BleState> {
       if (needsUnlock || needsPower) {
         if (rssi >= nearThreshold) {
           _unlockNearCounter++;
-          if (_unlockNearCounter >= 2) {
+          if (_unlockNearCounter >= 1) {
             _unlockNearCounter = 0;
             unawaited(_runWalkUpUnlockAndPower(rssi));
           }
@@ -3254,8 +3290,7 @@ class BleController extends Notifier<BleState> {
       return 'Chức năng tìm xe không khả dụng khi xe đang di chuyển!';
     }
     if (state.lastTelemetry?.isBikeOn == true) {
-      return 'Còi tìm xe chỉ hoạt động khi xe ĐANG TẮT (cơ chế hú của firmware). '
-          'Hãy tắt xe trước rồi thử lại.';
+      return 'Còi tìm xe chỉ hoạt động khi xe đang TẮT máy (theo cơ chế firmware Dat Bike)';
     }
 
     _findBikeTimeoutTimer?.cancel();
@@ -3394,6 +3429,7 @@ class BleController extends Notifier<BleState> {
           challenge: nonce,
         );
         _writeCounter = 0;
+    _dashboardFailStreak = 0;
         if (post.length == 16) {
           _lastAuthNonce15 = Uint8List.fromList(post.sublist(0, 15));
         }
@@ -3804,9 +3840,11 @@ class BleController extends Notifier<BleState> {
       // (a) Thử candidate password (pin)
       if (pin.isNotEmpty) {
         _writeCounter = 0;
+    _dashboardFailStreak = 0;
         live = await tryPassword('candidate "$pin"', pin, saltNonce);
         if (!live) {
           _writeCounter = 0;
+    _dashboardFailStreak = 0;
           final postNonce15 = Uint8List.fromList(acceptedNonce.sublist(0, 15));
           live = await tryPassword('candidate "$pin" (postNonce)', pin, postNonce15);
           if (live) {
@@ -3823,9 +3861,11 @@ class BleController extends Notifier<BleState> {
       // (b) password đã register lần trước (prefs) nếu khác pin
       if (!live && hasStoredPassword && stored != pin) {
         _writeCounter = 0;
+    _dashboardFailStreak = 0;
         live = await tryPassword('registered "$stored"', stored, saltNonce);
         if (!live) {
           _writeCounter = 0;
+    _dashboardFailStreak = 0;
           final postNonce15 = Uint8List.fromList(acceptedNonce.sublist(0, 15));
           live = await tryPassword('registered "$stored" (postNonce)', stored, postNonce15);
           if (live) {
@@ -3901,6 +3941,7 @@ class BleController extends Notifier<BleState> {
               'password': newPw,
             });
             _writeCounter = 0;
+    _dashboardFailStreak = 0;
             live = await tryPassword('self-registered', newPw, n2);
             if (live) {
               livePw = newPw;
@@ -4085,6 +4126,7 @@ class BleController extends Notifier<BleState> {
         _dashChar = null;
         _sessionKey = null;
         _writeCounter = 0;
+    _dashboardFailStreak = 0;
         _decodeFailStreak = 0;
         _smoothedRssi = null;
         _rssiKalman.reset();

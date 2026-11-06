@@ -163,9 +163,9 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('TÌM XE & VỊ TRÍ ĐỖ'), findsOneWidget);
-      expect(find.text('Kêu Còi'), findsOneWidget);
-      expect(find.text('Xi-nhan'), findsOneWidget);
-      expect(find.text('Mở Khóa'), findsOneWidget);
+      expect(find.text('Kêu Còi (Tìm Xe)'), findsOneWidget);
+      expect(find.text('Mở Khóa Xe'), findsOneWidget);
+      expect(find.text('Xi-nhan'), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
@@ -186,9 +186,9 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('TÌM XE & VỊ TRÍ ĐỖ'), findsOneWidget);
-      expect(find.text('Kêu Còi'), findsOneWidget);
-      expect(find.text('Xi-nhan'), findsOneWidget);
-      expect(find.text('Mở Khóa'), findsOneWidget);
+      expect(find.text('Kêu Còi (Tìm Xe)'), findsOneWidget);
+      expect(find.text('Mở Khóa Xe'), findsOneWidget);
+      expect(find.text('Xi-nhan'), findsNothing);
       expect(tester.takeException(), isNull);
     });
 

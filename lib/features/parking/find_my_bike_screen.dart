@@ -222,35 +222,16 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
     });
   }
 
-  void _triggerSignalFlash() {
+  void _triggerChirp() {
     _bloomTimer?.cancel();
     setState(() => _showSignalBloom = true);
-
-    // Kêu còi / nháy đèn trên xe qua BLE
-    ref.read(bleProvider.notifier).findBike();
-
-    _bloomTimer = Timer(const Duration(milliseconds: 1800), () {
-      if (mounted) setState(() => _showSignalBloom = false);
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '💡 Đã gửi lệnh nháy xi-nhan và phát còi tìm xe!',
-          style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
-        ),
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(milliseconds: 1600),
-      ),
-    );
-  }
-
-  void _triggerChirp() {
     ref.read(bleProvider.notifier).findBike();
     if (_isHapticEnabled) {
       HapticFeedback.lightImpact();
     }
+    _bloomTimer = Timer(const Duration(milliseconds: 1800), () {
+      if (mounted) setState(() => _showSignalBloom = false);
+    });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -1220,7 +1201,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
     );
   }
 
-  /// Khối 3 nút điều khiển dạng icon trên cùng 1 hàng (Kêu Còi - Xi-nhan - Mở Khóa)
+  /// Khối 2 nút điều khiển dạng icon trên cùng 1 hàng (Kêu Còi (Tìm Xe) - Mở Khóa Xe) cân đối 50% - 50%
   Widget _buildControlButtonsCard({bool isLandscape = false}) {
     return Container(
       padding: EdgeInsets.all(isLandscape ? 10 : 14),
@@ -1245,35 +1226,24 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
           SizedBox(height: isLandscape ? 6 : 10),
           Row(
             children: [
-              // Nút 1: Kêu còi
+              // Nút 1: Kêu còi (Tìm Xe) - 50% width, màu cam nổi bật
               Expanded(
                 child: _buildActionButton(
                   icon: Icons.volume_up_rounded,
-                  label: 'Kêu Còi',
-                  color: AppColors.primary,
+                  label: 'Kêu Còi (Tìm Xe)',
+                  color: const Color(0xFFEA580C),
+                  isFilled: true,
                   onTap: _triggerChirp,
                   isLandscape: isLandscape,
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
 
-              // Nút 2: Nháy xi-nhan
-              Expanded(
-                child: _buildActionButton(
-                  icon: Icons.lightbulb_outline_rounded,
-                  label: 'Xi-nhan',
-                  color: const Color(0xFFEA580C),
-                  onTap: _triggerSignalFlash,
-                  isLandscape: isLandscape,
-                ),
-              ),
-              const SizedBox(width: 8),
-
-              // Nút 3: Mở khóa xe
+              // Nút 2: Mở khóa xe - 50% width, primary
               Expanded(
                 child: _buildActionButton(
                   icon: Icons.lock_open_rounded,
-                  label: 'Mở Khóa',
+                  label: 'Mở Khóa Xe',
                   color: AppColors.primary,
                   isFilled: true,
                   onTap: _triggerUnlock,
