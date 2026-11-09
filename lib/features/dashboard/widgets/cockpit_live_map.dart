@@ -122,6 +122,23 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
   bool _isLocating = false;
   LatLng? _myLocation;
   bool _showSearchResultsDropdown = false;
+  bool _hasInitialCentered = false;
+
+  void _moveCameraSafely(LatLng target, double zoom) {
+    if (!mounted) return;
+    try {
+      _mapController.move(target, zoom);
+      _hasInitialCentered = true;
+    } catch (_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _mapController.move(target, zoom);
+          _hasInitialCentered = true;
+        } catch (_) {}
+      });
+    }
+  }
 
   static String _shortCardinal(double deg) {
     const dirs = ['B', 'ĐB', 'Đ', 'ĐN', 'N', 'TN', 'T', 'TB'];
@@ -134,6 +151,16 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
     super.initState();
     _mapController = MapController();
     _liveRoute = TripGpsTracker.instance.getCurrentRoute();
+
+    final cp = TripGpsTracker.instance.currentPoint;
+    final lp = TripGpsTracker.instance.lastPosition;
+    if (cp != null) {
+      _myLocation = LatLng(cp.lat, cp.lng);
+    } else if (lp != null) {
+      _myLocation = LatLng(lp.latitude, lp.longitude);
+    } else if (_liveRoute.isNotEmpty) {
+      _myLocation = LatLng(_liveRoute.last.lat, _liveRoute.last.lng);
+    }
 
     _gpsSpeedHistory = _liveRoute.map((p) => p.speedKmh).toList();
     if (_gpsSpeedHistory.length > 30) {
@@ -179,7 +206,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
     });
 
     // Lấy ngay vị trí hiện tại khi vừa mở dashboard
-    _locateMe(moveCamera: false);
+    _locateMe(moveCamera: true);
   }
 
   @override
@@ -194,15 +221,31 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
   Future<void> _locateMe({bool moveCamera = true}) async {
     if (_isLocating) return;
     setState(() => _isLocating = true);
-    final pos = await TripGpsTracker.instance.getCurrentLocation();
-    if (!mounted) return;
-    setState(() => _isLocating = false);
+    try {
+      final pos = await TripGpsTracker.instance.getCurrentLocation();
+      if (!mounted) return;
 
-    if (pos != null) {
-      final loc = LatLng(pos.latitude, pos.longitude);
-      setState(() => _myLocation = loc);
-      if (moveCamera) {
-        _mapController.move(loc, 16.5);
+      if (pos != null) {
+        final loc = LatLng(pos.latitude, pos.longitude);
+        setState(() => _myLocation = loc);
+        if (moveCamera) {
+          _moveCameraSafely(loc, widget.isFullScreen ? 16.5 : 16.0);
+        }
+      } else {
+        final parked = await ParkingStorageService.instance.loadParkedLocation();
+        if (!mounted) return;
+        if (parked != null) {
+          final loc = LatLng(parked.latitude, parked.longitude);
+          if (mounted) setState(() => _myLocation ??= loc);
+          if (moveCamera) {
+            _moveCameraSafely(loc, widget.isFullScreen ? 16.5 : 16.0);
+          }
+        }
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) {
+        setState(() => _isLocating = false);
       }
     }
   }
@@ -537,7 +580,36 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               initialCenter: centerCoord,
               initialZoom: 16.0,
               initialRotation: _mapRotation,
+              onMapReady: () {
+                final target = _myLocation ??
+                    (lastPoint != null ? LatLng(lastPoint.lat, lastPoint.lng) : null);
+                if (target != null && ref.read(navigationProvider).activeRoute == null) {
+                  _moveCameraSafely(target, widget.isFullScreen ? 16.5 : 16.0);
+                }
+              },
+              onTap: (tapPosition, point) {
+                if (!_hasInitialCentered) {
+                  final target = _myLocation ??
+                      (lastPoint != null ? LatLng(lastPoint.lat, lastPoint.lng) : null);
+                  if (target != null) {
+                    _moveCameraSafely(target, widget.isFullScreen ? 16.5 : 16.0);
+                  } else {
+                    _locateMe(moveCamera: true);
+                  }
+                }
+                if (!widget.isFullScreen && widget.onExpandFullScreen != null) {
+                  widget.onExpandFullScreen!();
+                }
+              },
               onPositionChanged: (position, hasGesture) {
+                if (hasGesture && !_hasInitialCentered) {
+                  if (_myLocation != null) {
+                    _moveCameraSafely(_myLocation!, widget.isFullScreen ? 16.5 : 16.0);
+                  } else {
+                    _locateMe(moveCamera: true);
+                    _hasInitialCentered = true;
+                  }
+                }
                 if (hasGesture && _cameraMode == MapCameraMode.headingUp) {
                   _cameraMode = MapCameraMode.northUp;
                 }

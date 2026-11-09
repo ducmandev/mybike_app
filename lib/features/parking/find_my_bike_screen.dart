@@ -43,6 +43,29 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   Timer? _bloomTimer;
 
   late final MapController _mapController;
+  bool _hasInitialCentered = false;
+
+  void _moveMapToParkedBike({double zoom = 17.5}) {
+    if (!mounted) return;
+    final target = _parkedLocation != null
+        ? LatLng(_parkedLocation!.latitude, _parkedLocation!.longitude)
+        : (_userPosition != null
+            ? LatLng(_userPosition!.latitude, _userPosition!.longitude)
+            : null);
+    if (target == null) return;
+    try {
+      _mapController.move(target, zoom);
+      _hasInitialCentered = true;
+    } catch (_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          _mapController.move(target, zoom);
+          _hasInitialCentered = true;
+        } catch (_) {}
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -114,34 +137,58 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
 
   Future<void> _loadInitialParkingLocation() async {
     final ble = ref.read(bleProvider);
+    final targetBikeId = _selectedSavedBike?.id ?? ble.device?.remoteId.str ?? ble.activeBikeId;
     final loc = await ParkingStorageService.instance.loadParkedLocation(
-      bikeId: ble.device?.remoteId.str,
+      bikeId: targetBikeId,
     );
 
-    if (mounted) {
+    if (!mounted) return;
+
+    if (loc != null) {
       setState(() {
-        if (loc != null) {
-          _parkedLocation = loc;
-        } else {
-          final curLat = TripGpsTracker.instance.currentPoint?.lat ?? TripGpsTracker.instance.lastPosition?.latitude;
-          final curLng = TripGpsTracker.instance.currentPoint?.lng ?? TripGpsTracker.instance.lastPosition?.longitude;
-          if (curLat != null && curLng != null) {
-            _parkedLocation = ParkedLocation(
-              latitude: curLat,
-              longitude: curLng,
-              timestamp: DateTime.now(),
-              bikeId: ble.device?.remoteId.str ?? 'default_bike',
-              bikeName: ble.bikeName ?? _getEffectiveBikeName(ble),
-              batteryPercent: ble.lastTelemetry?.percent,
-              voltage: ble.lastTelemetry?.voltage,
-              address: null,
-              note: null,
-              isLocked: ble.isLocked,
-            );
-          } else {
-            _parkedLocation = null;
-          }
+        _parkedLocation = loc;
+      });
+      _updateCalculatedMetrics();
+      _moveMapToParkedBike(zoom: 17.5);
+      return;
+    }
+
+    // Nếu loc == null: kiểm tra TripGpsTracker hoặc lấy live location
+    double? curLat = TripGpsTracker.instance.currentPoint?.lat ?? TripGpsTracker.instance.lastPosition?.latitude;
+    double? curLng = TripGpsTracker.instance.currentPoint?.lng ?? TripGpsTracker.instance.lastPosition?.longitude;
+
+    if (curLat == null || curLng == null) {
+      try {
+        final livePos = await TripGpsTracker.instance.getCurrentLocation();
+        if (livePos != null) {
+          curLat = livePos.latitude;
+          curLng = livePos.longitude;
         }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+
+    if (curLat != null && curLng != null) {
+      setState(() {
+        _parkedLocation = ParkedLocation(
+          latitude: curLat!,
+          longitude: curLng!,
+          timestamp: DateTime.now(),
+          bikeId: targetBikeId ?? 'default_bike',
+          bikeName: ble.bikeName ?? _getEffectiveBikeName(ble),
+          batteryPercent: ble.lastTelemetry?.percent,
+          voltage: ble.lastTelemetry?.voltage,
+          address: null,
+          note: null,
+          isLocked: ble.isLocked,
+        );
+      });
+      _updateCalculatedMetrics();
+      _moveMapToParkedBike(zoom: 17.5);
+    } else {
+      setState(() {
+        _parkedLocation = null;
       });
       _updateCalculatedMetrics();
     }
@@ -156,10 +203,29 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
         ),
       ).listen((pos) {
         if (!mounted) return;
+        final ble = ref.read(bleProvider);
+        final hadNoParked = _parkedLocation == null;
         setState(() {
           _userPosition = pos;
+          if (hadNoParked) {
+            _parkedLocation = ParkedLocation(
+              latitude: pos.latitude,
+              longitude: pos.longitude,
+              timestamp: DateTime.now(),
+              bikeId: _selectedSavedBike?.id ?? ble.device?.remoteId.str ?? ble.activeBikeId ?? 'default_bike',
+              bikeName: ble.bikeName ?? _getEffectiveBikeName(ble),
+              batteryPercent: ble.lastTelemetry?.percent,
+              voltage: ble.lastTelemetry?.voltage,
+              address: null,
+              note: null,
+              isLocked: ble.isLocked,
+            );
+          }
         });
         _updateCalculatedMetrics();
+        if (hadNoParked || !_hasInitialCentered) {
+          _moveMapToParkedBike(zoom: 17.5);
+        }
       });
     } catch (_) {}
   }
@@ -662,6 +728,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                                       _parkedLocation = loc;
                                     });
                                     _updateCalculatedMetrics();
+                                    _moveMapToParkedBike(zoom: 17.5);
                                   }
                                 },
                               ),
@@ -1134,63 +1201,96 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
           Expanded(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
-              child: FlutterMap(
-                mapController: _mapController,
-                options: MapOptions(
-                  initialCenter: bikePoint,
-                  initialZoom: 17.5,
-                  interactionOptions: const InteractionOptions(
-                    flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
-                  ),
-                ),
+              child: Stack(
                 children: [
-                  MapTileService.buildTileLayer(),
-                  // Tuyến đường đi bộ nét đứt
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: [userPoint, bikePoint],
-                        strokeWidth: 3.0,
-                        color: AppColors.primary,
+                  FlutterMap(
+                    mapController: _mapController,
+                    options: MapOptions(
+                      initialCenter: bikePoint,
+                      initialZoom: 17.5,
+                      onMapReady: () => _moveMapToParkedBike(zoom: 17.5),
+                      onTap: (tapPosition, point) => _moveMapToParkedBike(zoom: 17.5),
+                      interactionOptions: const InteractionOptions(
+                        flags: InteractiveFlag.pinchZoom | InteractiveFlag.drag,
+                      ),
+                    ),
+                    children: [
+                      MapTileService.buildTileLayer(),
+                      // Tuyến đường đi bộ nét đứt
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: [userPoint, bikePoint],
+                            strokeWidth: 3.0,
+                            color: AppColors.primary,
+                          ),
+                        ],
+                      ),
+                      // Marker xe và người dùng
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: bikePoint,
+                            width: 32,
+                            height: 32,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: const Color(0xFFEA580C),
+                                border: Border.all(color: Colors.white, width: 2),
+                                boxShadow: const [
+                                  BoxShadow(color: Color(0x33EA580C), blurRadius: 6),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.two_wheeler_rounded,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          Marker(
+                            point: userPoint,
+                            width: 24,
+                            height: 24,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.primary,
+                                border: Border.all(color: Colors.white, width: 2),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                  // Marker xe và người dùng
-                  MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: bikePoint,
-                        width: 32,
-                        height: 32,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: const Color(0xFFEA580C),
-                            border: Border.all(color: Colors.white, width: 2),
-                            boxShadow: const [
-                              BoxShadow(color: Color(0x33EA580C), blurRadius: 6),
-                            ],
-                          ),
-                          child: const Icon(
-                            Icons.two_wheeler_rounded,
-                            size: 16,
-                            color: Colors.white,
-                          ),
+                  Positioned(
+                    right: 8,
+                    bottom: 8,
+                    child: GestureDetector(
+                      onTap: () => _moveMapToParkedBike(zoom: 17.5),
+                      child: Container(
+                        width: 30,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.15),
+                              blurRadius: 4,
+                              offset: const Offset(0, 1),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.my_location_rounded,
+                          size: 16,
+                          color: AppColors.primary,
                         ),
                       ),
-                      Marker(
-                        point: userPoint,
-                        width: 24,
-                        height: 24,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: AppColors.primary,
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ],
               ),
