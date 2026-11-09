@@ -325,7 +325,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(
+      appBar: _focusMode == DashboardFocusMode.map ? null : AppBar(
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1150,7 +1150,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  /// 2. Phóng to riêng Bản đồ GPS ở chế độ dọc (Portrait Map Zoom)
+  /// 2. Phóng to riêng Bản đồ GPS ở chế độ dọc (Portrait Map Zoom - Full-bleed viền tràn màn hình)
   Widget _buildPortraitMapZoomLayout(
     BuildContext context,
     BleState ble,
@@ -1159,7 +1159,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     bool isLocked,
   ) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 6, 14, 18),
+      padding: EdgeInsets.zero,
       child: CockpitLiveMap(
         height: double.infinity,
         isFullScreen: true,
@@ -1359,7 +1359,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  /// 4. Phóng to riêng Bản đồ GPS ở chế độ ngang (Landscape Map Zoom - 100% full-width)
+  /// 4. Phóng to riêng Bản đồ GPS ở chế độ ngang (Landscape Map Zoom - 100% full-width full-bleed)
   Widget _buildLandscapeMapZoomLayout(
     BuildContext context,
     BleState ble,
@@ -1368,7 +1368,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     bool isLocked,
   ) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+      padding: EdgeInsets.zero,
       child: CockpitLiveMap(
         height: double.infinity,
         isFullScreen: true,

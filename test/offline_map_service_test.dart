@@ -89,24 +89,26 @@ void main() {
     });
 
     test('isValidTileImageBytes correctly accepts PNG, JPEG, WebP and rejects invalid data', () {
-      // (c) PNG hợp lệ (89 50 4E 47 ...)
-      final validPng = Uint8List.fromList([
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
-      ]);
+      // (c) PNG hợp lệ (89 50 4E 47 ...) >= 512 bytes
+      final validPng = Uint8List(512);
+      validPng.setRange(0, 8, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
       expect(OfflineMapService.isValidTileImageBytes(validPng), isTrue);
 
-      // (c) JPEG hợp lệ (FF D8 FF ...)
-      final validJpeg = Uint8List.fromList([
-        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46,
-      ]);
+      // (c) JPEG hợp lệ (FF D8 FF ...) >= 512 bytes
+      final validJpeg = Uint8List(512);
+      validJpeg.setRange(0, 3, [0xFF, 0xD8, 0xFF]);
       expect(OfflineMapService.isValidTileImageBytes(validJpeg), isTrue);
 
-      // (c) WebP hợp lệ ('RIFF' .... 'WEBP')
-      final validWebp = Uint8List.fromList([
-        0x52, 0x49, 0x46, 0x46, 0x20, 0x00, 0x00, 0x00,
-        0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
-      ]);
+      // (c) WebP hợp lệ ('RIFF' .... 'WEBP') >= 512 bytes
+      final validWebp = Uint8List(512);
+      validWebp.setRange(0, 4, [0x52, 0x49, 0x46, 0x46]);
+      validWebp.setRange(8, 12, [0x57, 0x45, 0x42, 0x50]);
       expect(OfflineMapService.isValidTileImageBytes(validWebp), isTrue);
+
+      // (c) Từ chối stub rỗng 103 bytes hoặc ảnh quá nhỏ (< 512 bytes)
+      final stub103Bytes = Uint8List(103);
+      stub103Bytes.setRange(0, 8, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+      expect(OfflineMapService.isValidTileImageBytes(stub103Bytes), isFalse);
 
       // (c) Từ chối HTML error page
       final htmlError = Uint8List.fromList('<!DOCTYPE html><html><body>Error</body></html>'.codeUnits);

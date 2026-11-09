@@ -48,6 +48,19 @@ jobs:
       - name: Get Flutter dependencies
         run: flutter pub get
 
+      - name: Setup Rust Toolchain for iOS
+        run: |
+          rustup target add aarch64-apple-ios
+
+      - name: Build Rust Navigation Static Library (iOS arm64)
+        run: |
+          cd rust/datbike-nav-rs
+          cargo build --target aarch64-apple-ios --release
+          cd ../..
+          mkdir -p ios/Frameworks
+          cp rust/datbike-nav-rs/target/aarch64-apple-ios/release/libdatbike_nav.a ios/Frameworks/
+          echo 'OTHER_LDFLAGS = $(inherited) -force_load $(PROJECT_DIR)/Frameworks/libdatbike_nav.a' >> ios/Flutter/Release.xcconfig
+
       - name: Build iOS Application (No Code Sign)
         run: |
           flutter build ios --release --no-codesign

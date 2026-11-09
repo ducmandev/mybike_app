@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:archive/archive.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -55,7 +57,7 @@ class OfflineRegionPreset {
   });
 }
 
-/// Dịch vụ quản lý tải và lưu trữ bản đồ offline cho My Bike App
+/// Dịch vụ quản lý tải và lưu trữ bản đồ offline cho Dat Bike App
 class OfflineMapService {
   OfflineMapService._();
   static final OfflineMapService instance = OfflineMapService._();
@@ -63,9 +65,9 @@ class OfflineMapService {
   static const String _kSchemaKey = 'offline_tile_cache_schema';
   static const int _kCurrentSchema = 2;
 
-  /// URL template gạch bản đồ OpenStreetMap mặc định toàn hệ thống
+  /// URL template gạch bản đồ OpenStreetMap (Carto Voyager CDN) mặc định toàn hệ thống
   static const String defaultTileUrlTemplate =
-      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+      'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
   Directory? _cacheDir;
   static Directory? _globalCachedDir;
@@ -103,9 +105,11 @@ class OfflineMapService {
   }
 
   /// Kiểm tra tính hợp lệ của dữ liệu ảnh gạch bản đồ thông qua Magic Bytes
+  /// Yêu cầu kích thước tối thiểu 512 bytes: Loại bỏ triệt để file stub rỗng 103 bytes của OSM-FR
+  /// và các stub trong suốt 1x1 (67-68 bytes).
   /// Chấp nhận: PNG (89 50 4E 47), JPEG (FF D8 FF), WebP (RIFF .... WEBP)
   static bool isValidTileImageBytes(Uint8List? bytes) {
-    if (bytes == null || bytes.length < 8) return false;
+    if (bytes == null || bytes.length < 512) return false;
 
     // 1. PNG: 0x89, 0x50, 0x4E, 0x47
     if (bytes[0] == 0x89 &&
@@ -138,10 +142,26 @@ class OfflineMapService {
     return false;
   }
 
+  static Completer<void>? _unpackCompleter;
+  static bool _isBundledReady = false;
+
+  /// Đảm bảo toàn bộ gạch offline đã sẵn sàng trên ổ cứng trước khi nạp
+  Future<void> ensureBundledTilesReady() async {
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (_isBundledReady) return;
+    if (_unpackCompleter != null) {
+      await _unpackCompleter!.future;
+      return;
+    }
+    await unpackBundledTilesIfNeeded();
+  }
+
   @visibleForTesting
   static void resetCacheDirForTesting([Directory? dir]) {
     _globalCachedDir = dir;
     _dirCompleter = null;
+    _unpackCompleter = null;
+    _isBundledReady = false;
     instance._cacheDir = dir;
   }
 
@@ -156,8 +176,8 @@ class OfflineMapService {
     // tránh gọi method channel getApplicationSupportDirectory bị treo
     if (Platform.environment.containsKey('FLUTTER_TEST')) {
       final testDir = Directory('${Directory.systemTemp.path}/datbike_offline_map_tiles');
-      if (!await testDir.exists()) {
-        await testDir.create(recursive: true);
+      if (!testDir.existsSync()) {
+        testDir.createSync(recursive: true);
       }
       _globalCachedDir = testDir;
       _cacheDir = testDir;
@@ -177,6 +197,7 @@ class OfflineMapService {
 
       // Kích hoạt migration schema nền an toàn để xóa sạch file cache legacy dính Carto ở root
       unawaited(migrateCacheSchemaIfNeeded(targetDir: dir));
+      unawaited(unpackBundledTilesIfNeeded());
 
       _dirCompleter!.complete(dir);
       return dir;
@@ -215,7 +236,19 @@ class OfflineMapService {
         final entities = dir.listSync(followLinks: false);
         for (final entity in entities) {
           final baseName = entity.path.split(Platform.pathSeparator).last;
-          if (baseName == 'v2') continue;
+          if (baseName == 'v2') {
+            try {
+              final v2Dir = Directory('${dir.path}/v2');
+              if (v2Dir.existsSync()) {
+                for (final sub in v2Dir.listSync(followLinks: false)) {
+                  if (sub is Directory && sub.path.toLowerCase().contains('carto')) {
+                    try { sub.deleteSync(recursive: true); } catch (_) {}
+                  }
+                }
+              }
+            } catch (_) {}
+            continue;
+          }
           try {
             if (entity is File) {
               entity.deleteSync();
@@ -227,6 +260,50 @@ class OfflineMapService {
       }
       await sp.setInt(_kSchemaKey, _kCurrentSchema);
     } catch (_) {}
+  }
+
+  /// Tự động giải nén các gạch bản đồ offline đóng gói sẵn (assets/offline/hcmc_tiles.zip)
+  /// Giúp app trên Android / iOS có ngay 704 gạch bản đồ TP.HCM mà không cần đợi tải mạng
+  Future<void> unpackBundledTilesIfNeeded() async {
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
+    if (_isBundledReady) return;
+    if (_unpackCompleter != null) return _unpackCompleter!.future;
+
+    _unpackCompleter = Completer<void>();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      const flagKey = 'bundled_hcmc_tiles_unpacked_v2';
+      if (prefs.getBool(flagKey) == true) {
+        _isBundledReady = true;
+        _unpackCompleter!.complete();
+        return;
+      }
+
+      final dir = await getCacheDirectory();
+      final targetKey = generateSourceKey(defaultTileUrlTemplate);
+      final outDir = Directory('${dir.path}/v2/$targetKey');
+      if (!await outDir.exists()) {
+        await outDir.create(recursive: true);
+      }
+
+      final byteData = await rootBundle.load('assets/offline/hcmc_tiles.zip');
+      final bytes = byteData.buffer.asUint8List();
+      final archive = ZipDecoder().decodeBytes(bytes);
+
+      for (final file in archive) {
+        if (file.isFile && file.name.endsWith('.png')) {
+          final outFile = File('${outDir.path}/${file.name}');
+          if (!outFile.existsSync()) {
+            await outFile.writeAsBytes(file.content as List<int>);
+          }
+        }
+      }
+      await prefs.setBool(flagKey, true);
+      _isBundledReady = true;
+      _unpackCompleter!.complete();
+    } catch (_) {
+      _unpackCompleter!.complete();
+    }
   }
 
   /// Đường dẫn file tile local phân vùng theo nguồn: v2/{sourceKey}/{z}_{x}_{y}.png
@@ -254,6 +331,7 @@ class OfflineMapService {
         for (final entry in subDirs) {
           if (entry is Directory) {
             final keyName = entry.path.split(Platform.pathSeparator).last;
+            if (keyName == 'roads') continue;
             if (excludeSourceKey != null && keyName == excludeSourceKey) continue;
             final candidate = File('${entry.path}/$targetFileName');
             if (candidate.existsSync()) {
@@ -263,11 +341,36 @@ class OfflineMapService {
         }
       }
 
+      // 1c. Bỏ qua các thư mục carto bị watermark
       // 2. Tìm trong thư mục gốc (nếu còn file cũ hợp lệ)
       final rootCandidate = File('${dir.path}/$targetFileName');
       if (rootCandidate.existsSync()) {
         return rootCandidate;
       }
+
+      // 3. Tìm trong thư mục bundled offline của ứng dụng (offline package đi kèm bản build)
+      try {
+        final appExeDir = File(Platform.resolvedExecutable).parent;
+        final bundledDirs = [
+          Directory('${appExeDir.path}/offline_map_tiles/v2'),
+          Directory('${appExeDir.path}/data/offline_map_tiles/v2'),
+          Directory('offline_map_tiles/v2'),
+        ];
+        for (final bDir in bundledDirs) {
+          if (bDir.existsSync()) {
+            for (final entry in bDir.listSync(followLinks: false)) {
+              if (entry is Directory) {
+                final kName = entry.path.split(Platform.pathSeparator).last;
+                if (kName == 'roads' || kName.contains('carto')) continue;
+                final candidate = File('${entry.path}/$targetFileName');
+                if (candidate.existsSync()) {
+                  return candidate;
+                }
+              }
+            }
+          }
+        }
+      } catch (_) {}
     } catch (_) {}
     return null;
   }
@@ -313,6 +416,117 @@ class OfflineMapService {
         } catch (_) {}
       }
       await dir.create(recursive: true);
+    } catch (_) {}
+  }
+
+  // =========================================================================
+  // ROAD GRAPH OFFLINE CHO RUST NAVIGATION ENGINE
+  // =========================================================================
+
+  /// Lưu trữ dữ liệu Road Graph thô (OSM Overpass JSON) cho vùng offline
+  Future<void> saveOfflineRoadGraph(
+    String regionKey,
+    String osmJson, {
+    LatLngBounds? bounds,
+  }) async {
+    try {
+      final dir = await getCacheDirectory();
+      final roadsDir = Directory('${dir.path}/v2/roads');
+      if (!await roadsDir.exists()) {
+        await roadsDir.create(recursive: true);
+      }
+      final safeKey = regionKey.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final file = File('${roadsDir.path}/roads_$safeKey.json');
+
+      final data = {
+        'regionKey': safeKey,
+        'minLat': bounds?.south,
+        'maxLat': bounds?.north,
+        'minLng': bounds?.west,
+        'maxLng': bounds?.east,
+        'savedAt': DateTime.now().toIso8601String(),
+        'osmJson': osmJson,
+      };
+      await file.writeAsString(jsonEncode(data));
+    } catch (_) {}
+  }
+
+  /// Nạp dữ liệu Road Graph offline nếu có tệp bao phủ cả start và dest
+  Future<String?> loadOfflineRoadGraph(LatLng start, LatLng dest) async {
+    try {
+      final dir = await getCacheDirectory();
+      final roadsDir = Directory('${dir.path}/v2/roads');
+      if (!roadsDir.existsSync()) return null;
+
+      final entities = roadsDir.listSync(followLinks: false);
+      for (final entity in entities) {
+        if (entity is File && entity.path.endsWith('.json')) {
+          try {
+            final content = entity.readAsStringSync();
+            final map = jsonDecode(content) as Map<String, dynamic>;
+            final minLat = map['minLat'] as num?;
+            final maxLat = map['maxLat'] as num?;
+            final minLng = map['minLng'] as num?;
+            final maxLng = map['maxLng'] as num?;
+            final osmJson = map['osmJson'] as String?;
+
+            if (osmJson != null && osmJson.isNotEmpty) {
+              if (minLat != null && maxLat != null && minLng != null && maxLng != null) {
+                const eps = 0.005;
+                final containsStart = start.latitude >= (minLat - eps) &&
+                    start.latitude <= (maxLat + eps) &&
+                    start.longitude >= (minLng - eps) &&
+                    start.longitude <= (maxLng + eps);
+                final containsDest = dest.latitude >= (minLat - eps) &&
+                    dest.latitude <= (maxLat + eps) &&
+                    dest.longitude >= (minLng - eps) &&
+                    dest.longitude <= (maxLng + eps);
+
+                if (containsStart && containsDest) {
+                  return osmJson;
+                }
+              } else {
+                return osmJson;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Tải ngầm dữ liệu Road Graph OSM phục vụ điều hướng A* offline
+  Future<void> _downloadAndSaveRoadGraph({
+    required LatLngBounds bounds,
+    required String regionKey,
+  }) async {
+    try {
+      const highwayFilter =
+          r'^(trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street)$';
+      final query =
+          '[out:json][timeout:15];(way["highway"~"$highwayFilter"](${bounds.south},${bounds.west},${bounds.north},${bounds.east}););out body;>;out skel qt;';
+      final servers = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter',
+      ];
+      for (final server in servers) {
+        try {
+          final res = await http.post(
+            Uri.parse(server),
+            headers: {
+              'User-Agent': 'DatBikeApp/2.6.31 (mobile-app; contact@dat.bike)',
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: {'data': query},
+          ).timeout(const Duration(seconds: 12));
+
+          if (res.statusCode == 200 && res.body.contains('"elements"')) {
+            await saveOfflineRoadGraph(regionKey, res.body, bounds: bounds);
+            break;
+          }
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 
@@ -510,6 +724,14 @@ class OfflineMapService {
     _cancelRequested = false;
     _pauseRequested = false;
 
+    // Tải trước dữ liệu Road Graph OSM phục vụ điều hướng A* offline trên Engine Rust
+    unawaited(
+      _downloadAndSaveRoadGraph(
+        bounds: bounds,
+        regionKey: regionName,
+      ),
+    );
+
     final tiles = calculateTileList(bounds: bounds, minZoom: minZoom, maxZoom: maxZoom);
     final total = tiles.length;
     int current = 0;
@@ -703,6 +925,11 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
   }
 
   Future<ui.Codec> _loadAsync(OfflineTileImageProvider key, ImageDecoderCallback decode) async {
+    // 0. Chờ gói offline giải nén hoàn tất trên ổ cứng (0ms nếu đã xong, chống race condition)
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      await OfflineMapService.instance.ensureBundledTilesReady();
+    }
+
     // 1. Kiểm tra trong ổ cứng local trước theo phân vùng sourceKey
     final file = await OfflineMapService.instance.getTileFile(
       coordinates.z,
@@ -748,12 +975,24 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
       }
     } catch (_) {}
 
-    // 2. Nếu chưa có trên máy, tải từ mạng và chỉ cache khi ảnh hợp lệ (thử tối đa 2 lần với timeout 12s)
+    // 2. Nếu chưa có trên máy, tải từ mạng với cơ chế đa mirror CDN nhanh (CartoDB OSM)
+    // Đảm bảo không bao giờ bị hiện tượng bản đồ khuyết thiếu tile do nghẽn mạng
     if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      for (int attempt = 0; attempt < 2; attempt++) {
+      final z = coordinates.z;
+      final x = coordinates.x;
+      final y = coordinates.y;
+
+      final targetUrls = <String>[
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/$z/$y/$x',
+        'https://a.tile.openstreetmap.fr/osmfr/$z/$x/$y.png',
+        'https://b.tile.openstreetmap.fr/osmfr/$z/$x/$y.png',
+        url,
+      ];
+
+      for (final targetUrl in targetUrls) {
         try {
-          final uri = Uri.parse(url);
-          final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 12));
+          final uri = Uri.parse(targetUrl);
+          final response = await http.get(uri, headers: headers).timeout(const Duration(seconds: 4));
           final contentType = response.headers['content-type']?.toLowerCase() ?? '';
           final isImageHeader = contentType.startsWith('image/') || contentType.isEmpty;
 
@@ -773,15 +1012,14 @@ class OfflineTileImageProvider extends ImageProvider<OfflineTileImageProvider> {
             final buffer = await ui.ImmutableBuffer.fromUint8List(response.bodyBytes);
             return await decode(buffer);
           }
-        } catch (_) {
-          if (attempt == 0) {
-            await Future.delayed(const Duration(milliseconds: 150));
-          }
-        }
+        } catch (_) {}
       }
     }
 
     // 3. Fallback pixel trong suốt khi offline hoàn toàn và tile chưa tải
+    // Bắt buộc trục xuất key khỏi ImageCache để tránh ngộ độc RAM
+    PaintingBinding.instance.imageCache.evict(key);
+
     final transparentPng = Uint8List.fromList([
       0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
       0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,

@@ -2151,9 +2151,10 @@ class BleController extends Notifier<BleState> {
       }
     } catch (_) {}
 
-    // 3. Scan nhanh chủ động (Active Scan 2-3s) trên cả iOS & Android để làm mới BLE cache và bắt kịp gói tin quảng bá
+    // 3. Scan nhanh chủ động (Active Scan 2s) trên Android để làm mới BLE cache và bắt kịp gói tin quảng bá.
+    // Trên iOS: Bỏ qua bước này vì CoreBluetooth tự quản lý cache; scan với filter service lạ sẽ gây treo 3s và xung đột CBCentralManager.
     try {
-      if (!kIsWeb && !FlutterBluePlus.isScanningNow) {
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android && !FlutterBluePlus.isScanningNow) {
         StreamSubscription? scanSub;
         final completer = Completer<void>();
         scanSub = FlutterBluePlus.scanResults.listen((results) {
@@ -2168,12 +2169,11 @@ class BleController extends Notifier<BleState> {
         });
         await FlutterBluePlus.startScan(
           withRemoteIds: [device.remoteId.str],
-          withServices: [Guid(Gatt.dashboardService)],
-          timeout: const Duration(seconds: 3),
+          timeout: const Duration(seconds: 2),
           androidScanMode: AndroidScanMode.lowLatency,
         );
         await completer.future.timeout(
-          const Duration(seconds: 3),
+          const Duration(seconds: 2),
           onTimeout: () {},
         );
         await scanSub.cancel();
@@ -2313,9 +2313,15 @@ class BleController extends Notifier<BleState> {
         Duration(milliseconds: Gatt.dashboardPollMs), (_) => _pollDashboard());
     await _pollDashboard(); // đọc ngay 1 lần
     if (state.isAuthorized) {
+      // Giãn cách các tác vụ đọc thông số xe: refreshFwSettings ở 1500ms, fetchVehicleDiagnostics ở 4000ms
+      // để chống nghẽn hàng đợi GATT trên CoreBluetooth iOS (vốn chạy ở MTU = 23).
       Future.delayed(const Duration(milliseconds: 1500), () {
         if (state.phase == BlePhase.connected && state.isAuthorized) {
           unawaited(refreshFwSettings());
+        }
+      });
+      Future.delayed(const Duration(milliseconds: 4000), () {
+        if (state.phase == BlePhase.connected && state.isAuthorized) {
           unawaited(fetchVehicleDiagnostics());
         }
       });
@@ -2562,6 +2568,18 @@ class BleController extends Notifier<BleState> {
       if (decrypted.length >= 41) {
         final m = decodeDashboardStruct(decrypted);
         return _isTelemetrySane(m);
+      }
+      // Ở ATT_MTU = 23 (iOS), ATT Read Response nhận tối đa 22B -> decrypted nhận 18B.
+      // 18B bao gồm odo (0..4) và speed (4..8) float32 LE. Nếu giải mã sai key (keystream rác),
+      // IEEE 754 float sẽ sinh ra số vô lý (NaN, âm, 10^30,...).
+      if (decrypted.length >= 18) {
+        final bd = ByteData.sublistView(decrypted);
+        final odo = bd.getFloat32(0, Endian.little);
+        final speed = bd.getFloat32(4, Endian.little);
+        if (!speed.isNaN && speed >= 0 && speed <= 250 &&
+            !odo.isNaN && odo >= 0 && odo <= 500000) {
+          return true;
+        }
       }
     } catch (_) {}
     return false;
@@ -3580,16 +3598,37 @@ class BleController extends Notifier<BleState> {
     final perBikePw = (dev != null)
         ? await VehicleStorageService.instance.getBikePassword(dev.remoteId.str)
         : null;
-    final stored = perBikePw ?? prefs.getString(_kBikePassword);
-    final hasStoredPassword = stored != null && stored.isNotEmpty;
-    // PIN ưu tiên: password truyền vào (nếu có) -> password đã lưu trong prefs -> rỗng
-    final pin = (password != null && password.isNotEmpty)
+    final legacyStored = prefs.getString(_kBikePassword);
+
+    // Thu thập danh sách mật khẩu ứng viên (candidates):
+    // 1. Password truyền vào trực tiếp (nếu có)
+    // 2. Mật khẩu lưu theo remoteId của xe (perBikePw)
+    // 3. Mật khẩu lưu trong prefs legacy (_kBikePassword)
+    // 4. Mật khẩu từ tất cả các xe đã lưu trong garage (cực kỳ quan trọng trên iOS khi remoteId là NSUUID ngẫu nhiên)
+    final candidatePasswords = <String>{};
+    if (password != null && password.isNotEmpty) candidatePasswords.add(password);
+    if (perBikePw != null && perBikePw.isNotEmpty) candidatePasswords.add(perBikePw);
+    if (legacyStored != null && legacyStored.isNotEmpty) candidatePasswords.add(legacyStored);
+    try {
+      final savedBikes = await VehicleStorageService.instance.loadSavedBikes();
+      for (final b in savedBikes) {
+        if (b.password != null && b.password!.isNotEmpty) {
+          candidatePasswords.add(b.password!);
+        }
+      }
+    } catch (_) {}
+
+    final stored = perBikePw ?? legacyStored ?? (candidatePasswords.isNotEmpty ? candidatePasswords.first : null);
+    final hasStoredPassword = candidatePasswords.isNotEmpty;
+    // PIN ưu tiên: password truyền vào (nếu có) -> candidate đầu tiên -> rỗng
+    var pin = (password != null && password.isNotEmpty)
         ? password
-        : (hasStoredPassword ? stored : '');
+        : (hasStoredPassword ? candidatePasswords.first : '');
 
     BleLogger.instance.event('auto_handshake_start', {
       'token': token,
       'pin': pin,
+      'candidates_count': candidatePasswords.length,
       'chars_count': effectiveChars.length,
       'has_stored': hasStoredPassword,
       'force_register': forceRegister,
@@ -3674,7 +3713,7 @@ class BleController extends Notifier<BleState> {
       } else {
         // SLOW-PATH (status1 == 0x00 hoặc forceRegister):
         // ===== BƯỚC 1.5: Giải Challenge-Response SHA-256 trên c8eaf27b (appAuthChar) =====
-        if (pin.isNotEmpty && appAuthChar != null && !forceRegister) {
+        if (candidatePasswords.isNotEmpty && appAuthChar != null && !forceRegister) {
           try {
             final challengeRaw = await appAuthChar
                 .read()
@@ -3684,28 +3723,35 @@ class BleController extends Notifier<BleState> {
               'len': challengeRaw.length,
             });
             if (challengeRaw.length >= 4) {
-              final respHex = BikeSessionCrypto.computeAppAuthChallengeResponse(
-                challengeRaw: challengeRaw,
-                password: pin,
-              );
-              BleLogger.instance.event('auto_handshake_app_auth_solve', {
-                'respHex': respHex,
-                'candidate_pw': pin,
-              });
-              await appAuthChar
-                  .write(ascii.encode(respHex), withoutResponse: false)
-                  .timeout(const Duration(milliseconds: 800));
-              // Delay ngắn như capture btsnoop (~40-50ms)
-              await Future.delayed(const Duration(milliseconds: 50));
-              try {
-                final ack = await appAuthChar
-                    .read()
-                    .timeout(const Duration(milliseconds: 600), onTimeout: () => Uint8List(0));
-                BleLogger.instance.event('auto_handshake_app_auth_ack', {
-                  'hex': BleLogger.hex(ack),
-                  'verified': ack.isNotEmpty && (ack[0] & 1) == 1,
+              for (final candidatePw in candidatePasswords) {
+                final respHex = BikeSessionCrypto.computeAppAuthChallengeResponse(
+                  challengeRaw: challengeRaw,
+                  password: candidatePw,
+                );
+                BleLogger.instance.event('auto_handshake_app_auth_solve', {
+                  'respHex': respHex,
+                  'candidate_pw': candidatePw,
                 });
-              } catch (_) {}
+                await appAuthChar
+                    .write(ascii.encode(respHex), withoutResponse: false)
+                    .timeout(const Duration(milliseconds: 800));
+                // Delay ngắn như capture btsnoop (~40-50ms)
+                await Future.delayed(const Duration(milliseconds: 50));
+                try {
+                  final ack = await appAuthChar
+                      .read()
+                      .timeout(const Duration(milliseconds: 600), onTimeout: () => Uint8List(0));
+                  final isVerified = ack.isNotEmpty && (ack[0] & 1) == 1;
+                  BleLogger.instance.event('auto_handshake_app_auth_ack', {
+                    'hex': BleLogger.hex(ack),
+                    'verified': isVerified,
+                  });
+                  if (isVerified) {
+                    pin = candidatePw;
+                    break;
+                  }
+                } catch (_) {}
+              }
             }
           } catch (e) {
             BleLogger.instance.event('auto_handshake_app_auth_error', {'error': '$e'});
@@ -3810,17 +3856,18 @@ class BleController extends Notifier<BleState> {
           await Future.delayed(const Duration(milliseconds: 100));
           final r1 = await dash
               .read()
-              .timeout(const Duration(milliseconds: 800), onTimeout: () => Uint8List(0));
+              .timeout(const Duration(milliseconds: 1000), onTimeout: () => Uint8List(0));
           var live = _isValidTelemetry(sk, r1);
           final c1 = ctr(r1);
           var c2 = c1;
           if (!live) {
-            await Future.delayed(const Duration(milliseconds: 700));
+            // Chu kỳ phát telemetry của xe là 1Hz (1000ms), cần chờ >= 1100ms để counter xe nhảy số
+            await Future.delayed(const Duration(milliseconds: 1100));
             final r2 = await dash
                 .read()
-                .timeout(const Duration(milliseconds: 800), onTimeout: () => Uint8List(0));
+                .timeout(const Duration(milliseconds: 1000), onTimeout: () => Uint8List(0));
             c2 = ctr(r2);
-            live = _isValidTelemetry(sk, r2) || (c1 >= 0 && c2 > c1);
+            live = _isValidTelemetry(sk, r2) || (c1 >= 0 && c2 != c1);
           }
           BleLogger.instance.event('auto_handshake_session_check',
               {'candidate': label, 'password': pw, 'counter1': c1,
@@ -3837,48 +3884,35 @@ class BleController extends Notifier<BleState> {
       var livePw = '';
       Uint8List? liveKey;
 
-      // (a) Thử candidate password (pin)
-      if (pin.isNotEmpty) {
+      // (a) Thử lần lượt các ứng viên mật khẩu (candidatePasswords)
+      for (final cand in candidatePasswords) {
+        if (live) break;
         _writeCounter = 0;
-    _dashboardFailStreak = 0;
-        live = await tryPassword('candidate "$pin"', pin, saltNonce);
+        _dashboardFailStreak = 0;
+        live = await tryPassword('candidate "$cand"', cand, saltNonce);
         if (!live) {
           _writeCounter = 0;
-    _dashboardFailStreak = 0;
+          _dashboardFailStreak = 0;
           final postNonce15 = Uint8List.fromList(acceptedNonce.sublist(0, 15));
-          live = await tryPassword('candidate "$pin" (postNonce)', pin, postNonce15);
+          live = await tryPassword('candidate "$cand" (postNonce)', cand, postNonce15);
           if (live) {
-            livePw = pin;
-            liveKey = _sessionKeyOf(token, pin, postNonce15);
-            await prefs.setString(_kBikePassword, pin);
+            livePw = cand;
+            liveKey = _sessionKeyOf(token, cand, postNonce15);
+            await prefs.setString(_kBikePassword, cand);
+            if (dev != null) {
+              await VehicleStorageService.instance.setBikePassword(dev.remoteId.str, cand);
+            }
           }
-        } else if (live) {
-          livePw = pin;
-          liveKey = _sessionKeyOf(token, pin, saltNonce);
-          await prefs.setString(_kBikePassword, pin);
+        } else {
+          livePw = cand;
+          liveKey = _sessionKeyOf(token, cand, saltNonce);
+          await prefs.setString(_kBikePassword, cand);
+          if (dev != null) {
+            await VehicleStorageService.instance.setBikePassword(dev.remoteId.str, cand);
+          }
         }
       }
-      // (b) password đã register lần trước (prefs) nếu khác pin
-      if (!live && hasStoredPassword && stored != pin) {
-        _writeCounter = 0;
-    _dashboardFailStreak = 0;
-        live = await tryPassword('registered "$stored"', stored, saltNonce);
-        if (!live) {
-          _writeCounter = 0;
-    _dashboardFailStreak = 0;
-          final postNonce15 = Uint8List.fromList(acceptedNonce.sublist(0, 15));
-          live = await tryPassword('registered "$stored" (postNonce)', stored, postNonce15);
-          if (live) {
-            livePw = stored;
-            liveKey = _sessionKeyOf(token, stored, postNonce15);
-            await prefs.setString(_kBikePassword, stored);
-          }
-        } else if (live) {
-          livePw = stored;
-          liveKey = _sessionKeyOf(token, stored, saltNonce);
-          await prefs.setString(_kBikePassword, stored);
-        }
-      }
+
       // (c) SELF-REGISTER: Chỉ cho phép tự động khi chưa từng có password lưu (!hasStoredPassword)
       // hoặc khi người dùng bấm nút Force Register (forceRegister == true)
       if (!live && appAuthChar != null && (!hasStoredPassword || forceRegister)) {
@@ -3941,12 +3975,15 @@ class BleController extends Notifier<BleState> {
               'password': newPw,
             });
             _writeCounter = 0;
-    _dashboardFailStreak = 0;
+            _dashboardFailStreak = 0;
             live = await tryPassword('self-registered', newPw, n2);
             if (live) {
               livePw = newPw;
               liveKey = _sessionKeyOf(token, newPw, n2);
               await prefs.setString(_kBikePassword, newPw);
+              if (dev != null) {
+                await VehicleStorageService.instance.setBikePassword(dev.remoteId.str, newPw);
+              }
             }
           }
         }
@@ -3954,8 +3991,11 @@ class BleController extends Notifier<BleState> {
 
       // Token lên 87efab0d nếu session sống (đồng bộ giờ 44e2bde6 đã thực hiện trong tryPassword)
       if (live && liveKey != null) {
-        if (dev != null && livePw.isNotEmpty) {
-          unawaited(VehicleStorageService.instance.setBikePassword(dev.remoteId.str, livePw));
+        if (livePw.isNotEmpty) {
+          await prefs.setString(_kBikePassword, livePw);
+          if (dev != null) {
+            unawaited(VehicleStorageService.instance.setBikePassword(dev.remoteId.str, livePw));
+          }
         }
         final sessionUuidChar = find(Gatt.sessionUuid);
         if (sessionUuidChar != null) {
