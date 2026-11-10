@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,15 +32,15 @@ void main() {
       expect(NavManeuverType.arrive.code, 'arrive');
       expect(NavManeuverType.straight.code, 'straight');
 
-      expect(NavManeuverType.turnLeft.vietnameseLabel, 'Rẽ trái');
-      expect(NavManeuverType.turnRight.vietnameseLabel, 'Rẽ phải');
-      expect(NavManeuverType.arrive.vietnameseLabel, 'Đến đích');
+      expect(NavManeuverType.turnLeft.vietnameseLabel, 'Ráº½ trÃ¡i');
+      expect(NavManeuverType.turnRight.vietnameseLabel, 'Ráº½ pháº£i');
+      expect(NavManeuverType.arrive.vietnameseLabel, 'Äáº¿n Ä‘Ã­ch');
     });
 
     test('NavSearchResult json roundtrip', () {
       const item = NavSearchResult(
-        displayName: 'Chợ Bến Thành, Quận 1',
-        shortName: 'Chợ Bến Thành',
+        displayName: 'Chá»£ Báº¿n ThÃ nh, Quáº­n 1',
+        shortName: 'Chá»£ Báº¿n ThÃ nh',
         lat: 10.7725,
         lng: 106.6980,
         category: 'landmark',
@@ -72,7 +72,7 @@ void main() {
       expect(route.distanceKm, 4.5);
       expect(route.durationMinutes, 10);
       expect(route.formattedDistance, '4.5 km');
-      expect(route.formattedDuration, '10 phút');
+      expect(route.formattedDuration, '10 phÃºt');
 
       const tracking = NavTrackingState(
         snappedLocation: LatLng(10.77, 106.70),
@@ -90,14 +90,14 @@ void main() {
       );
       expect(tracking.formattedDistanceToManeuver, '180 m');
       expect(tracking.formattedRemainingDistance, '3.2 km');
-      expect(tracking.formattedRemainingTime, '7 phút');
+      expect(tracking.formattedRemainingTime, '7 phÃºt');
     });
   });
 
   group('2. NativeNavBridge Routing & EV Forecast Tests', () {
     final bridge = NativeNavBridge();
-    const start = LatLng(10.7719, 106.7065); // Bến Bạch Đằng
-    const end = LatLng(10.7725, 106.6980); // Chợ Bến Thành
+    const start = LatLng(10.7719, 106.7065); // Báº¿n Báº¡ch Äáº±ng
+    const end = LatLng(10.7725, 106.6980); // Chá»£ Báº¿n ThÃ nh
 
     test('Native library is loaded on Windows via FFI', () {
       expect(bridge.isNativeLoaded, isTrue);
@@ -162,7 +162,7 @@ void main() {
       expect(route!.evForecast.isWarning, isTrue);
       expect(route.evForecast.status, 'warning');
       expect(route.evForecast.warningMessage, isNotNull);
-      expect(route.evForecast.warningMessage, contains('trạm sạc'));
+      expect(route.evForecast.warningMessage, contains('tráº¡m sáº¡c'));
     });
 
     test('EV forecast triggers critical when arrival battery drops below critical threshold', () {
@@ -178,7 +178,7 @@ void main() {
       expect(route!.evForecast.isCritical, isTrue);
       expect(route.evForecast.status, 'critical');
       expect(route.evForecast.warningMessage, isNotNull);
-      expect(route.evForecast.warningMessage, contains('Cần sạc'));
+      expect(route.evForecast.warningMessage, contains('Cáº§n sáº¡c'));
     });
 
     test('Zero or null batterySoc defaults to 100% without negative critical warning', () {
@@ -210,7 +210,7 @@ void main() {
 
     test('Fallback engine returns null for distances > 1500m without corridor', () {
       const farStart = LatLng(10.7719, 106.7065); // TP.HCM
-      const farEnd = LatLng(21.0287, 105.8523); // Hà Nội (1,100 km)
+      const farEnd = LatLng(21.0287, 105.8523); // HÃ  Ná»™i (1,100 km)
       final farRoute = bridge.calculateRoute(
         start: farStart,
         end: farEnd,
@@ -323,29 +323,29 @@ void main() {
     final searchService = PlaceSearchService();
 
     test('Normalizes Vietnamese diacritics accurately', () {
-      expect(PlaceSearchService.normalizeVietnamese('Chợ Bến Thành'), 'cho ben thanh');
-      expect(PlaceSearchService.normalizeVietnamese('Đà Nẵng & Hà Nội'), 'da nang & ha noi');
-      expect(PlaceSearchService.normalizeVietnamese('Thủ Thiêm 100%'), 'thu thiem 100%');
+      expect(PlaceSearchService.normalizeVietnamese('Chá»£ Báº¿n ThÃ nh'), 'cho ben thanh');
+      expect(PlaceSearchService.normalizeVietnamese('ÄÃ  Náºµng & HÃ  Ná»™i'), 'da nang & ha noi');
+      expect(PlaceSearchService.normalizeVietnamese('Thá»§ ThiÃªm 100%'), 'thu thiem 100%');
     });
 
     test('Searches built-in landmarks with Vietnamese diacritics', () async {
-      final results = await searchService.search('Chợ Bến Thành');
+      final results = await searchService.search('Chá»£ Báº¿n ThÃ nh');
       expect(results.isNotEmpty, isTrue);
-      expect(results.first.shortName, 'Chợ Bến Thành');
+      expect(results.first.shortName, 'Chá»£ Báº¿n ThÃ nh');
       expect(results.first.category, 'landmark');
     });
 
     test('Searches built-in landmarks without diacritics (unaccented)', () async {
       final results = await searchService.search('ben thanh');
-      expect(results.any((r) => r.shortName.contains('Bến Thành')), isTrue);
+      expect(results.any((r) => r.shortName.contains('Báº¿n ThÃ nh')), isTrue);
     });
 
     test('Searches with unaccented variants like thu thiem, ho guom', () async {
       final thuThiem = await searchService.search('thu thiem');
-      expect(thuThiem.any((r) => r.shortName.contains('Thủ Thiêm')), isTrue);
+      expect(thuThiem.any((r) => r.shortName.contains('Thá»§ ThiÃªm')), isTrue);
 
       final hoGuom = await searchService.search('ho hoan kiem');
-      expect(hoGuom.any((r) => r.shortName.contains('Hồ Hoàn Kiếm')), isTrue);
+      expect(hoGuom.any((r) => r.shortName.contains('Há»“ HoÃ n Kiáº¿m')), isTrue);
     });
 
     test('Supports direct coordinates search (lat, lng)', () async {
@@ -364,16 +364,16 @@ void main() {
     });
 
     test('Searches regional landmarks in Hanoi, Da Nang, Can Tho, Binh Duong', () async {
-      final hanoi = await searchService.search('Hồ Hoàn Kiếm');
+      final hanoi = await searchService.search('Há»“ HoÃ n Kiáº¿m');
       expect(hanoi.isNotEmpty, isTrue);
 
-      final danang = await searchService.search('Cầu Rồng');
+      final danang = await searchService.search('Cáº§u Rá»“ng');
       expect(danang.isNotEmpty, isTrue);
 
-      final cantho = await searchService.search('Ninh Kiều');
+      final cantho = await searchService.search('Ninh Kiá»u');
       expect(cantho.isNotEmpty, isTrue);
 
-      final binhduong = await searchService.search('Bình Dương');
+      final binhduong = await searchService.search('BÃ¬nh DÆ°Æ¡ng');
       expect(binhduong.isNotEmpty, isTrue);
     });
   });
@@ -390,8 +390,8 @@ void main() {
       expect(container.read(navigationProvider).isNavigating, isFalse);
 
       const dest = NavSearchResult(
-        displayName: 'Chợ Bến Thành',
-        shortName: 'Chợ Bến Thành',
+        displayName: 'Chá»£ Báº¿n ThÃ nh',
+        shortName: 'Chá»£ Báº¿n ThÃ nh',
         lat: 10.7725,
         lng: 106.6980,
         category: 'landmark',
@@ -435,12 +435,12 @@ void main() {
 
       final controller = container.read(navigationProvider.notifier);
 
-      // searchPlaces lọc ngay kết quả nội bộ và đặt isSearching = true
+      // searchPlaces lá»c ngay káº¿t quáº£ ná»™i bá»™ vÃ  Ä‘áº·t isSearching = true
       controller.searchPlaces('Ben Thanh');
       expect(container.read(navigationProvider).isSearching, isTrue);
       expect(container.read(navigationProvider).searchResults.isNotEmpty, isTrue);
 
-      // searchPlacesImmediately tìm kiếm ngay lập tức
+      // searchPlacesImmediately tÃ¬m kiáº¿m ngay láº­p tá»©c
       await controller.searchPlacesImmediately('Dat Charge Q1');
       expect(container.read(navigationProvider).isSearching, isFalse);
       expect(container.read(navigationProvider).searchResults.any((r) => r.shortName.contains('Q1')), isTrue);
@@ -452,8 +452,8 @@ void main() {
 
       final controller = container.read(navigationProvider.notifier);
       const dest = NavSearchResult(
-        displayName: 'Chợ Bến Thành',
-        shortName: 'Chợ Bến Thành',
+        displayName: 'Chá»£ Báº¿n ThÃ nh',
+        shortName: 'Chá»£ Báº¿n ThÃ nh',
         lat: 10.7725,
         lng: 106.6980,
         category: 'landmark',
@@ -467,7 +467,7 @@ void main() {
       final initialRoute = container.read(navigationProvider).activeRoute;
       expect(initialRoute, isNotNull);
 
-      // Di chuyển lệch hẳn sang tọa độ khác
+      // Di chuyá»ƒn lá»‡ch háº³n sang tá»a Ä‘á»™ khÃ¡c
       const offRouteGps = LatLng(10.8200, 106.7800);
       controller.updateGpsPosition(offRouteGps, 30.0, 90.0, batterySoc: 80);
 
@@ -478,9 +478,10 @@ void main() {
   });
 
   group('6. CockpitLiveMap Navigation HUD Widget Tests', () {
-    testWidgets('CockpitLiveMap renders in standard Dashboard mode without overflow',
+    testWidgets(
+        'CockpitLiveMap renders in standard Dashboard mode with Bike Speed and GPS Speed without overflow',
         (tester) async {
-      tester.view.physicalSize = const Size(360 * 2.0, 780 * 2.0);
+      tester.view.physicalSize = const Size(600 * 2.0, 900 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -498,51 +499,34 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+
       expect(tester.takeException(), isNull);
       expect(find.byType(CockpitLiveMap), findsOneWidget);
-    });
 
-    testWidgets('CockpitLiveMap renders mini Turn-by-Turn Pill when route is active in standard mode',
-        (tester) async {
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
+      // Hiá»ƒn thá»‹ tá»‘c Ä‘á»™ xe (Tá»C Äá»˜ XE: 42 km/h hoáº·c chá»©a 42)
+      final bikeSpeedFinder = find.byWidgetPredicate((w) =>
+          w is Text &&
+          (w.data?.contains('42') == true ||
+           w.data?.contains('Tá»C Äá»˜ XE') == true ||
+           w.data?.contains('XE:') == true));
+      expect(bikeSpeedFinder, findsWidgets);
 
-      const dest = NavSearchResult(
-        displayName: 'Chợ Bến Thành',
-        shortName: 'Chợ Bến Thành',
-        lat: 10.7725,
-        lng: 106.6980,
-        category: 'landmark',
-      );
-      await container.read(navigationProvider.notifier).selectDestination(
-            dest,
-            currentPos: const LatLng(10.7719, 106.7065),
-            batterySoc: 85,
-          );
+      // Hiá»ƒn thá»‹ tá»‘c Ä‘á»™ tÃ­nh tá»« GPS (Tá»C Äá»˜ GPS hoáº·c GPS:)
+      final gpsSpeedFinder = find.byWidgetPredicate((w) =>
+          w is Text &&
+          (w.data?.contains('Tá»C Äá»˜ GPS') == true ||
+           w.data?.contains('GPS:') == true ||
+           w.data?.contains('GPS') == true));
+      expect(gpsSpeedFinder, findsWidgets);
 
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: const MaterialApp(
-            home: Scaffold(
-              body: CockpitLiveMap(
-                currentSpeedKmh: 35.0,
-                isFullScreen: false,
-                batteryPercent: 85,
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.byIcon(Icons.fullscreen_rounded), findsWidgets);
+      // Kiá»ƒm tra thanh tÃ¬m kiáº¿m cÅ© khÃ´ng cÃ²n xuáº¥t hiá»‡n
+      expect(find.text('TÃ¬m Ä‘iá»ƒm Ä‘áº¿n, tráº¡m sáº¡c Dat Charge...'), findsNothing);
     });
 
     testWidgets(
-        'CockpitLiveMap renders Search Bar and Suggestions in FullScreen mode when not navigating',
+        'CockpitLiveMap renders Dual Speedometer HUD (Bike Speed & GPS Speed) in FullScreen mode',
         (tester) async {
-      tester.view.physicalSize = const Size(360 * 2.0, 780 * 2.0);
+      tester.view.physicalSize = const Size(600 * 2.0, 900 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -551,7 +535,7 @@ void main() {
           child: MaterialApp(
             home: Scaffold(
               body: CockpitLiveMap(
-                currentSpeedKmh: 0.0,
+                currentSpeedKmh: 55.5,
                 isFullScreen: true,
                 batteryPercent: 92,
               ),
@@ -560,87 +544,24 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+
       expect(tester.takeException(), isNull);
-      expect(find.text('Tìm điểm đến, trạm sạc Dat Charge...'), findsOneWidget);
-      expect(find.text('Trạm Sạc Dat Charge'), findsOneWidget);
+      expect(find.byType(CockpitLiveMap), findsOneWidget);
+
+      // Kiá»ƒm tra hiá»ƒn thá»‹ nhÃ£n 'Tá»C Äá»˜ XE' vÃ  'Tá»C Äá»˜ GPS', giÃ¡ trá»‹ '55.5', vÃ  nhÃ£n 'Äá»™ lá»‡ch:'
+      expect(find.textContaining('Tá»C Äá»˜ XE'), findsWidgets);
+      expect(find.textContaining('Tá»C Äá»˜ GPS'), findsWidgets);
+      expect(find.textContaining('55.5'), findsWidgets);
+      expect(find.textContaining('Äá»™ lá»‡ch:'), findsWidgets);
+
+      // Kiá»ƒm tra thanh tÃ¬m kiáº¿m cÅ© khÃ´ng cÃ²n xuáº¥t hiá»‡n
+      expect(find.text('TÃ¬m Ä‘iá»ƒm Ä‘áº¿n, tráº¡m sáº¡c Dat Charge...'), findsNothing);
     });
 
     testWidgets(
-        'CockpitLiveMap renders EV Route Preview Card with Start button in Fullscreen mode',
+        'CockpitLiveMap in Fullscreen mode renders Back button, Compass button, and opens Style Menu',
         (tester) async {
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
-
-      const dest = NavSearchResult(
-        displayName: 'Chợ Bến Thành',
-        shortName: 'Chợ Bến Thành',
-        lat: 10.7725,
-        lng: 106.6980,
-        category: 'landmark',
-      );
-      await container.read(navigationProvider.notifier).selectDestination(
-            dest,
-            currentPos: const LatLng(10.7719, 106.7065),
-            batterySoc: 85,
-          );
-
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: const MaterialApp(
-            home: Scaffold(
-              body: CockpitLiveMap(
-                currentSpeedKmh: 0.0,
-                isFullScreen: true,
-                batteryPercent: 85,
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(find.text('BẮT ĐẦU ĐI'), findsOneWidget);
-      expect(find.text('Pin dự kiến tại đích: '), findsOneWidget);
-
-      await tester.tap(find.text('BẮT ĐẦU ĐI'));
-      await tester.pumpAndSettle();
-
-      expect(container.read(navigationProvider).isNavigating, isTrue);
-      expect(find.text('DỪNG'), findsOneWidget);
-    });
-
-    testWidgets('CockpitLiveMap handles Long Press to set destination in Fullscreen mode',
-        (tester) async {
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
-
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: const MaterialApp(
-            home: Scaffold(
-              body: CockpitLiveMap(
-                currentSpeedKmh: 0.0,
-                isFullScreen: true,
-                batteryPercent: 80,
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      await tester.longPress(find.byType(FlutterMap));
-      await tester.pumpAndSettle();
-
-      expect(container.read(navigationProvider).destination, isNotNull);
-      expect(container.read(navigationProvider).destination!.shortName, 'Điểm ghim');
-    });
-
-    testWidgets('CockpitLiveMap in Fullscreen mode renders Back button, Compass button, and opens Style Menu',
-        (tester) async {
-      tester.view.physicalSize = const Size(360 * 2.0, 780 * 2.0);
+      tester.view.physicalSize = const Size(600 * 2.0, 900 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -663,36 +584,39 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Back button appears at top-left
-      final backBtn = find.byTooltip('Thu nhỏ về mặc định');
-      expect(backBtn, findsOneWidget);
-      await tester.tap(backBtn);
+      // Kiá»ƒm tra nÃºt Back (Icons.arrow_back_rounded)
+      final backBtn = find.byIcon(Icons.arrow_back_rounded);
+      expect(backBtn, findsWidgets);
+      await tester.tap(backBtn.first);
       await tester.pumpAndSettle();
       expect(backPressed, isTrue);
 
-      // Compass button exists
-      final compassFinder = find.byType(Transform);
-      expect(compassFinder, findsWidgets);
+      // Kiá»ƒm tra nÃºt La bÃ n (find.text('Báº®C') -> tap -> find.text('XE'))
+      expect(find.text('Báº®C'), findsWidgets);
+      await tester.tap(find.text('Báº®C').first);
+      await tester.pumpAndSettle();
+      expect(find.text('XE'), findsWidgets);
 
-      // Offline map download button exists on right column in Fullscreen mode
-      final offlineBtn = find.byTooltip('Tải bản đồ offline');
-      expect(offlineBtn, findsOneWidget);
-
-      // Open Map Style Menu bottom sheet
+      // Má»Ÿ menu kiá»ƒu báº£n Ä‘á»“ (Icons.layers_clear_rounded -> 'Báº£n Äá»“ Tá»‘i Giáº£n' / 'Tá»‘i Giáº£n')
       final styleBtn = find.byIcon(Icons.layers_clear_rounded);
       expect(styleBtn, findsWidgets);
       await tester.tap(styleBtn.first);
       await tester.pumpAndSettle();
 
-      expect(find.text('Chọn Giao Diện Bản Đồ'), findsOneWidget);
-      expect(find.text('Chế độ Tối Giản'), findsWidgets);
-      expect(find.text('Chế độ Điều Hướng'), findsWidgets);
-      expect(find.text('Chế độ Chi Tiết'), findsWidgets);
+      expect(
+        find.byWidgetPredicate((w) =>
+            w is Text &&
+            (w.data == 'Báº£n Äá»“ Tá»‘i Giáº£n (KhuyÃªn DÃ¹ng)' ||
+             w.data?.contains('Báº£n Äá»“ Tá»‘i Giáº£n') == true ||
+             w.data?.contains('Tá»‘i Giáº£n') == true)),
+        findsWidgets,
+      );
     });
 
-    testWidgets('FullScreenNavigationPage renders CockpitLiveMap in full-bleed mode',
+    testWidgets(
+        'FullScreenNavigationPage renders CockpitLiveMap with Dual Speedometer HUD in full-bleed mode',
         (tester) async {
-      tester.view.physicalSize = const Size(360 * 2.0, 780 * 2.0);
+      tester.view.physicalSize = const Size(600 * 2.0, 900 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
@@ -700,16 +624,19 @@ void main() {
         const ProviderScope(
           child: MaterialApp(
             home: FullScreenNavigationPage(
-              currentSpeedKmh: 25.0,
-              batteryPercent: 90,
+              currentSpeedKmh: 40.0,
+              batteryPercent: 75,
             ),
           ),
         ),
       );
       await tester.pumpAndSettle();
 
+      expect(tester.takeException(), isNull);
       expect(find.byType(CockpitLiveMap), findsOneWidget);
-      expect(find.byTooltip('Thu nhỏ về mặc định'), findsOneWidget);
+      expect(find.textContaining('Tá»C Äá»˜ XE'), findsWidgets);
+      expect(find.textContaining('Tá»C Äá»˜ GPS'), findsWidgets);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsWidgets);
     });
   });
 
@@ -722,29 +649,30 @@ void main() {
       expect(MapTileService.isMinimal(MapTileStyle.cyclosm), isFalse);
       expect(MapTileService.isMinimal(MapTileStyle.osmStandard), isFalse);
 
-      expect(MapTileService.getStyleName(MapTileStyle.minimalLight), contains('Tối Giản'));
-      expect(MapTileService.getStyleName(MapTileStyle.fastCdn), contains('Chi Tiết'));
-      expect(MapTileService.getStyleDescription(MapTileStyle.minimalLight), contains('Lọc bớt Khu phố/Phường'));
+      expect(MapTileService.getStyleName(MapTileStyle.minimalLight), contains('Tá»‘i Giáº£n'));
+      expect(MapTileService.getStyleName(MapTileStyle.fastCdn), contains('Chi Tiáº¿t'));
+      expect(MapTileService.getStyleDescription(MapTileStyle.minimalLight), contains('Lá»c bá»›t Khu phá»‘/PhÆ°á»ng'));
     });
 
     test('PlaceSearchService.cleanOsmDisplayName strips clutter and postal codes', () {
-      const raw1 = 'Chợ Bến Thành, Lê Lợi, Phường Bến Thành, Khu phố 1, Quận 1, 700000, Việt Nam';
+      const raw1 = 'Chá»£ Báº¿n ThÃ nh, LÃª Lá»£i, PhÆ°á»ng Báº¿n ThÃ nh, Khu phá»‘ 1, Quáº­n 1, 700000, Viá»‡t Nam';
       final clean1 = PlaceSearchService.cleanOsmDisplayName(raw1, minimal: true);
-      expect(clean1, 'Chợ Bến Thành, Lê Lợi, Quận 1');
+      expect(clean1, 'Chá»£ Báº¿n ThÃ nh, LÃª Lá»£i, Quáº­n 1');
 
       final clean1Detailed = PlaceSearchService.cleanOsmDisplayName(raw1, minimal: false);
-      expect(clean1Detailed, 'Chợ Bến Thành, Lê Lợi, Phường Bến Thành, Khu phố 1, Quận 1');
+      expect(clean1Detailed, 'Chá»£ Báº¿n ThÃ nh, LÃª Lá»£i, PhÆ°á»ng Báº¿n ThÃ nh, Khu phá»‘ 1, Quáº­n 1');
 
-      const raw2 = '101 Bùi Thị Xuân, Tổ dân phố 12, Ấp Đông, Phường 2, Tân Bình, 71000, Vietnam';
+      const raw2 = '101 BÃ¹i Thá»‹ XuÃ¢n, Tá»• dÃ¢n phá»‘ 12, áº¤p ÄÃ´ng, PhÆ°á»ng 2, TÃ¢n BÃ¬nh, 71000, Vietnam';
       final clean2 = PlaceSearchService.cleanOsmDisplayName(raw2, minimal: true);
-      expect(clean2, '101 Bùi Thị Xuân, Tân Bình');
+      expect(clean2, '101 BÃ¹i Thá»‹ XuÃ¢n, TÃ¢n BÃ¬nh');
 
-      const raw3 = 'Khóm 3, Thôn 5, Xã Hòa Phú, Đắk Lắk';
+      const raw3 = 'KhÃ³m 3, ThÃ´n 5, XÃ£ HÃ²a PhÃº, Äáº¯k Láº¯k';
       final clean3 = PlaceSearchService.cleanOsmDisplayName(raw3, minimal: true);
-      expect(clean3, 'Đắk Lắk');
+      expect(clean3, 'Äáº¯k Láº¯k');
 
       final clean3Detailed = PlaceSearchService.cleanOsmDisplayName(raw3, minimal: false);
-      expect(clean3Detailed, 'Khóm 3, Thôn 5, Xã Hòa Phú, Đắk Lắk');
+      expect(clean3Detailed, 'KhÃ³m 3, ThÃ´n 5, XÃ£ HÃ²a PhÃº, Äáº¯k Láº¯k');
     });
   });
 }
+

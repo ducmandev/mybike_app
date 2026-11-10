@@ -8,8 +8,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 
 import '../../../core/ble/ble_controller.dart';
-import '../../../core/navigation/nav_models.dart';
-import '../../../core/navigation/navigation_controller.dart';
 import '../../../core/services/map_tile_service.dart';
 import '../../../core/services/trip_gps_tracker.dart';
 import '../../../ui/app_theme.dart';
@@ -22,8 +20,8 @@ enum MapCameraMode {
   overview,  // Góc nhìn Tổng Quan Lộ Trình
 }
 
-/// Màn hình Độc Lập Toàn Màn Hình Tìm Đường & Điều Hướng On-Device (Full-Bleed Viền Tràn)
-/// Hỗ trợ mở trực tiếp từ bất kỳ màn hình nào (Dashboard, MyBikeScreen, v.v.)
+/// Màn hình Độc Lập Toàn Màn Hình Bản Đồ Hành Trình (Full-Bleed Viền Tràn)
+/// Hỗ trợ mở trực tiếp từ Dashboard hoặc các màn hình khác
 class FullScreenNavigationPage extends StatelessWidget {
   final double currentSpeedKmh;
   final int? batteryPercent;
@@ -66,11 +64,11 @@ class FullScreenNavigationPage extends StatelessWidget {
   }
 }
 
-/// Widget Bản Đồ Lái Xe Thời Gian Thực (Live GPS Cockpit Map) trên Dashboard
+/// Widget Bản Đồ Lái Xe Thời Gian Thực & Đồng Hồ Tốc Độ Kép (Live Cockpit Map & Dual Speedometer HUD)
 /// Thiết kế đồng bộ hoàn hảo theo ngôn ngữ Kinetic Stitch EV (Space Grotesk, Hairline Border)
-/// - Hỗ trợ Chế độ Tối Giản (Positron - lọc sạch nhãn khu phố / tổ dân phố thừa) & Chi Tiết.
-/// - La bàn tương tác xoay đa góc nhìn (Hướng Bắc, Theo hướng xe, Tổng quan).
-/// - Màn hình tìm đường tràn viền full-bleed chỉ giữ nút Back thoáng đãng.
+/// - Hiển thị bản đồ xe đang di chuyển thực tế (Breadcrumbs với dải màu tốc độ liên tục)
+/// - Bảng báo tốc độ kép: Tốc độ xe (ECU/BLE) song song với tốc độ tính từ GPS
+/// - La bàn tương tác xoay đa góc nhìn (Hướng Bắc, Theo hướng xe, Tổng quan)
 class CockpitLiveMap extends ConsumerStatefulWidget {
   final double currentSpeedKmh;
   final VoidCallback? onExpandFullScreen;
@@ -105,8 +103,6 @@ class CockpitLiveMap extends ConsumerStatefulWidget {
 
 class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
   late final MapController _mapController;
-  final TextEditingController _searchController = TextEditingController();
-  final FocusNode _searchFocusNode = FocusNode();
   StreamSubscription<TripGpsPoint>? _pointSub;
   List<TripGpsPoint> _liveRoute = [];
   List<double> _gpsSpeedHistory = [];
@@ -121,7 +117,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
   bool _followBike = true;
   bool _isLocating = false;
   LatLng? _myLocation;
-  bool _showSearchResultsDropdown = false;
   bool _hasInitialCentered = false;
 
   void _moveCameraSafely(LatLng target, double zoom) {
@@ -187,16 +182,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
         }
       });
 
-      // Cập nhật vị trí GPS vào Engine Điều hướng Turn-by-Turn
-      final bleState = ref.read(bleProvider);
-      ref.read(navigationProvider.notifier).updateGpsPosition(
-            newLoc,
-            newPoint.speedKmh,
-            newPoint.heading ?? 0.0,
-            batterySoc: widget.batteryPercent ?? bleState.lastTelemetry?.percent,
-            bikeModel: bleState.bikeModel,
-          );
-
       if (_followBike) {
         if (_cameraMode == MapCameraMode.headingUp) {
           _mapController.rotate(-_currentHeading);
@@ -212,8 +197,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
   @override
   void dispose() {
     _pointSub?.cancel();
-    _searchController.dispose();
-    _searchFocusNode.dispose();
     _mapController.dispose();
     super.dispose();
   }
@@ -282,11 +265,12 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
         case MapCameraMode.headingUp:
           _cameraMode = MapCameraMode.overview;
           _mapController.rotate(0);
-          final activeRoute = ref.read(navigationProvider).activeRoute;
-          if (activeRoute != null && activeRoute.polyline.length >= 2) {
+          if (_liveRoute.length >= 2) {
             _mapController.fitCamera(
               CameraFit.bounds(
-                bounds: LatLngBounds.fromPoints(activeRoute.polyline),
+                bounds: LatLngBounds.fromPoints(
+                  _liveRoute.map((p) => LatLng(p.lat, p.lng)).toList(),
+                ),
                 padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 90),
               ),
             );
@@ -313,8 +297,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
       final nextIndex = (styles.indexOf(_tileStyle) + 1) % styles.length;
       _tileStyle = styles[nextIndex];
     });
-    final isMin = MapTileService.isMinimal(_tileStyle);
-    ref.read(navigationProvider.notifier).setMinimalMapMode(isMin);
     _showNotice('Bản đồ: ${MapTileService.getStyleName(_tileStyle)}');
   }
 
@@ -379,8 +361,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                   onTap: () {
                     Navigator.of(ctx).pop();
                     setState(() => _tileStyle = style);
-                    final isMin = MapTileService.isMinimal(style);
-                    ref.read(navigationProvider.notifier).setMinimalMapMode(isMin);
                     _showNotice('Đã đổi: ${MapTileService.getStyleName(style)}');
                   },
                   child: Container(
@@ -496,41 +476,11 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
     }
   }
 
-  Color _getEvStatusColor(String status) {
-    switch (status) {
-      case 'critical':
-        return const Color(0xFFEF4444);
-      case 'warning':
-        return const Color(0xFFF59E0B);
-      case 'safe':
-      default:
-        return const Color(0xFF10B981);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final navState = ref.watch(navigationProvider);
     final bleState = ref.watch(bleProvider);
-
-    ref.listen<NavigationState>(navigationProvider, (previous, next) {
-      if (next.activeRoute != null && previous?.activeRoute != next.activeRoute) {
-        final poly = next.activeRoute!.polyline;
-        if (poly.length >= 2) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            try {
-              _mapController.fitCamera(
-                CameraFit.bounds(
-                  bounds: LatLngBounds.fromPoints(poly),
-                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 80),
-                ),
-              );
-            } catch (_) {}
-          });
-        }
-      }
-    });
+    final bikeSpeed = bleState.lastTelemetry?.speed ?? widget.currentSpeedKmh;
+    final gpsSpeed = _currentGpsSpeed;
 
     final hasRoute = _liveRoute.isNotEmpty;
     final lastPoint = hasRoute ? _liveRoute.last : null;
@@ -544,23 +494,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
     final mapHeight = widget.isFullScreen ? widget.height : (widget.height ?? 220.0);
     final topPadding = MediaQuery.of(context).padding.top;
     final fullScreenTopOffset = math.max(topPadding, 8.0) + 6.0;
-
-    // Chuẩn bị các đoạn phân chia Polyline điều hướng đã đi / sắp đi
-    List<LatLng> passedPolyline = [];
-    List<LatLng> upcomingPolyline = [];
-    if (navState.activeRoute != null && navState.activeRoute!.polyline.isNotEmpty) {
-      final poly = navState.activeRoute!.polyline;
-      final splitIdx = (navState.tracking?.closestPolylineIndex ?? 0).clamp(0, poly.length - 1);
-      final snappedPt = navState.tracking?.snappedLocation;
-
-      passedPolyline = poly.sublist(0, splitIdx + 1);
-      if (snappedPt != null) {
-        passedPolyline.add(snappedPt);
-        upcomingPolyline = [snappedPt, ...poly.sublist(splitIdx + 1)];
-      } else {
-        upcomingPolyline = poly.sublist(splitIdx);
-      }
-    }
 
     return Container(
       height: mapHeight,
@@ -583,7 +516,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               onMapReady: () {
                 final target = _myLocation ??
                     (lastPoint != null ? LatLng(lastPoint.lat, lastPoint.lng) : null);
-                if (target != null && ref.read(navigationProvider).activeRoute == null) {
+                if (target != null) {
                   _moveCameraSafely(target, widget.isFullScreen ? 16.5 : 16.0);
                 }
               },
@@ -615,20 +548,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                 }
                 if (position.rotation != _mapRotation) {
                   setState(() => _mapRotation = position.rotation);
-                }
-              },
-              onLongPress: (tapPosition, point) {
-                if (widget.isFullScreen) {
-                  final curPos = _myLocation ??
-                      (lastPoint != null
-                          ? LatLng(lastPoint.lat, lastPoint.lng)
-                          : _mapController.camera.center);
-                  ref.read(navigationProvider.notifier).selectPointOnMap(
-                        point,
-                        currentPos: curPos,
-                        batterySoc: widget.batteryPercent ?? bleState.lastTelemetry?.percent,
-                        bikeModel: bleState.bikeModel,
-                      );
                 }
               },
             ),
@@ -669,56 +588,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                 ),
               ],
 
-              // Tuyến đường điều hướng On-Device Rust (PolylineLayer)
-              if (navState.activeRoute != null) ...[
-                // Đoạn đường đã đi qua: màu xám mờ
-                if (passedPolyline.length >= 2)
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: passedPolyline,
-                        strokeWidth: 4.5,
-                        strokeCap: StrokeCap.round,
-                        strokeJoin: StrokeJoin.round,
-                        color: const Color(0xFF64748B).withValues(alpha: 0.45),
-                      ),
-                    ],
-                  ),
-                // Đoạn đường sắp tới: viền phát sáng Cyan + lõi xanh neon
-                if (upcomingPolyline.length >= 2)
-                  PolylineLayer(
-                    polylines: [
-                      Polyline(
-                        points: upcomingPolyline,
-                        strokeWidth: 8.5,
-                        strokeCap: StrokeCap.round,
-                        strokeJoin: StrokeJoin.round,
-                        color: const Color(0xFF06B6D4).withValues(alpha: 0.35),
-                      ),
-                      Polyline(
-                        points: upcomingPolyline,
-                        strokeWidth: 5.5,
-                        strokeCap: StrokeCap.round,
-                        strokeJoin: StrokeJoin.round,
-                        color: const Color(0xFF06B6D4),
-                      ),
-                    ],
-                  ),
-              ],
-
-              // Marker Điểm Đích (Destination)
-              if (navState.destination != null)
-                MarkerLayer(
-                  markers: [
-                    Marker(
-                      point: navState.destination!.latLng,
-                      width: 44,
-                      height: 52,
-                      child: _buildDestinationMarker(navState.destination!),
-                    ),
-                  ],
-                ),
-
               // Marker Vị trí xe Dat Bike với mũi tên xoay theo hướng đi thực tế
               MarkerLayer(
                 markers: [
@@ -728,7 +597,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                       width: 52,
                       height: 52,
                       child: _buildLiveBikeMarker(
-                        widget.currentSpeedKmh,
+                        bikeSpeed,
                         lastPoint?.heading ?? _currentHeading,
                       ),
                     ),
@@ -737,8 +606,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
             ],
           ),
 
-          // 2. HEADER TOP Ở CHẾ ĐỘ THU NHỎ (DASHBOARD COMPACT MODE - widget.isFullScreen == false)
-          // Khi ở màn hình tìm đường FullScreen thì ẨN HOÀN TOÀN để màn hình thoáng đãng, chỉ giữ nút Back!
+          // 2. HEADER TOP Ở CHẾ ĐỘ THU NHỎ (DASHBOARD COMPACT MODE - !widget.isFullScreen)
           if (!widget.isFullScreen)
             Positioned(
               top: 8,
@@ -746,14 +614,15 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               right: 8,
               child: Row(
                 children: [
-                  // Chips la bàn & tốc độ GPS (co giãn linh hoạt)
+                  // Chips: La bàn hướng đi, Tốc độ Xe, Tốc độ GPS
                   Expanded(
                     child: SingleChildScrollView(
                       scrollDirection: Axis.horizontal,
-                      physics: const NeverScrollableScrollPhysics(),
+                      physics: const BouncingScrollPhysics(),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          // 1. Chip La bàn hướng đi
                           ClipRRect(
                             borderRadius: BorderRadius.circular(9999),
                             child: BackdropFilter(
@@ -793,6 +662,44 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                             ),
                           ),
                           const SizedBox(width: 6),
+                          // 2. Chip Tốc độ Xe (ECU/BLE)
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(9999),
+                            child: BackdropFilter(
+                              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: AppColors.panel.withValues(alpha: 0.94),
+                                  borderRadius: BorderRadius.circular(9999),
+                                  border: Border.all(color: AppColors.panelBorderBright),
+                                  boxShadow: AppColors.cardShadow,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.speed_rounded,
+                                      size: 13,
+                                      color: AppColors.primary,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'XE: ${bikeSpeed.toStringAsFixed(0)} km/h',
+                                      style: GoogleFonts.spaceGrotesk(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: AppColors.textPrimary,
+                                        fontFeatures: const [FontFeature.tabularFigures()],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          // 3. Chip Tốc độ GPS
                           ClipRRect(
                             borderRadius: BorderRadius.circular(9999),
                             child: BackdropFilter(
@@ -822,21 +729,12 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                                     ),
                                     const SizedBox(width: 5),
                                     Text(
-                                      'GPS: ${_currentGpsSpeed.toStringAsFixed(1)}',
+                                      'GPS: ${gpsSpeed.toStringAsFixed(1)} km/h',
                                       style: GoogleFonts.spaceGrotesk(
                                         fontSize: 11,
                                         fontWeight: FontWeight.w700,
                                         color: AppColors.textPrimary,
                                         fontFeatures: const [FontFeature.tabularFigures()],
-                                      ),
-                                    ),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      'km/h',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: AppColors.textDim,
                                       ),
                                     ),
                                   ],
@@ -849,7 +747,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // Nút công cụ thu nhỏ
+                  // Nút công cụ thu nhỏ: Đổi kiểu, Offline, Phóng to
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -883,31 +781,113 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               ),
             ),
 
-          // 3. MÀN HÌNH TÌM ĐƯỜNG FULL-SCREEN (widget.isFullScreen == true && !navState.isNavigating):
-          // CHỈ GIỮ NÚT BACK Ở GÓC TRÁI + THANH TÌM KIẾM + NÚT ĐỔI LAYOUT TỐI GIẢN
-          if (widget.isFullScreen && !navState.isNavigating)
+          // 3. THANH HEADER TRÊN CÙNG KHI Ở CHẾ ĐỘ TOÀN MÀN HÌNH (widget.isFullScreen == true)
+          if (widget.isFullScreen)
             Positioned(
               top: fullScreenTopOffset,
               left: 12,
               right: 12,
-              child: _buildFullScreenSearchBarRow(context, navState, bleState),
+              child: Row(
+                children: [
+                  // Nút Back
+                  if (widget.onExpandFullScreen != null)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8.0),
+                      child: _miniGlassBtn(
+                        icon: Icons.arrow_back_rounded,
+                        tooltip: 'Quay lại',
+                        onTap: widget.onExpandFullScreen!,
+                      ),
+                    ),
+
+                  // Ở giữa: Thẻ kính mờ hiển thị tiêu đề 'BẢN ĐỒ HÀNH TRÌNH XE' + Hướng la bàn
+                  Expanded(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: AppColors.panel.withValues(alpha: 0.95),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: AppColors.panelBorderBright, width: 1.2),
+                            boxShadow: AppColors.cardShadow,
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 28,
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: AppColors.primary.withValues(alpha: 0.15),
+                                ),
+                                child: const Icon(
+                                  Icons.map_rounded,
+                                  size: 16,
+                                  color: AppColors.primary,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'BẢN ĐỒ HÀNH TRÌNH XE',
+                                      style: GoogleFonts.spaceGrotesk(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppColors.textPrimary,
+                                        letterSpacing: 0.3,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 1),
+                                    Text(
+                                      'Hướng di chuyển: ${_currentHeading.toStringAsFixed(0).padLeft(3, '0')}° ${_shortCardinal(_currentHeading)}',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppColors.textDim,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Bên phải: Nút chọn giao diện bản đồ
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8.0),
+                    child: _miniGlassBtn(
+                      icon: MapTileService.isMinimal(_tileStyle)
+                          ? Icons.layers_clear_rounded
+                          : Icons.layers_rounded,
+                      iconColor: MapTileService.isMinimal(_tileStyle)
+                          ? const Color(0xFF10B981)
+                          : AppColors.textPrimary,
+                      tooltip: 'Giao diện bản đồ (${MapTileService.getStyleName(_tileStyle)})',
+                      onTap: _showMapStyleMenu,
+                    ),
+                  ),
+                ],
+              ),
             ),
 
-          // 4. HỘP CHỈ DẪN HUD TURN-BY-TURN KHI ĐANG DẪN ĐƯỜNG (widget.isFullScreen == true && isNavigating == true)
-          // Có Nút Back để quay lại màn hình chính bất kỳ lúc nào
-          if (widget.isFullScreen && navState.activeRoute != null && navState.isNavigating)
-            Positioned(
-              top: fullScreenTopOffset,
-              left: 12,
-              right: 12,
-              child: _buildTurnByTurnHudBox(context, navState),
-            ),
-
-          // 5. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải: La Bàn Xoay + Đổi Góc Nhìn + Vị trí của tôi + Bám xe)
+          // 4. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải: La Bàn Xoay + Vị trí của tôi + Bám xe + Offline + Menu Layer)
           Positioned(
-            bottom: (widget.isFullScreen || navState.activeRoute != null)
-                ? 140
-                : ((_gpsSpeedHistory.length >= 2) ? 46 : 12),
+            bottom: widget.isFullScreen ? 148 : 48,
             right: 10,
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -975,104 +955,8 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
             ),
           ),
 
-          // 5.5 CHỈ BÁO ĐANG TÍNH ĐƯỜNG BỘ THỰC TẾ
-          if (navState.isCalculatingRoute)
-            Positioned(
-              top: widget.isFullScreen ? (fullScreenTopOffset + 58) : 50,
-              left: 20,
-              right: 20,
-              child: Center(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(9999),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0B132B).withValues(alpha: 0.94),
-                        borderRadius: BorderRadius.circular(9999),
-                        border: Border.all(color: const Color(0xFF06B6D4), width: 1.2),
-                        boxShadow: AppColors.cardShadow,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Color(0xFF06B6D4),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Đang tải tuyến đường bộ thực tế...',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // 5.6 THÔNG BÁO LỖI NẾU CÓ
-          if (navState.errorMessage != null)
-            Positioned(
-              top: widget.isFullScreen ? (fullScreenTopOffset + 58) : 50,
-              left: 14,
-              right: 14,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEF4444).withValues(alpha: 0.95),
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: AppColors.cardShadow,
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.error_outline_rounded, color: Colors.white, size: 18),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          navState.errorMessage!,
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                          maxLines: 2,
-                        ),
-                      ),
-                      GestureDetector(
-                        onTap: () => ref.read(navigationProvider.notifier).clearRoute(),
-                        child: const Icon(Icons.close_rounded, color: Colors.white, size: 18),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-          // 6. THẺ XEM TRƯỚC LỘ TRÌNH & PIN EV (EV ROUTE PREVIEW CARD)
-          if (widget.isFullScreen && navState.activeRoute != null && !navState.isNavigating)
-            Positioned(
-              bottom: 12,
-              left: 12,
-              right: 12,
-              child: _buildRoutePreviewCard(context, navState, bleState),
-            ),
-
-          // 7. BIỂU ĐỒ TỐC ĐỘ GPS (SPARKLINE CHART) (khi ở dashboard thu nhỏ)
-          if (!widget.isFullScreen && navState.activeRoute == null && _gpsSpeedHistory.length >= 2)
+          // 5. BẢNG BÁO TỐC ĐỘ DƯỚI ĐÁY BẢN ĐỒ THU NHỎ (DASHBOARD COMPACT BOTTOM BAR - !widget.isFullScreen)
+          if (!widget.isFullScreen)
             Positioned(
               left: 8,
               right: 8,
@@ -1082,8 +966,8 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                 child: BackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
                   child: Container(
-                    height: 28,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    height: 34,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
                       color: AppColors.panel.withValues(alpha: 0.94),
                       borderRadius: BorderRadius.circular(12),
@@ -1092,34 +976,80 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                     ),
                     child: Row(
                       children: [
-                        Text(
-                          'GPS SPEED',
-                          style: GoogleFonts.spaceGrotesk(
-                            fontSize: 8.5,
-                            fontWeight: FontWeight.w800,
-                            color: AppColors.textDim,
-                            letterSpacing: 0.3,
-                          ),
+                        // Bên trái: TỐC ĐỘ XE
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
+                            const SizedBox(width: 4),
+                            Text(
+                              'TỐC ĐỘ XE: ',
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textDim,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                            Text(
+                              '${bikeSpeed.toStringAsFixed(0)} km/h',
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primary,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: CustomPaint(
-                            size: const Size(double.infinity, 22),
-                            painter: _GpsSpeedSparklinePainter(
-                              history: _gpsSpeedHistory,
-                              color: AppColors.secondary,
+                        // Ở giữa: Biểu đồ sparkline nếu history >= 2
+                        if (_gpsSpeedHistory.length >= 2) ...[
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: CustomPaint(
+                              size: const Size(double.infinity, 22),
+                              painter: _GpsSpeedSparklinePainter(
+                                history: _gpsSpeedHistory,
+                                color: AppColors.secondary,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          '${_currentGpsSpeed.toStringAsFixed(0)} km/h',
-                          style: GoogleFonts.spaceGrotesk(
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textPrimary,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
+                          const SizedBox(width: 8),
+                        ] else ...[
+                          const Spacer(),
+                        ],
+                        // Bên phải: TỐC ĐỘ GPS
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: isTracking ? AppColors.tertiary : AppColors.secondary,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'TỐC ĐỘ GPS: ',
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.textDim,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                            Text(
+                              '${gpsSpeed.toStringAsFixed(1)} km/h',
+                              style: GoogleFonts.spaceGrotesk(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.secondary,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -1128,818 +1058,223 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               ),
             ),
 
-          // 8. MINI TURN-BY-TURN PILL (Khi ở chế độ bản đồ thu nhỏ widget.isFullScreen == false && activeRoute != null)
-          if (!widget.isFullScreen && navState.activeRoute != null)
+          // 6. BẢNG BÁO TỐC ĐỘ KÉP TOÀN MÀN HÌNH (DUAL SPEEDOMETER TELEMETRY HUD CARD - widget.isFullScreen == true)
+          if (widget.isFullScreen)
             Positioned(
-              bottom: 8,
-              left: 8,
-              right: 8,
-              child: _buildMiniTurnPill(context, navState),
-            ),
-        ],
-      ),
-    );
-  }
-
-  // =========================================================================
-  // SUB-WIDGETS: HUD, SEARCH & PREVIEW CARDS
-  // =========================================================================
-
-  /// Thanh Tìm kiếm toàn màn hình: CHỈ GIỮ NÚT BACK Ở GÓC TRÁI + SEARCH BAR + NÚT ĐỔI STYLE
-  Widget _buildFullScreenSearchBarRow(
-    BuildContext context,
-    NavigationState navState,
-    BleState bleState,
-  ) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            // NÚT BACK DUY NHẤT ĐỂ QUAY LẠI MÀN HÌNH CHÍNH (ĐỂ MÀN HÌNH THOÁNG ĐÃNG)
-            if (widget.onExpandFullScreen != null)
-              Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: _miniGlassBtn(
-                  icon: Icons.arrow_back_rounded,
-                  tooltip: 'Thu nhỏ về mặc định',
-                  onTap: widget.onExpandFullScreen!,
-                ),
-              ),
-
-            // THANH NHẬP TÌM KIẾM
-            Expanded(
+              bottom: 14,
+              left: 12,
+              right: 12,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(20),
                 child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                     decoration: BoxDecoration(
                       color: AppColors.panel.withValues(alpha: 0.95),
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: AppColors.panelBorderBright, width: 1.2),
                       boxShadow: AppColors.cardShadow,
                     ),
-                    child: Row(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (navState.isSearching)
-                          const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.2,
-                              color: AppColors.primary,
-                            ),
-                          )
-                        else
-                          const Icon(Icons.search_rounded, color: AppColors.primary, size: 22),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(
-                            controller: _searchController,
-                            focusNode: _searchFocusNode,
-                            textInputAction: TextInputAction.search,
-                            onSubmitted: (val) {
-                              ref.read(navigationProvider.notifier).searchPlacesImmediately(val);
-                            },
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 13.5,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary,
-                            ),
-                            decoration: InputDecoration(
-                              isDense: true,
-                              hintText: 'Tìm điểm đến, trạm sạc Dat Charge...',
-                              hintStyle: GoogleFonts.plusJakartaSans(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w500,
-                                color: AppColors.textDim,
+                        // Hàng hiển thị song song 2 đồng hồ tốc độ (50% - 50%)
+                        Row(
+                          children: [
+                            // Cột trái — TỐC ĐỘ XE (ECU)
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.speed_rounded,
+                                        size: 15,
+                                        color: AppColors.primary,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'TỐC ĐỘ XE',
+                                        style: GoogleFonts.spaceGrotesk(
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.textDim,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                                    textBaseline: TextBaseline.alphabetic,
+                                    children: [
+                                      Text(
+                                        bikeSpeed.toStringAsFixed(1),
+                                        style: GoogleFonts.spaceGrotesk(
+                                          fontSize: 26,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.textPrimary,
+                                          fontFeatures: const [FontFeature.tabularFigures()],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'km/h',
+                                        style: GoogleFonts.spaceGrotesk(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
-                              border: InputBorder.none,
                             ),
-                            onChanged: (val) {
-                              setState(() => _showSearchResultsDropdown = val.trim().isNotEmpty);
-                              ref.read(navigationProvider.notifier).searchPlaces(val);
-                            },
-                          ),
+
+                            // Vạch ngăn cách dọc
+                            Container(
+                              width: 1,
+                              height: 44,
+                              color: AppColors.panelBorderBright,
+                            ),
+
+                            // Cột phải — TỐC ĐỘ GPS
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.only(left: 12.0),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Container(
+                                          width: 7,
+                                          height: 7,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: isTracking
+                                                ? AppColors.tertiary
+                                                : const Color(0xFF0EA5E9),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 5),
+                                        Text(
+                                          'TỐC ĐỘ GPS',
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.w800,
+                                            color: AppColors.textDim,
+                                            letterSpacing: 0.5,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Row(
+                                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                                      textBaseline: TextBaseline.alphabetic,
+                                      children: [
+                                        Text(
+                                          gpsSpeed.toStringAsFixed(1),
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 26,
+                                            fontWeight: FontWeight.w800,
+                                            color: const Color(0xFF0EA5E9),
+                                            fontFeatures: const [FontFeature.tabularFigures()],
+                                          ),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'km/h',
+                                          style: GoogleFonts.spaceGrotesk(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: const Color(0xFF0EA5E9),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                        if (_searchController.text.isNotEmpty)
-                          GestureDetector(
-                            onTap: () {
-                              _searchController.clear();
-                              ref.read(navigationProvider.notifier).clearSearch();
-                              setState(() => _showSearchResultsDropdown = false);
-                            },
-                            child: const Padding(
-                              padding: EdgeInsets.all(4.0),
-                              child: Icon(Icons.close_rounded, size: 18, color: AppColors.textDim),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
 
-            // NÚT ĐỔI GIAO DIỆN BẢN ĐỒ (TỐI GIẢN / CHI TIẾT)
-            Padding(
-              padding: const EdgeInsets.only(left: 8.0),
-              child: _miniGlassBtn(
-                icon: MapTileService.isMinimal(_tileStyle)
-                    ? Icons.layers_clear_rounded
-                    : Icons.layers_rounded,
-                tooltip: 'Giao diện bản đồ (${MapTileService.getStyleName(_tileStyle)})',
-                onTap: _showMapStyleMenu,
-              ),
-            ),
-          ],
-        ),
-
-        // Quick suggestions chips (khi ô tìm kiếm trống và chưa chọn đích)
-        if (navState.destination == null && !_showSearchResultsDropdown) ...[
-          const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _buildQuickChip(
-                  icon: Icons.ev_station_rounded,
-                  label: 'Trạm Sạc Dat Charge',
-                  onTap: () {
-                    _searchController.text = 'Trạm Sạc Dat Charge';
-                    ref.read(navigationProvider.notifier).searchPlaces('Trạm Sạc Dat Charge');
-                    setState(() => _showSearchResultsDropdown = true);
-                  },
-                ),
-                const SizedBox(width: 6),
-                _buildQuickChip(
-                  icon: Icons.storefront_rounded,
-                  label: 'Chợ Bến Thành',
-                  onTap: () {
-                    _selectLandmarkByKeyword('Chợ Bến Thành', bleState);
-                  },
-                ),
-                const SizedBox(width: 6),
-                _buildQuickChip(
-                  icon: Icons.apartment_rounded,
-                  label: 'Landmark 81',
-                  onTap: () {
-                    _selectLandmarkByKeyword('Landmark 81', bleState);
-                  },
-                ),
-              ],
-            ),
-          ),
-        ],
-
-        // Search Results Dropdown List
-        if (_showSearchResultsDropdown) ...[
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-              child: Container(
-                constraints: const BoxConstraints(maxHeight: 220),
-                decoration: BoxDecoration(
-                  color: AppColors.panel.withValues(alpha: 0.98),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.panelBorderBright),
-                  boxShadow: AppColors.cardShadow,
-                ),
-                child: navState.searchResults.isNotEmpty
-                    ? ListView.separated(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        shrinkWrap: true,
-                        itemCount: navState.searchResults.length,
-                        separatorBuilder: (context, index) =>
-                            const Divider(height: 1, color: AppColors.panelBorderBright),
-                        itemBuilder: (context, idx) {
-                          final item = navState.searchResults[idx];
-                          final isCharging = item.category == 'charging_station';
-                          return ListTile(
-                            dense: true,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                            leading: Container(
-                              width: 32,
-                              height: 32,
-                              decoration: BoxDecoration(
-                                color: isCharging
-                                    ? const Color(0xFF10B981).withValues(alpha: 0.15)
-                                    : AppColors.primary.withValues(alpha: 0.12),
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                isCharging ? Icons.ev_station_rounded : Icons.location_on_rounded,
-                                size: 18,
-                                color: isCharging ? const Color(0xFF10B981) : AppColors.primary,
-                              ),
-                            ),
-                            title: Text(
-                              item.shortName,
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 12.5,
-                                fontWeight: FontWeight.w700,
-                                color: AppColors.textPrimary,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              item.displayName,
+                        // Hàng thông tin phụ bên dưới
+                        const Divider(height: 12, color: AppColors.panelBorderBright),
+                        Row(
+                          children: [
+                            // Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h
+                            Text(
+                              'Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h',
                               style: GoogleFonts.plusJakartaSans(
                                 fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
                                 color: AppColors.textDim,
                               ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
                             ),
-                            onTap: () {
-                              _searchFocusNode.unfocus();
-                              setState(() => _showSearchResultsDropdown = false);
-                              final curPos = _myLocation ??
-                                  (TripGpsTracker.instance.getCurrentRoute().isNotEmpty
-                                      ? LatLng(
-                                          TripGpsTracker.instance.getCurrentRoute().last.lat,
-                                          TripGpsTracker.instance.getCurrentRoute().last.lng)
-                                      : _mapController.camera.center);
-                              ref.read(navigationProvider.notifier).selectDestination(
-                                    item,
-                                    currentPos: curPos,
-                                    batterySoc: widget.batteryPercent ?? bleState.lastTelemetry?.percent,
-                                    bikeModel: bleState.bikeModel,
-                                  );
-                              _mapController.move(item.latLng, 15.5);
-                            },
-                          );
-                        },
-                      )
-                    : (navState.isSearching
-                        ? Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.primary,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Đang tìm kiếm...',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 12,
-                                    color: AppColors.textDim,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          )
-                        : Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 14.0),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.search_off_rounded, size: 20, color: AppColors.textDim),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'Không tìm thấy địa điểm phù hợp',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppColors.textDim,
+                            const SizedBox(width: 8),
+                            // Sparkline ở giữa nếu history >= 2
+                            if (_gpsSpeedHistory.length >= 2) ...[
+                              Expanded(
+                                child: SizedBox(
+                                  height: 18,
+                                  child: CustomPaint(
+                                    size: const Size(double.infinity, 18),
+                                    painter: _GpsSpeedSparklinePainter(
+                                      history: _gpsSpeedHistory,
+                                      color: const Color(0xFF0EA5E9),
                                     ),
                                   ),
                                 ),
+                              ),
+                              const SizedBox(width: 8),
+                            ] else ...[
+                              const Spacer(),
+                            ],
+                            // Trạng thái GPS
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isTracking ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded,
+                                  size: 12,
+                                  color: isTracking ? AppColors.tertiary : AppColors.textDim,
+                                ),
+                                const SizedBox(width: 3),
+                                Text(
+                                  'GPS: ${isTracking ? "Đang theo dõi" : "Sẵn sàng"}',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: isTracking ? AppColors.tertiary : AppColors.textDim,
+                                  ),
+                                ),
                               ],
                             ),
-                          )),
-              ),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  void _selectLandmarkByKeyword(String keyword, BleState bleState) {
-    for (final lm in PlaceSearchService.builtInLandmarks) {
-      if (lm.shortName.contains(keyword)) {
-        final curPos = _myLocation ??
-            (TripGpsTracker.instance.getCurrentRoute().isNotEmpty
-                ? LatLng(
-                    TripGpsTracker.instance.getCurrentRoute().last.lat,
-                    TripGpsTracker.instance.getCurrentRoute().last.lng)
-                : _mapController.camera.center);
-        ref.read(navigationProvider.notifier).selectDestination(
-              lm,
-              currentPos: curPos,
-              batterySoc: widget.batteryPercent ?? bleState.lastTelemetry?.percent,
-              bikeModel: bleState.bikeModel,
-            );
-        _mapController.move(lm.latLng, 15.5);
-        break;
-      }
-    }
-  }
-
-  Widget _buildQuickChip({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(9999),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-              color: AppColors.panel.withValues(alpha: 0.94),
-              borderRadius: BorderRadius.circular(9999),
-              border: Border.all(color: AppColors.panelBorderBright),
-              boxShadow: AppColors.cardShadow,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 13, color: AppColors.primary),
-                const SizedBox(width: 4),
-                Text(
-                  label,
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRoutePreviewCard(
-    BuildContext context,
-    NavigationState navState,
-    BleState bleState,
-  ) {
-    final route = navState.activeRoute!;
-    final forecast = route.evForecast;
-    final statusColor = _getEvStatusColor(forecast.status);
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppColors.panel.withValues(alpha: 0.96),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.panelBorderBright, width: 1.2),
-            boxShadow: AppColors.cardShadow,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Hàng tiêu đề: Tên điểm đến + Nút Hủy
-              Row(
-                children: [
-                  Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFF06B6D4).withValues(alpha: 0.15),
-                    ),
-                    child: const Icon(Icons.place_rounded, color: Color(0xFF06B6D4), size: 18),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          navState.destination?.shortName ?? 'Điểm đến',
-                          style: GoogleFonts.spaceGrotesk(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textPrimary,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text(
-                          '${route.formattedDistance} • ${route.formattedDuration}',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textDim,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.textDim),
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () {
-                      ref.read(navigationProvider.notifier).clearRoute();
-                    },
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 10),
-
-              // Dự báo Pin EV Dat Bike
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: statusColor.withValues(alpha: 0.25)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.battery_charging_full_rounded, color: statusColor, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                'Pin dự kiến tại đích: ',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.textPrimary,
-                                ),
-                              ),
-                              Text(
-                                '${forecast.arrivalSocPercent.toStringAsFixed(0)}%',
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w800,
-                                  color: statusColor,
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                '(-${forecast.estimatedSocUsedPercent.toStringAsFixed(1)}%)',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 10,
-                                  color: AppColors.textDim,
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (forecast.warningMessage != null) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              forecast.warningMessage!,
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.w600,
-                                color: statusColor,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
                           ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 10),
-
-              // Nút chuyển chế độ Nhanh nhất / Eco & Nút Bắt đầu đi
-              Row(
-                children: [
-                  // Toggle Eco Mode
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () {
-                      final curPos = _myLocation ??
-                          (TripGpsTracker.instance.getCurrentRoute().isNotEmpty
-                              ? LatLng(
-                                  TripGpsTracker.instance.getCurrentRoute().last.lat,
-                                  TripGpsTracker.instance.getCurrentRoute().last.lng)
-                              : null);
-                      ref.read(navigationProvider.notifier).toggleEcoMode(
-                            currentPos: curPos,
-                            batterySoc:
-                                widget.batteryPercent ?? bleState.lastTelemetry?.percent,
-                            bikeModel: bleState.bikeModel,
-                          );
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: navState.ecoMode
-                            ? const Color(0xFF10B981).withValues(alpha: 0.15)
-                            : AppColors.panelBorderBright.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: navState.ecoMode
-                              ? const Color(0xFF10B981)
-                              : AppColors.panelBorderBright,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            navState.ecoMode ? Icons.eco_rounded : Icons.speed_rounded,
-                            size: 16,
-                            color: navState.ecoMode
-                                ? const Color(0xFF10B981)
-                                : AppColors.textDim,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            navState.ecoMode ? 'Eco Tiết Kiệm' : 'Nhanh Nhất',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: navState.ecoMode
-                                  ? const Color(0xFF10B981)
-                                  : AppColors.textPrimary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(width: 8),
-
-                  // Nút BẮT ĐẦU ĐI
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF06B6D4),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        elevation: 0,
-                      ),
-                      icon: const Icon(Icons.navigation_rounded, size: 16),
-                      label: Text(
-                        'BẮT ĐẦU ĐI',
-                        style: GoogleFonts.spaceGrotesk(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                      onPressed: () {
-                        ref.read(navigationProvider.notifier).startNavigation();
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTurnByTurnHudBox(BuildContext context, NavigationState navState) {
-    final route = navState.activeRoute!;
-    final tracking = navState.tracking;
-    final stepIdx = tracking?.currentStepIndex ?? 0;
-    final currentStep = (stepIdx < route.steps.length) ? route.steps[stepIdx] : route.steps.last;
-    final maneuver = currentStep.maneuver;
-    final distToManeuver = tracking?.formattedDistanceToManeuver ?? '150 m';
-    final arrivalSoc = tracking?.arrivalSocPercent ?? route.evForecast.arrivalSocPercent;
-    final remDist = tracking?.formattedRemainingDistance ?? route.formattedDistance;
-    final remTime = tracking?.formattedRemainingTime ?? route.formattedDuration;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: const Color(0xFF0B132B).withValues(alpha: 0.94),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: const Color(0xFF06B6D4).withValues(alpha: 0.4), width: 1.5),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x3306B6D4),
-                blurRadius: 16,
-                offset: Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  // NÚT BACK QUAY LẠI MÀN HÌNH CHÍNH NGAY KHI ĐANG DẪN ĐƯỜNG
-                  if (widget.onExpandFullScreen != null) ...[
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8.0),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: widget.onExpandFullScreen,
-                        child: Container(
-                          width: 38,
-                          height: 38,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.white24),
-                          ),
-                          child: const Icon(Icons.arrow_back_rounded, color: Colors.white, size: 20),
-                        ),
-                      ),
-                    ),
-                  ],
-
-                  // Icon mũi tên rẽ lớn nổi bật
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF06B6D4).withValues(alpha: 0.2),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF06B6D4), width: 2),
-                    ),
-                    child: Center(
-                      child: Icon(maneuver.icon, color: const Color(0xFF06B6D4), size: 28),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-
-                  // Thông số rẽ & câu chỉ dẫn
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          distToManeuver,
-                          style: GoogleFonts.spaceGrotesk(
-                            fontSize: 24,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
-                            height: 1.0,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          currentStep.instruction,
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w700,
-                            color: const Color(0xFFE2E8F0),
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
                   ),
-
-                  // Nút DỪNG
-                  OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFEF4444),
-                      side: const BorderSide(color: Color(0xFFEF4444)),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      minimumSize: Size.zero,
-                    ),
-                    onPressed: () {
-                      ref.read(navigationProvider.notifier).stopNavigation();
-                    },
-                    child: Text(
-                      'DỪNG',
-                      style: GoogleFonts.spaceGrotesk(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
-              const SizedBox(height: 8),
-              const Divider(height: 1, color: Color(0xFF1E293B)),
-              const SizedBox(height: 6),
-              // Thông tin đáy: Tổng còn lại, Thời gian còn lại, Pin dự kiến
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Còn: $remDist • $remTime',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: const Color(0xFF94A3B8),
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      const Icon(Icons.battery_charging_full_rounded,
-                          size: 14, color: Color(0xFF10B981)),
-                      const SizedBox(width: 3),
-                      Text(
-                        'Pin tới: ${arrivalSoc.toStringAsFixed(0)}%',
-                        style: GoogleFonts.spaceGrotesk(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w700,
-                          color: const Color(0xFF10B981),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
+            ),
+        ],
       ),
     );
   }
 
-  Widget _buildMiniTurnPill(BuildContext context, NavigationState navState) {
-    final route = navState.activeRoute!;
-    final tracking = navState.tracking;
-    final stepIdx = tracking?.currentStepIndex ?? 0;
-    final currentStep = (stepIdx < route.steps.length) ? route.steps[stepIdx] : route.steps.last;
-    final dist = tracking?.formattedDistanceToManeuver ?? '150 m';
-
-    return GestureDetector(
-      onTap: widget.onExpandFullScreen,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-          child: Container(
-            height: 34,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.panel.withValues(alpha: 0.95),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF06B6D4), width: 1.2),
-              boxShadow: AppColors.cardShadow,
-            ),
-            child: Row(
-              children: [
-                Icon(currentStep.maneuver.icon, size: 16, color: const Color(0xFF06B6D4)),
-                const SizedBox(width: 6),
-                Text(
-                  dist,
-                  style: GoogleFonts.spaceGrotesk(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    currentStep.instruction,
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                const Icon(Icons.fullscreen_rounded, size: 14, color: AppColors.textDim),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  // =========================================================================
+  // SUB-WIDGETS: COMPASS & LIVE BIKE MARKER
+  // =========================================================================
 
   /// Nút La Bàn Tương Tác Xoay Đa Góc Nhìn (Interactive Map Compass)
   Widget _buildCompassButton() {
@@ -2009,37 +1344,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildDestinationMarker(NavSearchResult dest) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: const BoxDecoration(
-            color: Color(0xFFEF4444),
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: Color(0x66EF4444),
-                blurRadius: 8,
-                offset: Offset(0, 2),
-              ),
-            ],
-          ),
-          child: const Center(
-            child: Icon(Icons.flag_rounded, color: Colors.white, size: 18),
-          ),
-        ),
-        Container(
-          width: 3,
-          height: 8,
-          color: const Color(0xFFEF4444),
-        ),
-      ],
     );
   }
 
