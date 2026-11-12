@@ -2123,7 +2123,10 @@ class BleController extends Notifier<BleState> {
     throw Exception(err);
   }
 
-  Future<bool> _establish(BluetoothDevice device) async {
+  Future<bool> _establish(
+    BluetoothDevice device, {
+    bool isBackgroundReconnect = false,
+  }) async {
     // Auto-connect khi mở app (tryRestoreLastBike) và reconnect scheduler đi
     // THẲNG vào _establish, không qua connect() — nếu không tự mở session log
     // thì toàn bộ event của phiên tự động kết nối bị mất (sink null, event()
@@ -2144,7 +2147,7 @@ class BleController extends Notifier<BleState> {
     }
     _establishBusy = true;
     try {
-      return await _establishInner(device);
+      return await _establishInner(device, isBackgroundReconnect: isBackgroundReconnect);
     } finally {
       _establishBusy = false;
     }
@@ -2153,13 +2156,31 @@ class BleController extends Notifier<BleState> {
   Future<void> _connectWithCachePrime(
     BluetoothDevice device, {
     Duration timeout = const Duration(seconds: 10),
+    bool isBackgroundReconnect = false,
   }) async {
+    BluetoothDevice targetDevice = device;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      try {
+        final sys = await FlutterBluePlus.systemDevices([
+          Guid(Gatt.dashboardService),
+          Guid(Gatt.authService),
+          Guid(Gatt.infoService),
+        ]);
+        final sysMatch = sys
+            .where((d) => d.remoteId.str.toLowerCase() == device.remoteId.str.toLowerCase())
+            .firstOrNull;
+        if (sysMatch != null) {
+          targetDevice = sysMatch;
+        }
+      } catch (_) {}
+    }
+
     // 1. Kiểm tra nếu thiết bị đã được kết nối ở cấp độ OS (Android/iOS)
     final alreadyConnected = FlutterBluePlus.connectedDevices
-        .any((d) => d.remoteId == device.remoteId);
+        .any((d) => d.remoteId == targetDevice.remoteId);
     if (alreadyConnected) {
       try {
-        await device.connect(
+        await targetDevice.connect(
           license: License.nonprofit,
           timeout: const Duration(seconds: 4),
           autoConnect: false,
@@ -2185,7 +2206,7 @@ class BleController extends Notifier<BleState> {
         StreamSubscription? scanSub;
         final completer = Completer<void>();
         scanSub = FlutterBluePlus.scanResults.listen((results) {
-          if (results.any((r) => r.device.remoteId == device.remoteId)) {
+          if (results.any((r) => r.device.remoteId == targetDevice.remoteId)) {
             if (!completer.isCompleted) {
               completer.complete();
               try {
@@ -2195,7 +2216,7 @@ class BleController extends Notifier<BleState> {
           }
         });
         await FlutterBluePlus.startScan(
-          withRemoteIds: [device.remoteId.str],
+          withRemoteIds: [targetDevice.remoteId.str],
           timeout: const Duration(seconds: 2),
           androidScanMode: AndroidScanMode.lowLatency,
         );
@@ -2215,15 +2236,25 @@ class BleController extends Notifier<BleState> {
     }
 
     // 4. Kết nối trực tiếp sau khi cache đã được làm mới
-    await device.connect(
+    final effectiveTimeout = (!kIsWeb &&
+            defaultTargetPlatform == TargetPlatform.iOS &&
+            isBackgroundReconnect)
+        ? const Duration(seconds: 25)
+        : timeout;
+
+    await targetDevice.connect(
       license: License.nonprofit,
-      timeout: timeout,
+      timeout: effectiveTimeout,
       autoConnect: false,
     );
   }
 
-  Future<bool> _establishInner(BluetoothDevice device) async {
-    await _connectWithCachePrime(device);
+  Future<bool> _establishInner(
+    BluetoothDevice device, {
+    bool isBackgroundReconnect = false,
+  }) async {
+    await _connectWithCachePrime(device, isBackgroundReconnect: isBackgroundReconnect);
+    _connectedAt = DateTime.now();
     BleLogger.instance.event('connected', {'device_id': device.remoteId.str});
     _writeCounter = 0;
     _dashboardFailStreak = 0;
@@ -2340,6 +2371,29 @@ class BleController extends Notifier<BleState> {
         Duration(milliseconds: Gatt.dashboardPollMs), (_) => _pollDashboard());
     await _pollDashboard(); // đọc ngay 1 lần
     if (state.isAuthorized) {
+      unawaited(TripGpsTracker.instance.startTracking());
+
+      // Đọc RSSI & Kiểm tra Walk-Up tức thì ở giây thứ 0 (Fast Walk-Up Check on Connect)
+      try {
+        final curRssi = await device.readRssi().timeout(
+          const Duration(milliseconds: 600),
+          onTimeout: () => throw TimeoutException('fast readRssi timeout'),
+        );
+        final nearThreshold = state.walkUpRssiThreshold ?? -55.0;
+        if (_smoothedRssi == null ||
+            (curRssi >= nearThreshold && (curRssi - _smoothedRssi!) >= 8.0)) {
+          _rssiKalman.reset(curRssi.toDouble());
+          _smoothedRssi = curRssi.toDouble();
+        } else {
+          _smoothedRssi = _rssiKalman.filter(curRssi.toDouble());
+        }
+        state = state.copyWith(
+          rssi: curRssi,
+          filteredRssi: _smoothedRssi!.round(),
+        );
+        _checkAutoLockAndAlert();
+      } catch (_) {}
+
       // Giãn cách các tác vụ đọc thông số xe: refreshFwSettings ở 1500ms, fetchVehicleDiagnostics ở 4000ms
       // để chống nghẽn hàng đợi GATT trên CoreBluetooth iOS (vốn chạy ở MTU = 23).
       Future.delayed(const Duration(milliseconds: 1500), () {
@@ -2767,9 +2821,29 @@ class BleController extends Notifier<BleState> {
     try {
       // 6d2eb205 = struct thô 41B (không phải protobuf) — decode struct;
       // nếu sau này char đổi sang protobuf thật thì fallback tự động.
-      final msg = (payloadToDecode.length >= 36)
+      final isRawStruct = payloadToDecode.length >= 15 && payloadToDecode.length <= 45;
+      final msg = isRawStruct
           ? decodeDashboardStruct(payloadToDecode)
           : decodeBikeLogMsg(payloadToDecode);
+
+      if (isRawStruct && payloadToDecode.length < 33) {
+        final prev = state.lastTelemetry;
+        if (prev != null) {
+          if (payloadToDecode.length < 19 && prev.voltage > 10) msg.voltage = prev.voltage;
+          if (payloadToDecode.length < 20 && prev.percent > 0) msg.percent = prev.percent;
+          msg.bmsTemp = prev.bmsTemp;
+          msg.motor = prev.motor;
+          msg.ecu = prev.ecu;
+          msg.kmLeft = prev.kmLeft;
+          msg.error = prev.error;
+          // Nếu xe đang không hạ chân chống và có tốc độ > 0.5 km/h -> chắc chắn đang chạy (Drive/Super)
+          if (!msg.parking && msg.speed > 0.5) {
+            msg.state = (prev.state == BikeState.super_) ? BikeState.super_ : BikeState.drive;
+          } else if (prev.state != BikeState.off) {
+            msg.state = msg.parking ? BikeState.parking : prev.state;
+          }
+        }
+      }
 
       // Kiểm tra tính hợp lý của Telemetry trước khi cập nhật state
       if (!_isTelemetrySane(msg)) {
@@ -2821,10 +2895,22 @@ class BleController extends Notifier<BleState> {
           'fw=${msg.version} model=${msg.model}';
 
       // Cập nhật GPS tracker & chế độ lái xe (Chỉ ghi GPS khi ở D hoặc S và không gạt chân chống)
-      final isDriveMode = (msg.state == BikeState.drive || msg.state == BikeState.super_) && !msg.parking;
+      final isDriveMode = (msg.state == BikeState.drive ||
+              msg.state == BikeState.super_ ||
+              msg.state == BikeState.turtle ||
+              msg.state == BikeState.cruiseControl ||
+              (!msg.parking && msg.speed > 1.0)) &&
+          !msg.parking;
       TripGpsTracker.instance.setDriveMode(isDriveMode);
       TripGpsTracker.instance.updateBikeSpeed(msg.speed);
-      if (!TripGpsTracker.instance.isTracking && isDriveMode) {
+      TripGpsTracker.instance.updateVehicleState(
+        isConnected: state.phase == BlePhase.connected,
+        isBikeOn: msg.isBikeOn,
+        isSideStandDown: msg.parking,
+        isDriveMode: isDriveMode,
+        speedKmh: msg.speed,
+      );
+      if (!TripGpsTracker.instance.isTracking && (isDriveMode || msg.isBikeOn)) {
         unawaited(TripGpsTracker.instance.startTracking());
       }
 
@@ -2990,6 +3076,12 @@ class BleController extends Notifier<BleState> {
         bikeName: name,
         message: 'Đang kết nối với xe $name…',
       );
+      unawaited(ForegroundService.start(
+        title: 'Dat Bike: $name',
+        text: 'Đang duy trì kết nối ngầm & tự động mở khóa...',
+      ));
+      unawaited(TripGpsTracker.instance.restoreUnsavedPoints());
+      unawaited(TripGpsTracker.instance.startTracking());
       try {
         final ok = await _establish(device);
         if (ok && state.isAuthorized) {
@@ -3735,7 +3827,6 @@ class BleController extends Notifier<BleState> {
       }
     } catch (_) {}
 
-    final stored = perBikePw ?? legacyStored ?? (candidatePasswords.isNotEmpty ? candidatePasswords.first : null);
     final hasStoredPassword = candidatePasswords.isNotEmpty;
     // PIN ưu tiên: password truyền vào (nếu có) -> candidate đầu tiên -> rỗng
     var pin = (password != null && password.isNotEmpty)
@@ -4371,9 +4462,12 @@ class BleController extends Notifier<BleState> {
       return;
     }
 
-    final delay = state.reconnectIntervalSeconds > 0
+    int delay = state.reconnectIntervalSeconds > 0
         ? state.reconnectIntervalSeconds
         : ((_reconnectAttempts <= _backoff.length) ? _backoff[_reconnectAttempts - 1] : 30);
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS && state.autoReconnect) {
+      delay = min(delay, 2);
+    }
 
     _reconnectPending = true;
     final maxLabel = state.continuousScan ? 'liên tục' : 'lần $_reconnectAttempts/$maxAttempts';
@@ -4386,6 +4480,9 @@ class BleController extends Notifier<BleState> {
       title: 'Dat Bike: ${state.bikeName ?? device.platformName}',
       text: 'Đang thử kết nối lại ($maxLabel)...',
     ));
+    if (!TripGpsTracker.instance.isTracking) {
+      unawaited(TripGpsTracker.instance.startTracking());
+    }
     BleLogger.instance
         .event('reconnect_scheduled', {'attempt': _reconnectAttempts, 'delay_s': delay});
     _reconnectTimer?.cancel();
@@ -4393,7 +4490,7 @@ class BleController extends Notifier<BleState> {
       _reconnectPending = false;
       if (_manualDisconnect || (!state.continuousScan && _reconnectAttempts > maxAttempts)) return;
       try {
-        final ok = await _establish(device);
+        final ok = await _establish(device, isBackgroundReconnect: true);
         if (ok && state.isAuthorized) {
           BleLogger.instance.event('reconnected', {'attempt': _reconnectAttempts});
           _reconnectAttempts = 0;

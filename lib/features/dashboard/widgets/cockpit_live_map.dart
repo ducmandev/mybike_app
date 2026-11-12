@@ -795,7 +795,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                       padding: const EdgeInsets.only(right: 8.0),
                       child: _miniGlassBtn(
                         icon: Icons.arrow_back_rounded,
-                        tooltip: 'Quay lại',
+                        tooltip: 'Thu nhỏ về mặc định',
                         onTap: widget.onExpandFullScreen!,
                       ),
                     ),
@@ -974,84 +974,91 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                       border: Border.all(color: AppColors.panelBorderBright),
                       boxShadow: AppColors.cardShadow,
                     ),
-                    child: Row(
-                      children: [
-                        // Bên trái: TỐC ĐỘ XE
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isCompact = constraints.maxWidth < 340;
+                        return Row(
                           children: [
-                            const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
-                            const SizedBox(width: 4),
-                            Text(
-                              'TỐC ĐỘ XE: ',
-                              style: GoogleFonts.spaceGrotesk(
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.textDim,
-                                letterSpacing: 0.3,
-                              ),
+                            // Bên trái: TỐC ĐỘ XE
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
+                                const SizedBox(width: 4),
+                                if (!isCompact)
+                                  Text(
+                                    'XE: ',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: AppColors.textDim,
+                                      letterSpacing: 0.3,
+                                    ),
+                                  ),
+                                Text(
+                                  '${bikeSpeed.toStringAsFixed(0)} km/h',
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.primary,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
                             ),
-                            Text(
-                              '${bikeSpeed.toStringAsFixed(0)} km/h',
-                              style: GoogleFonts.spaceGrotesk(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.primary,
-                                fontFeatures: const [FontFeature.tabularFigures()],
+                            // Ở giữa: Biểu đồ sparkline nếu history >= 2 và đủ chỗ
+                            if (_gpsSpeedHistory.length >= 2 && constraints.maxWidth >= 260) ...[
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: CustomPaint(
+                                  size: const Size(double.infinity, 22),
+                                  painter: _GpsSpeedSparklinePainter(
+                                    history: _gpsSpeedHistory,
+                                    color: AppColors.secondary,
+                                  ),
+                                ),
                               ),
+                              const SizedBox(width: 6),
+                            ] else ...[
+                              const Spacer(),
+                            ],
+                            // Bên phải: TỐC ĐỘ GPS
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  width: 6,
+                                  height: 6,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: isTracking ? AppColors.tertiary : AppColors.secondary,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                if (!isCompact)
+                                  Text(
+                                    'GPS: ',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: AppColors.textDim,
+                                      letterSpacing: 0.3,
+                                    ),
+                                  ),
+                                Text(
+                                  '${gpsSpeed.toStringAsFixed(1)} km/h',
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: AppColors.secondary,
+                                    fontFeatures: const [FontFeature.tabularFigures()],
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
-                        ),
-                        // Ở giữa: Biểu đồ sparkline nếu history >= 2
-                        if (_gpsSpeedHistory.length >= 2) ...[
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: CustomPaint(
-                              size: const Size(double.infinity, 22),
-                              painter: _GpsSpeedSparklinePainter(
-                                history: _gpsSpeedHistory,
-                                color: AppColors.secondary,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                        ] else ...[
-                          const Spacer(),
-                        ],
-                        // Bên phải: TỐC ĐỘ GPS
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 6,
-                              height: 6,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: isTracking ? AppColors.tertiary : AppColors.secondary,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              'TỐC ĐỘ GPS: ',
-                              style: GoogleFonts.spaceGrotesk(
-                                fontSize: 9.5,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.textDim,
-                                letterSpacing: 0.3,
-                              ),
-                            ),
-                            Text(
-                              '${gpsSpeed.toStringAsFixed(1)} km/h',
-                              style: GoogleFonts.spaceGrotesk(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.secondary,
-                                fontFeatures: const [FontFeature.tabularFigures()],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -1209,57 +1216,66 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
 
                         // Hàng thông tin phụ bên dưới
                         const Divider(height: 12, color: AppColors.panelBorderBright),
-                        Row(
-                          children: [
-                            // Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h
-                            Text(
-                              'Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.textDim,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            // Sparkline ở giữa nếu history >= 2
-                            if (_gpsSpeedHistory.length >= 2) ...[
-                              Expanded(
-                                child: SizedBox(
-                                  height: 18,
-                                  child: CustomPaint(
-                                    size: const Size(double.infinity, 18),
-                                    painter: _GpsSpeedSparklinePainter(
-                                      history: _gpsSpeedHistory,
-                                      color: const Color(0xFF0EA5E9),
+                        LayoutBuilder(
+                          builder: (context, subConstraints) {
+                            final hideDetail = subConstraints.maxWidth < 360;
+                            return Row(
+                              children: [
+                                // Độ lệch
+                                Text(
+                                  hideDetail
+                                      ? 'Δ: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)}'
+                                      : 'Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.textDim,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                // Sparkline ở giữa nếu history >= 2 và đủ chỗ
+                                if (_gpsSpeedHistory.length >= 2 && subConstraints.maxWidth >= 280) ...[
+                                  Expanded(
+                                    child: SizedBox(
+                                      height: 18,
+                                      child: CustomPaint(
+                                        size: const Size(double.infinity, 18),
+                                        painter: _GpsSpeedSparklinePainter(
+                                          history: _gpsSpeedHistory,
+                                          color: const Color(0xFF0EA5E9),
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                            ] else ...[
-                              const Spacer(),
-                            ],
-                            // Trạng thái GPS
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  isTracking ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded,
-                                  size: 12,
-                                  color: isTracking ? AppColors.tertiary : AppColors.textDim,
-                                ),
-                                const SizedBox(width: 3),
-                                Text(
-                                  'GPS: ${isTracking ? "Đang theo dõi" : "Sẵn sàng"}',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    color: isTracking ? AppColors.tertiary : AppColors.textDim,
-                                  ),
+                                  const SizedBox(width: 4),
+                                ] else ...[
+                                  const Spacer(),
+                                ],
+                                // Trạng thái GPS
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      isTracking ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded,
+                                      size: 11,
+                                      color: isTracking ? AppColors.tertiary : AppColors.textDim,
+                                    ),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      hideDetail
+                                          ? (isTracking ? 'GPS' : 'OFF')
+                                          : 'GPS: ${isTracking ? "Đang theo dõi" : "Sẵn sàng"}',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: isTracking ? AppColors.tertiary : AppColors.textDim,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ],
-                            ),
-                          ],
+                            );
+                          },
                         ),
                       ],
                     ),

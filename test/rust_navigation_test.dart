@@ -1,5 +1,4 @@
 ﻿import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
@@ -32,15 +31,15 @@ void main() {
       expect(NavManeuverType.arrive.code, 'arrive');
       expect(NavManeuverType.straight.code, 'straight');
 
-      expect(NavManeuverType.turnLeft.vietnameseLabel, 'Ráº½ trÃ¡i');
-      expect(NavManeuverType.turnRight.vietnameseLabel, 'Ráº½ pháº£i');
-      expect(NavManeuverType.arrive.vietnameseLabel, 'Äáº¿n Ä‘Ã­ch');
+      expect(NavManeuverType.turnLeft.vietnameseLabel, 'Rẽ trái');
+      expect(NavManeuverType.turnRight.vietnameseLabel, 'Rẽ phải');
+      expect(NavManeuverType.arrive.vietnameseLabel, 'Đến đích');
     });
 
     test('NavSearchResult json roundtrip', () {
       const item = NavSearchResult(
-        displayName: 'Chá»£ Báº¿n ThÃ nh, Quáº­n 1',
-        shortName: 'Chá»£ Báº¿n ThÃ nh',
+        displayName: 'Chợ Bến Thành, Quận 1',
+        shortName: 'Chợ Bến Thành',
         lat: 10.7725,
         lng: 106.6980,
         category: 'landmark',
@@ -72,7 +71,7 @@ void main() {
       expect(route.distanceKm, 4.5);
       expect(route.durationMinutes, 10);
       expect(route.formattedDistance, '4.5 km');
-      expect(route.formattedDuration, '10 phÃºt');
+      expect(route.formattedDuration, '10 phút');
 
       const tracking = NavTrackingState(
         snappedLocation: LatLng(10.77, 106.70),
@@ -90,14 +89,14 @@ void main() {
       );
       expect(tracking.formattedDistanceToManeuver, '180 m');
       expect(tracking.formattedRemainingDistance, '3.2 km');
-      expect(tracking.formattedRemainingTime, '7 phÃºt');
+      expect(tracking.formattedRemainingTime, '7 phút');
     });
   });
 
   group('2. NativeNavBridge Routing & EV Forecast Tests', () {
     final bridge = NativeNavBridge();
-    const start = LatLng(10.7719, 106.7065); // Báº¿n Báº¡ch Äáº±ng
-    const end = LatLng(10.7725, 106.6980); // Chá»£ Báº¿n ThÃ nh
+    const start = LatLng(10.7719, 106.7065); // Bến Bạch Đằng
+    const end = LatLng(10.7725, 106.6980); // Chợ Bến Thành
 
     test('Native library is loaded on Windows via FFI', () {
       expect(bridge.isNativeLoaded, isTrue);
@@ -162,7 +161,7 @@ void main() {
       expect(route!.evForecast.isWarning, isTrue);
       expect(route.evForecast.status, 'warning');
       expect(route.evForecast.warningMessage, isNotNull);
-      expect(route.evForecast.warningMessage, contains('tráº¡m sáº¡c'));
+      expect(route.evForecast.warningMessage, contains('trạm sạc'));
     });
 
     test('EV forecast triggers critical when arrival battery drops below critical threshold', () {
@@ -178,7 +177,7 @@ void main() {
       expect(route!.evForecast.isCritical, isTrue);
       expect(route.evForecast.status, 'critical');
       expect(route.evForecast.warningMessage, isNotNull);
-      expect(route.evForecast.warningMessage, contains('Cáº§n sáº¡c'));
+      expect(route.evForecast.warningMessage, contains('Cần sạc'));
     });
 
     test('Zero or null batterySoc defaults to 100% without negative critical warning', () {
@@ -210,7 +209,7 @@ void main() {
 
     test('Fallback engine returns null for distances > 1500m without corridor', () {
       const farStart = LatLng(10.7719, 106.7065); // TP.HCM
-      const farEnd = LatLng(21.0287, 105.8523); // HÃ  Ná»™i (1,100 km)
+      const farEnd = LatLng(21.0287, 105.8523); // Hà Nội (1,100 km)
       final farRoute = bridge.calculateRoute(
         start: farStart,
         end: farEnd,
@@ -323,29 +322,29 @@ void main() {
     final searchService = PlaceSearchService();
 
     test('Normalizes Vietnamese diacritics accurately', () {
-      expect(PlaceSearchService.normalizeVietnamese('Chá»£ Báº¿n ThÃ nh'), 'cho ben thanh');
-      expect(PlaceSearchService.normalizeVietnamese('ÄÃ  Náºµng & HÃ  Ná»™i'), 'da nang & ha noi');
-      expect(PlaceSearchService.normalizeVietnamese('Thá»§ ThiÃªm 100%'), 'thu thiem 100%');
+      expect(PlaceSearchService.normalizeVietnamese('Chợ Bến Thành'), 'cho ben thanh');
+      expect(PlaceSearchService.normalizeVietnamese('Đà Nẵng & Hà Nội'), 'da nang & ha noi');
+      expect(PlaceSearchService.normalizeVietnamese('Thủ Thiêm 100%'), 'thu thiem 100%');
     });
 
     test('Searches built-in landmarks with Vietnamese diacritics', () async {
-      final results = await searchService.search('Chá»£ Báº¿n ThÃ nh');
+      final results = await searchService.search('Chợ Bến Thành');
       expect(results.isNotEmpty, isTrue);
-      expect(results.first.shortName, 'Chá»£ Báº¿n ThÃ nh');
+      expect(results.first.shortName, 'Chợ Bến Thành');
       expect(results.first.category, 'landmark');
     });
 
     test('Searches built-in landmarks without diacritics (unaccented)', () async {
       final results = await searchService.search('ben thanh');
-      expect(results.any((r) => r.shortName.contains('Báº¿n ThÃ nh')), isTrue);
+      expect(results.any((r) => r.shortName.contains('Bến Thành')), isTrue);
     });
 
     test('Searches with unaccented variants like thu thiem, ho guom', () async {
       final thuThiem = await searchService.search('thu thiem');
-      expect(thuThiem.any((r) => r.shortName.contains('Thá»§ ThiÃªm')), isTrue);
+      expect(thuThiem.any((r) => r.shortName.contains('Thủ Thiêm')), isTrue);
 
       final hoGuom = await searchService.search('ho hoan kiem');
-      expect(hoGuom.any((r) => r.shortName.contains('Há»“ HoÃ n Kiáº¿m')), isTrue);
+      expect(hoGuom.any((r) => r.shortName.contains('Hồ Hoàn Kiếm')), isTrue);
     });
 
     test('Supports direct coordinates search (lat, lng)', () async {
@@ -364,16 +363,16 @@ void main() {
     });
 
     test('Searches regional landmarks in Hanoi, Da Nang, Can Tho, Binh Duong', () async {
-      final hanoi = await searchService.search('Há»“ HoÃ n Kiáº¿m');
+      final hanoi = await searchService.search('Hồ Hoàn Kiếm');
       expect(hanoi.isNotEmpty, isTrue);
 
-      final danang = await searchService.search('Cáº§u Rá»“ng');
+      final danang = await searchService.search('Cầu Rồng');
       expect(danang.isNotEmpty, isTrue);
 
-      final cantho = await searchService.search('Ninh Kiá»u');
+      final cantho = await searchService.search('Ninh Kiều');
       expect(cantho.isNotEmpty, isTrue);
 
-      final binhduong = await searchService.search('BÃ¬nh DÆ°Æ¡ng');
+      final binhduong = await searchService.search('Bình Dương');
       expect(binhduong.isNotEmpty, isTrue);
     });
   });
@@ -390,8 +389,8 @@ void main() {
       expect(container.read(navigationProvider).isNavigating, isFalse);
 
       const dest = NavSearchResult(
-        displayName: 'Chá»£ Báº¿n ThÃ nh',
-        shortName: 'Chá»£ Báº¿n ThÃ nh',
+        displayName: 'Chợ Bến Thành',
+        shortName: 'Chợ Bến Thành',
         lat: 10.7725,
         lng: 106.6980,
         category: 'landmark',
@@ -435,12 +434,12 @@ void main() {
 
       final controller = container.read(navigationProvider.notifier);
 
-      // searchPlaces lá»c ngay káº¿t quáº£ ná»™i bá»™ vÃ  Ä‘áº·t isSearching = true
+      // searchPlaces lọc ngay kết quả nội bộ và đặt isSearching = true
       controller.searchPlaces('Ben Thanh');
       expect(container.read(navigationProvider).isSearching, isTrue);
       expect(container.read(navigationProvider).searchResults.isNotEmpty, isTrue);
 
-      // searchPlacesImmediately tÃ¬m kiáº¿m ngay láº­p tá»©c
+      // searchPlacesImmediately tìm kiếm ngay lập tức
       await controller.searchPlacesImmediately('Dat Charge Q1');
       expect(container.read(navigationProvider).isSearching, isFalse);
       expect(container.read(navigationProvider).searchResults.any((r) => r.shortName.contains('Q1')), isTrue);
@@ -452,8 +451,8 @@ void main() {
 
       final controller = container.read(navigationProvider.notifier);
       const dest = NavSearchResult(
-        displayName: 'Chá»£ Báº¿n ThÃ nh',
-        shortName: 'Chá»£ Báº¿n ThÃ nh',
+        displayName: 'Chợ Bến Thành',
+        shortName: 'Chợ Bến Thành',
         lat: 10.7725,
         lng: 106.6980,
         category: 'landmark',
@@ -467,7 +466,7 @@ void main() {
       final initialRoute = container.read(navigationProvider).activeRoute;
       expect(initialRoute, isNotNull);
 
-      // Di chuyá»ƒn lá»‡ch háº³n sang tá»a Ä‘á»™ khÃ¡c
+      // Di chuyển lệch hẳn sang tọa độ khác
       const offRouteGps = LatLng(10.8200, 106.7800);
       controller.updateGpsPosition(offRouteGps, 30.0, 90.0, batterySoc: 80);
 
@@ -503,24 +502,24 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.byType(CockpitLiveMap), findsOneWidget);
 
-      // Hiá»ƒn thá»‹ tá»‘c Ä‘á»™ xe (Tá»C Äá»˜ XE: 42 km/h hoáº·c chá»©a 42)
+      // Hiển thị tốc độ xe (TỐC ĐỘ XE: 42 km/h hoặc chứa 42)
       final bikeSpeedFinder = find.byWidgetPredicate((w) =>
           w is Text &&
           (w.data?.contains('42') == true ||
-           w.data?.contains('Tá»C Äá»˜ XE') == true ||
+           w.data?.contains('TỐC ĐỘ XE') == true ||
            w.data?.contains('XE:') == true));
       expect(bikeSpeedFinder, findsWidgets);
 
-      // Hiá»ƒn thá»‹ tá»‘c Ä‘á»™ tÃ­nh tá»« GPS (Tá»C Äá»˜ GPS hoáº·c GPS:)
+      // Hiển thị tốc độ tính từ GPS (TỐC ĐỘ GPS hoặc GPS:)
       final gpsSpeedFinder = find.byWidgetPredicate((w) =>
           w is Text &&
-          (w.data?.contains('Tá»C Äá»˜ GPS') == true ||
+          (w.data?.contains('TỐC ĐỘ GPS') == true ||
            w.data?.contains('GPS:') == true ||
            w.data?.contains('GPS') == true));
       expect(gpsSpeedFinder, findsWidgets);
 
-      // Kiá»ƒm tra thanh tÃ¬m kiáº¿m cÅ© khÃ´ng cÃ²n xuáº¥t hiá»‡n
-      expect(find.text('TÃ¬m Ä‘iá»ƒm Ä‘áº¿n, tráº¡m sáº¡c Dat Charge...'), findsNothing);
+      // Kiểm tra thanh tìm kiếm cũ không còn xuất hiện
+      expect(find.text('Tìm điểm đến, trạm sạc Dat Charge...'), findsNothing);
     });
 
     testWidgets(
@@ -548,14 +547,14 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.byType(CockpitLiveMap), findsOneWidget);
 
-      // Kiá»ƒm tra hiá»ƒn thá»‹ nhÃ£n 'Tá»C Äá»˜ XE' vÃ  'Tá»C Äá»˜ GPS', giÃ¡ trá»‹ '55.5', vÃ  nhÃ£n 'Äá»™ lá»‡ch:'
-      expect(find.textContaining('Tá»C Äá»˜ XE'), findsWidgets);
-      expect(find.textContaining('Tá»C Äá»˜ GPS'), findsWidgets);
+      // Kiểm tra hiển thị nhãn 'TỐC ĐỘ XE' và 'TỐC ĐỘ GPS', giá trị '55.5', và nhãn 'Độ lệch:'
+      expect(find.textContaining('TỐC ĐỘ XE'), findsWidgets);
+      expect(find.textContaining('TỐC ĐỘ GPS'), findsWidgets);
       expect(find.textContaining('55.5'), findsWidgets);
-      expect(find.textContaining('Äá»™ lá»‡ch:'), findsWidgets);
+      expect(find.textContaining('Độ lệch:'), findsWidgets);
 
-      // Kiá»ƒm tra thanh tÃ¬m kiáº¿m cÅ© khÃ´ng cÃ²n xuáº¥t hiá»‡n
-      expect(find.text('TÃ¬m Ä‘iá»ƒm Ä‘áº¿n, tráº¡m sáº¡c Dat Charge...'), findsNothing);
+      // Kiểm tra thanh tìm kiếm cũ không còn xuất hiện
+      expect(find.text('Tìm điểm đến, trạm sạc Dat Charge...'), findsNothing);
     });
 
     testWidgets(
@@ -584,20 +583,20 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Kiá»ƒm tra nÃºt Back (Icons.arrow_back_rounded)
+      // Kiểm tra nút Back (Icons.arrow_back_rounded)
       final backBtn = find.byIcon(Icons.arrow_back_rounded);
       expect(backBtn, findsWidgets);
       await tester.tap(backBtn.first);
       await tester.pumpAndSettle();
       expect(backPressed, isTrue);
 
-      // Kiá»ƒm tra nÃºt La bÃ n (find.text('Báº®C') -> tap -> find.text('XE'))
-      expect(find.text('Báº®C'), findsWidgets);
-      await tester.tap(find.text('Báº®C').first);
+      // Kiểm tra nút La bàn (find.text('BẮC') -> tap -> find.text('XE'))
+      expect(find.text('BẮC'), findsWidgets);
+      await tester.tap(find.text('BẮC').first);
       await tester.pumpAndSettle();
       expect(find.text('XE'), findsWidgets);
 
-      // Má»Ÿ menu kiá»ƒu báº£n Ä‘á»“ (Icons.layers_clear_rounded -> 'Báº£n Äá»“ Tá»‘i Giáº£n' / 'Tá»‘i Giáº£n')
+      // Mở menu kiểu bản đồ (Icons.layers_clear_rounded -> 'Bản Đồ Tối Giản' / 'Tối Giản')
       final styleBtn = find.byIcon(Icons.layers_clear_rounded);
       expect(styleBtn, findsWidgets);
       await tester.tap(styleBtn.first);
@@ -606,9 +605,9 @@ void main() {
       expect(
         find.byWidgetPredicate((w) =>
             w is Text &&
-            (w.data == 'Báº£n Äá»“ Tá»‘i Giáº£n (KhuyÃªn DÃ¹ng)' ||
-             w.data?.contains('Báº£n Äá»“ Tá»‘i Giáº£n') == true ||
-             w.data?.contains('Tá»‘i Giáº£n') == true)),
+            (w.data == 'Bản Đồ Tối Giản (Khuyên Dùng)' ||
+             w.data?.contains('Bản Đồ Tối Giản') == true ||
+             w.data?.contains('Tối Giản') == true)),
         findsWidgets,
       );
     });
@@ -634,8 +633,8 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.byType(CockpitLiveMap), findsOneWidget);
-      expect(find.textContaining('Tá»C Äá»˜ XE'), findsWidgets);
-      expect(find.textContaining('Tá»C Äá»˜ GPS'), findsWidgets);
+      expect(find.textContaining('TỐC ĐỘ XE'), findsWidgets);
+      expect(find.textContaining('TỐC ĐỘ GPS'), findsWidgets);
       expect(find.byIcon(Icons.arrow_back_rounded), findsWidgets);
     });
   });
@@ -649,29 +648,29 @@ void main() {
       expect(MapTileService.isMinimal(MapTileStyle.cyclosm), isFalse);
       expect(MapTileService.isMinimal(MapTileStyle.osmStandard), isFalse);
 
-      expect(MapTileService.getStyleName(MapTileStyle.minimalLight), contains('Tá»‘i Giáº£n'));
-      expect(MapTileService.getStyleName(MapTileStyle.fastCdn), contains('Chi Tiáº¿t'));
-      expect(MapTileService.getStyleDescription(MapTileStyle.minimalLight), contains('Lá»c bá»›t Khu phá»‘/PhÆ°á»ng'));
+      expect(MapTileService.getStyleName(MapTileStyle.minimalLight), contains('Tối Giản'));
+      expect(MapTileService.getStyleName(MapTileStyle.fastCdn), contains('Chi Tiết'));
+      expect(MapTileService.getStyleDescription(MapTileStyle.minimalLight), contains('Lọc bớt Khu phố/Phường'));
     });
 
     test('PlaceSearchService.cleanOsmDisplayName strips clutter and postal codes', () {
-      const raw1 = 'Chá»£ Báº¿n ThÃ nh, LÃª Lá»£i, PhÆ°á»ng Báº¿n ThÃ nh, Khu phá»‘ 1, Quáº­n 1, 700000, Viá»‡t Nam';
+      const raw1 = 'Chợ Bến Thành, Lê Lợi, Phường Bến Thành, Khu phố 1, Quận 1, 700000, Việt Nam';
       final clean1 = PlaceSearchService.cleanOsmDisplayName(raw1, minimal: true);
-      expect(clean1, 'Chá»£ Báº¿n ThÃ nh, LÃª Lá»£i, Quáº­n 1');
+      expect(clean1, 'Chợ Bến Thành, Lê Lợi, Quận 1');
 
       final clean1Detailed = PlaceSearchService.cleanOsmDisplayName(raw1, minimal: false);
-      expect(clean1Detailed, 'Chá»£ Báº¿n ThÃ nh, LÃª Lá»£i, PhÆ°á»ng Báº¿n ThÃ nh, Khu phá»‘ 1, Quáº­n 1');
+      expect(clean1Detailed, 'Chợ Bến Thành, Lê Lợi, Phường Bến Thành, Khu phố 1, Quận 1');
 
-      const raw2 = '101 BÃ¹i Thá»‹ XuÃ¢n, Tá»• dÃ¢n phá»‘ 12, áº¤p ÄÃ´ng, PhÆ°á»ng 2, TÃ¢n BÃ¬nh, 71000, Vietnam';
+      const raw2 = '101 Bùi Thị Xuân, Tổ dân phố 12, Ấp Đông, Phường 2, Tân Bình, 71000, Vietnam';
       final clean2 = PlaceSearchService.cleanOsmDisplayName(raw2, minimal: true);
-      expect(clean2, '101 BÃ¹i Thá»‹ XuÃ¢n, TÃ¢n BÃ¬nh');
+      expect(clean2, '101 Bùi Thị Xuân, Tân Bình');
 
-      const raw3 = 'KhÃ³m 3, ThÃ´n 5, XÃ£ HÃ²a PhÃº, Äáº¯k Láº¯k';
+      const raw3 = 'Khóm 3, Thôn 5, Xã Hòa Phú, Đắk Lắk';
       final clean3 = PlaceSearchService.cleanOsmDisplayName(raw3, minimal: true);
-      expect(clean3, 'Äáº¯k Láº¯k');
+      expect(clean3, 'Đắk Lắk');
 
       final clean3Detailed = PlaceSearchService.cleanOsmDisplayName(raw3, minimal: false);
-      expect(clean3Detailed, 'KhÃ³m 3, ThÃ´n 5, XÃ£ HÃ²a PhÃº, Äáº¯k Láº¯k');
+      expect(clean3Detailed, 'Khóm 3, Thôn 5, Xã Hòa Phú, Đắk Lắk');
     });
   });
 }

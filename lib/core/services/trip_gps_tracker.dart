@@ -81,6 +81,9 @@ class TripGpsTracker {
 
   bool _isTracking = false;
   bool _isDriveMode = false;
+  bool _isBikeConnected = false;
+  bool _isBikeOn = false;
+  bool _isSideStandDown = false;
   double _lastKnownBikeSpeed = 0.0;
   DateTime? _lastPointTime;
   Position? _lastPosition;
@@ -102,6 +105,9 @@ class TripGpsTracker {
 
   bool get isTracking => _isTracking;
   bool get isDriveMode => _isDriveMode;
+  bool get isBikeConnected => _isBikeConnected;
+  bool get isBikeOn => _isBikeOn;
+  bool get isSideStandDown => _isSideStandDown;
   List<TripGpsPoint> get recordedPoints => List.unmodifiable(_recordedPoints);
   Stream<TripGpsPoint> get onPointRecorded => _pointController.stream;
   Position? get lastPosition => _lastPosition;
@@ -113,6 +119,21 @@ class TripGpsTracker {
       _isDriveMode = active;
       debugPrint('[TripGpsTracker] Trạng thái ghi nhận chế độ lái D/S: $active');
     }
+  }
+
+  /// Cập nhật trạng thái xe toàn diện từ BLE
+  void updateVehicleState({
+    required bool isConnected,
+    required bool isBikeOn,
+    required bool isSideStandDown,
+    required bool isDriveMode,
+    required double speedKmh,
+  }) {
+    _isBikeConnected = isConnected;
+    _isBikeOn = isBikeOn;
+    _isSideStandDown = isSideStandDown;
+    _isDriveMode = isDriveMode;
+    _lastKnownBikeSpeed = speedKmh >= 0 ? speedKmh : 0.0;
   }
 
   /// Tự động lưu bộ nhớ đệm GPS định kỳ vào SharedPreferences để chống mất lộ trình khi vuốt/kill app
@@ -219,8 +240,8 @@ class TripGpsTracker {
   }
 
   /// Bắt đầu ghi GPS cho chuyến đi
-  Future<bool> startTracking() async {
-    if (_isTracking) return true;
+  Future<bool> startTracking({bool clearExisting = false}) async {
+    if (_isTracking && _positionSub != null) return true;
 
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -231,7 +252,11 @@ class TripGpsTracker {
 
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
+        try {
+          permission = await Geolocator.requestPermission().timeout(const Duration(seconds: 3));
+        } catch (e) {
+          debugPrint('[TripGpsTracker] Timeout hoặc lỗi xin quyền GPS: $e');
+        }
         if (permission == LocationPermission.denied) {
           debugPrint('[TripGpsTracker] Quyền vị trí bị từ chối');
           return false;
@@ -243,38 +268,30 @@ class TripGpsTracker {
         return false;
       }
 
-      _isTracking = true;
-      _recordedPoints.clear();
-      _lastPointTime = null;
-      _lastFilteredPoint = null;
-      _kalmanFilter.reset();
+      if (clearExisting) {
+        _recordedPoints.clear();
+        _lastPointTime = null;
+        _lastFilteredPoint = null;
+        _kalmanFilter.reset();
+      }
 
-      // Lấy ngay vị trí ban đầu (chỉ lấy nếu độ chính xác cao)
-      try {
-        final initialPos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-        );
-        if (initialPos.accuracy <= kMaxAcceptableAccuracyMeters && initialPos.accuracy > 0) {
-          _handleNewPosition(initialPos);
-        }
-      } catch (_) {}
+      // Hủy stream cũ nếu có
+      await _positionSub?.cancel();
+      _positionSub = null;
 
       // Cấu hình tần suất lấy GPS theo từng hệ điều hành
       LocationSettings locationSettings;
       if (defaultTargetPlatform == TargetPlatform.android) {
+        // Bỏ foregroundNotificationConfig của Geolocator vì app đã có ForegroundService
+        // kết nối BLE chính; việc tạo thêm service thứ hai dễ bị Android 12+ chặn khi gọi từ background.
         locationSettings = AndroidSettings(
           accuracy: LocationAccuracy.high,
           distanceFilter: 2,
           intervalDuration: const Duration(milliseconds: 1000),
-          foregroundNotificationConfig: const ForegroundNotificationConfig(
-            notificationTitle: 'My Bike - Theo dõi hành trình',
-            notificationText: 'Hệ thống đang ghi nhận lộ trình GPS chuyến đi của bạn liên tục...',
-            enableWakeLock: true,
-          ),
         );
       } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
         locationSettings = AppleSettings(
-          accuracy: LocationAccuracy.high,
+          accuracy: LocationAccuracy.bestForNavigation,
           activityType: ActivityType.automotiveNavigation,
           distanceFilter: 2,
           pauseLocationUpdatesAutomatically: false,
@@ -288,6 +305,7 @@ class TripGpsTracker {
         );
       }
 
+      // Khởi tạo stream GPS ngay lập tức
       _positionSub = Geolocator.getPositionStream(
         locationSettings: locationSettings,
       ).listen(
@@ -298,6 +316,25 @@ class TripGpsTracker {
           debugPrint('[TripGpsTracker] Lỗi stream GPS: $err');
         },
       );
+
+      _isTracking = true;
+
+      // Lấy ngay vị trí ban đầu bất đồng bộ (unawaited) để không chặn luồng khởi động
+      unawaited(() async {
+        try {
+          final initialPos = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+              timeLimit: Duration(seconds: 5),
+            ),
+          );
+          if (initialPos.accuracy <= kMaxAcceptableAccuracyMeters && initialPos.accuracy > 0) {
+            _handleNewPosition(initialPos);
+          }
+        } catch (e) {
+          debugPrint('[TripGpsTracker] Không lấy được initial position: $e');
+        }
+      }());
 
       debugPrint('[TripGpsTracker] Đã khởi động ghi GPS chuyến đi với bộ lọc Kalman');
       return true;
@@ -311,10 +348,13 @@ class TripGpsTracker {
   void _handleNewPosition(Position pos) {
     _lastPosition = pos;
 
-    // 0. BỘ LỌC CHẾ ĐỘ LÁI (DRIVE/SUPER MODE GATE)
-    // Chỉ ghi nhận GPS khi xe ở chế độ lái D (Drive) hoặc S (Sport/Super) và không gạt chân chống.
-    // Khi về P (Parking), tắt máy, hoặc dừng hạ chân chống, ngưng/tạm dừng ghi điểm GPS rác.
-    if (!_isDriveMode) {
+    // 0. BỘ LỌC ĐIỀU KIỆN GHI NHẬN (ĐA CỔNG THÔNG MINH)
+    // Cho phép ghi nhận nếu xe ở chế độ D/S HOẶC đang bật/kết nối và thực tế đang di chuyển
+    final gpsSpeedKmh = pos.speed >= 0 ? (pos.speed * 3.6) : 0.0;
+    final isMovingWithBikeOn = _isBikeOn && !_isSideStandDown && (_lastKnownBikeSpeed > 1.0 || gpsSpeedKmh > 4.0);
+    final isMovingWhileConnected = _isBikeConnected && !_isSideStandDown && gpsSpeedKmh > 5.5 && pos.accuracy <= 20.0;
+    final shouldRecord = _isDriveMode || isMovingWithBikeOn || isMovingWhileConnected;
+    if (!shouldRecord) {
       return;
     }
 

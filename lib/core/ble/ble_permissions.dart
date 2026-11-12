@@ -18,8 +18,10 @@ class BlePermissions {
   static Future<bool> ensure() async {
     if (kIsWeb) return true;
     if (Platform.isIOS) {
-      // Khởi tạo CBCentralManager thông qua FlutterBluePlus.adapterState (hiển thị popup
+      // 1. Khởi tạo CBCentralManager thông qua FlutterBluePlus.adapterState (hiển thị popup
       // xin quyền Bluetooth gốc của iOS nếu lần đầu mở ứng dụng) và chờ thoát trạng thái unknown.
+      // Tuyệt đối không gọi Permission.bluetooth.request() của permission_handler để tránh tạo
+      // CBCentralManager thứ 2 gây xung đột với FlutterBluePlus.
       var adapter = FlutterBluePlus.adapterStateNow;
       if (adapter == BluetoothAdapterState.unknown) {
         try {
@@ -31,6 +33,32 @@ class BlePermissions {
           adapter = FlutterBluePlus.adapterStateNow;
         }
       }
+
+      // 2. Xin Permission.locationWhenInUse nếu chưa granted
+      try {
+        if (!await Permission.locationWhenInUse.isGranted) {
+          await Permission.locationWhenInUse.request();
+        }
+      } catch (_) {}
+
+      // 3. Sau khi có locationWhenInUse, kiểm tra Permission.locationAlways:
+      // nếu chưa granted thì gọi await Permission.locationAlways.request() để nâng cấp lên "Always"
+      // (quyền bắt buộc để iOS giữ sống Dart VM chạy nền 24/7 và vẽ bản đồ GPS khi tắt màn hình)
+      try {
+        if (await Permission.locationWhenInUse.isGranted) {
+          if (!await Permission.locationAlways.isGranted) {
+            await Permission.locationAlways.request();
+          }
+        }
+      } catch (_) {}
+
+      // 4. Xin Permission.notification nếu chưa granted
+      try {
+        if (!await Permission.notification.isGranted) {
+          await Permission.notification.request();
+        }
+      } catch (_) {}
+
       return adapter != BluetoothAdapterState.unauthorized;
     }
     if (!Platform.isAndroid) return true;
