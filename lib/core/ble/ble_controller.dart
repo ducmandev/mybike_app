@@ -545,6 +545,7 @@ class BleController extends Notifier<BleState> {
   double _tripMaxSpeed = 0.0;
   double _tripSpeedSum = 0.0;
   int _tripSpeedSamples = 0;
+  bool _archiveBusy = false;
 
   @override
   BleState build() {
@@ -706,25 +707,66 @@ class BleController extends Notifier<BleState> {
   }
 
   Future<void> _archiveCurrentTripIfMeaningful() async {
-    final trip = state.trip;
-    final durSec = trip.duration.inSeconds;
-    final gpsDistKm = TripGpsTracker.instance.totalDistanceKm;
-    // Lấy quãng đường lớn hơn giữa ODO xe và GPS
-    final effectiveDistKm = trip.distanceKm > 0 ? trip.distanceKm : gpsDistKm;
-    final currentRoute = TripGpsTracker.instance.getCurrentRoute();
+    if (_archiveBusy) {
+      BleLogger.instance.event('trip_archive_skipped_busy', {});
+      return;
+    }
+    _archiveBusy = true;
+    try {
+      final trip = state.trip;
+      final durSec = trip.duration.inSeconds;
+      final gpsDistKm = TripGpsTracker.instance.totalDistanceKm;
+      // Lấy quãng đường lớn hơn giữa ODO xe và GPS
+      final effectiveDistKm = trip.distanceKm > 0 ? trip.distanceKm : gpsDistKm;
+      final currentRoute = TripGpsTracker.instance.getCurrentRoute();
 
-    // Bỏ qua nếu quãng đường quá ngắn (< 100m) VÀ không có điểm GPS thực tế nào được ghi nhận
-    if ((effectiveDistKm < 0.1 && currentRoute.isEmpty) || _tripStartTime == null) {
-      BleLogger.instance.event('trip_skipped_under_100m', {
-        'distance_km': effectiveDistKm,
-        'odo_dist_km': trip.distanceKm,
-        'gps_dist_km': gpsDistKm,
-        'duration_sec': durSec,
-      });
-      // Dừng tracking và giải phóng bộ nhớ GPS của cuốc đi ngắn
-      TripGpsTracker.instance.stopTracking();
+      // Bỏ qua nếu quãng đường quá ngắn (< 100m) VÀ không có điểm GPS thực tế nào được ghi nhận
+      if ((effectiveDistKm < 0.1 && currentRoute.isEmpty) || _tripStartTime == null) {
+        BleLogger.instance.event('trip_skipped_under_100m', {
+          'distance_km': effectiveDistKm,
+          'odo_dist_km': trip.distanceKm,
+          'gps_dist_km': gpsDistKm,
+          'duration_sec': durSec,
+        });
+        // Dừng tracking và giải phóng bộ nhớ GPS của cuốc đi ngắn
+        TripGpsTracker.instance.stopTracking();
+        TripGpsTracker.instance.clear();
+        // Reset mốc chuyến đi hiện tại để cuốc tiếp theo tính mới
+        final curTele = state.lastTelemetry;
+        _tripStartOdo = curTele?.odo;
+        _tripStartTime = null;
+        _tripStartPercent = curTele?.percent;
+        _tripMaxSpeed = 0.0;
+        _tripSpeedSum = 0.0;
+        _tripSpeedSamples = 0;
+        state = state.copyWith(
+          trip: TripData(powerKw: state.trip.powerKw),
+        );
+        return;
+      }
+
+      final startTime = _tripStartTime!;
+      final startOdo = _tripStartOdo;
+      final endOdo = state.lastTelemetry?.odo;
+      final now = DateTime.now();
+      final recordedRoute = TripGpsTracker.instance.stopTracking();
+      final record = TripRecord(
+        startTime: startTime,
+        endTime: now,
+        distanceKm: double.parse(effectiveDistKm.toStringAsFixed(2)),
+        durationSec: durSec,
+        avgSpeedKmh: trip.avgSpeedKmh,
+        maxSpeedKmh: trip.maxSpeedKmh,
+        usedPercent: trip.usedPercent,
+        startOdo: startOdo,
+        endOdo: endOdo,
+        route: recordedRoute,
+      );
+
+      // Snapshot xong: dọn sạch bộ nhớ RAM GPS & reset toàn bộ bộ đếm đồng bộ
+      // NGAY TRƯỚC KHI await saveTrip để các sự kiện nối đuôi (turnOffBike -> disconnected)
+      // không bao giờ đọc lại dữ liệu chuyến cũ.
       TripGpsTracker.instance.clear();
-      // Reset mốc chuyến đi hiện tại để cuốc tiếp theo tính mới
       final curTele = state.lastTelemetry;
       _tripStartOdo = curTele?.odo;
       _tripStartTime = null;
@@ -733,57 +775,35 @@ class BleController extends Notifier<BleState> {
       _tripSpeedSum = 0.0;
       _tripSpeedSamples = 0;
       state = state.copyWith(
+        tripHistory: [
+          record.copyWith(route: const []),
+          ...state.tripHistory.where((t) =>
+            t.id != record.id &&
+            !TripStorageService.isDuplicateTrip(t, record)
+          ),
+        ].take(50).toList(),
         trip: TripData(powerKw: state.trip.powerKw),
       );
-      return;
-    }
 
-    final now = DateTime.now();
-    final recordedRoute = TripGpsTracker.instance.stopTracking();
-    final record = TripRecord(
-      startTime: _tripStartTime!,
-      endTime: now,
-      distanceKm: double.parse(effectiveDistKm.toStringAsFixed(2)),
-      durationSec: durSec,
-      avgSpeedKmh: trip.avgSpeedKmh,
-      maxSpeedKmh: trip.maxSpeedKmh,
-      usedPercent: trip.usedPercent,
-      startOdo: _tripStartOdo,
-      endOdo: state.lastTelemetry?.odo,
-      route: recordedRoute,
-    );
-
-    // Lưu vào bộ nhớ chuẩn 2 tầng (Tách file tọa độ riêng, lưu metadata nhẹ)
-    await TripStorageService.instance.saveTrip(
-      trip: record,
-      route: recordedRoute,
-    );
-
-    final updated = [record.copyWith(route: const []), ...state.tripHistory.where((t) => t.id != record.id)].take(50).toList();
-    // Reset bộ đếm chuyến hiện tại ngay sau khi đã lưu để không bị lưu trùng lần 2 khi Tắt máy -> Ngắt BLE
-    final curTele = state.lastTelemetry;
-    _tripStartOdo = curTele?.odo;
-    _tripStartTime = null;
-    _tripStartPercent = curTele?.percent;
-    _tripMaxSpeed = 0.0;
-    _tripSpeedSum = 0.0;
-    _tripSpeedSamples = 0;
-    state = state.copyWith(
-      tripHistory: updated,
-      trip: TripData(powerKw: state.trip.powerKw),
-    );
-
-    try {
-      await TripGpsTracker.instance.clearSavedCache();
-      BleLogger.instance.event('trip_archived', {
-        'id': record.id,
-        'dist_km': record.distanceKm,
-        'dur_sec': record.durationSec,
-        'avg_speed': record.avgSpeedKmh,
-        'route_points': recordedRoute.length,
-      });
-    } catch (e) {
-      BleLogger.instance.event('trip_archive_error', {'error': '$e'});
+      // Lưu vào bộ nhớ chuẩn 2 tầng (Tách file tọa độ riêng, lưu metadata nhẹ)
+      try {
+        await TripStorageService.instance.saveTrip(
+          trip: record,
+          route: recordedRoute,
+        );
+        await TripGpsTracker.instance.clearSavedCache();
+        BleLogger.instance.event('trip_archived', {
+          'id': record.id,
+          'dist_km': record.distanceKm,
+          'dur_sec': record.durationSec,
+          'avg_speed': record.avgSpeedKmh,
+          'route_points': recordedRoute.length,
+        });
+      } catch (e) {
+        BleLogger.instance.event('trip_archive_error', {'error': '$e'});
+      }
+    } finally {
+      _archiveBusy = false;
     }
   }
 
@@ -2936,14 +2956,23 @@ class BleController extends Notifier<BleState> {
       }
 
       // Cập nhật máy tính chuyến đi (Trip Computer) & Công suất tức thời
-      _tripStartTime ??= DateTime.now();
+      // Chỉ khởi tạo mốc bắt đầu chuyến khi xe đang BẬT hoặc thực sự di chuyển
+      // (hoặc đang có dữ liệu GPS khôi phục), tránh tạo _tripStartTime giả khi xe tắt.
+      if (_tripStartTime == null &&
+          (msg.isBikeOn ||
+              msg.speed > 0.5 ||
+              TripGpsTracker.instance.recordedPoints.isNotEmpty)) {
+        _tripStartTime = DateTime.now();
+      }
       if (_tripStartOdo == null && msg.odo > 0) _tripStartOdo = msg.odo;
       if (_tripStartPercent == null && msg.percent > 0) _tripStartPercent = msg.percent;
 
       final dist = (msg.odo > 0 && _tripStartOdo != null)
           ? max(0.0, msg.odo - _tripStartOdo!)
           : state.trip.distanceKm;
-      final dur = DateTime.now().difference(_tripStartTime!);
+      final dur = _tripStartTime != null
+          ? DateTime.now().difference(_tripStartTime!)
+          : Duration.zero;
       if (msg.speed > _tripMaxSpeed) _tripMaxSpeed = msg.speed;
       if (msg.speed > 0.5) {
         _tripSpeedSum += msg.speed;
@@ -3080,7 +3109,6 @@ class BleController extends Notifier<BleState> {
         title: 'Dat Bike: $name',
         text: 'Đang duy trì kết nối ngầm & tự động mở khóa...',
       ));
-      unawaited(TripGpsTracker.instance.restoreUnsavedPoints());
       unawaited(TripGpsTracker.instance.startTracking());
       try {
         final ok = await _establish(device);
@@ -3310,6 +3338,7 @@ class BleController extends Notifier<BleState> {
     await _archiveCurrentTripIfMeaningful();
     _recordParkingSnapshot();
     TripGpsTracker.instance.stopTracking();
+    TripGpsTracker.instance.clear();
     _cancelReconnect();
     _stopKeepalive();
     _findBikeTimeoutTimer?.cancel();

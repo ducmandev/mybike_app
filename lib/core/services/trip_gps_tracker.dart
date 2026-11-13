@@ -89,6 +89,9 @@ class TripGpsTracker {
   Position? _lastPosition;
   TripGpsPoint? _lastFilteredPoint;
   DateTime? _lastPersistTime;
+  int _sessionEpoch = 0;
+  bool _hasRestoredFromCache = false;
+  Future<void>? _restoreFuture;
 
   static const String _kActiveGpsPointsKey = 'active_trip_gps_points_cache';
   static const String _kActiveGpsTimeKey = 'active_trip_gps_last_time';
@@ -138,25 +141,58 @@ class TripGpsTracker {
 
   /// Tự động lưu bộ nhớ đệm GPS định kỳ vào SharedPreferences để chống mất lộ trình khi vuốt/kill app
   Future<void> _persistPointsDebounced() async {
+    if (!_isTracking || _recordedPoints.isEmpty) {
+      return;
+    }
     final now = DateTime.now();
     if (_lastPersistTime != null && now.difference(_lastPersistTime!).inSeconds < 4) {
       return;
     }
     _lastPersistTime = now;
+
+    final epoch = _sessionEpoch;
+    final snapshotJson = jsonEncode(_recordedPoints.map((p) => p.toJson()).toList());
+    final nowIso = now.toIso8601String();
+
     try {
       final prefs = await SharedPreferences.getInstance();
-      final rawList = _recordedPoints.map((p) => p.toJson()).toList();
-      await prefs.setString(_kActiveGpsPointsKey, jsonEncode(rawList));
-      await prefs.setString(_kActiveGpsTimeKey, now.toIso8601String());
+      if (epoch != _sessionEpoch) return;
+      await prefs.setString(_kActiveGpsPointsKey, snapshotJson);
+      if (epoch != _sessionEpoch) return;
+      await prefs.setString(_kActiveGpsTimeKey, nowIso);
     } catch (e) {
       debugPrint('[TripGpsTracker] Lỗi lưu đệm GPS vào SharedPreferences: $e');
     }
   }
 
   /// Khôi phục các điểm GPS đang ghi dở dang nếu người dùng lỡ vuốt tắt app
-  Future<void> restoreUnsavedPoints() async {
+  Future<void> restoreUnsavedPoints() {
+    if (_restoreFuture != null) {
+      return _restoreFuture!;
+    }
+    if (_hasRestoredFromCache || _recordedPoints.isNotEmpty) {
+      return Future.value();
+    }
+
+    _hasRestoredFromCache = true;
+    final epoch = _sessionEpoch;
+    late final Future<void> future;
+    future = _performRestoreUnsavedPoints(epoch).whenComplete(() {
+      if (identical(_restoreFuture, future)) {
+        _restoreFuture = null;
+      }
+    });
+    _restoreFuture = future;
+    return future;
+  }
+
+  Future<void> _performRestoreUnsavedPoints(int epoch) async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (epoch != _sessionEpoch || _recordedPoints.isNotEmpty) {
+        return;
+      }
+
       final cachedJson = prefs.getString(_kActiveGpsPointsKey);
       final cachedTimeStr = prefs.getString(_kActiveGpsTimeKey);
 
@@ -168,8 +204,9 @@ class TripGpsTracker {
           final restored = decoded
               .map((item) => TripGpsPoint.fromJson(item as Map<String, dynamic>))
               .toList();
-          if (restored.isNotEmpty) {
-            _recordedPoints.clear();
+          if (restored.isNotEmpty &&
+              epoch == _sessionEpoch &&
+              _recordedPoints.isEmpty) {
             _recordedPoints.addAll(restored);
             _lastFilteredPoint = restored.last;
             debugPrint('[TripGpsTracker] Đã khôi phục thành công ${restored.length} điểm GPS từ bộ nhớ đệm!');
@@ -185,6 +222,8 @@ class TripGpsTracker {
 
   /// Xóa sạch bộ nhớ đệm điểm GPS dở dang
   Future<void> clearSavedCache() async {
+    _sessionEpoch++;
+    _lastPersistTime = null;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_kActiveGpsPointsKey);
@@ -269,9 +308,11 @@ class TripGpsTracker {
       }
 
       if (clearExisting) {
+        _sessionEpoch++;
         _recordedPoints.clear();
         _lastPointTime = null;
         _lastFilteredPoint = null;
+        _lastPersistTime = null;
         _kalmanFilter.reset();
       }
 
@@ -484,9 +525,11 @@ class TripGpsTracker {
 
   /// Xóa bộ nhớ đệm điểm GPS
   void clear() {
+    _sessionEpoch++;
     _recordedPoints.clear();
     _lastPointTime = null;
     _lastFilteredPoint = null;
+    _lastPersistTime = null;
     _kalmanFilter.reset();
     unawaited(clearSavedCache());
   }

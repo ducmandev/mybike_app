@@ -21,6 +21,59 @@ class TripStorageService {
 
   Directory? _tripsDir;
   Completer<Directory>? _initCompleter;
+  Future<void> _opLock = Future.value();
+
+  Future<T> _synchronized<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _opLock = _opLock.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
+
+  /// Kiểm tra 2 bản ghi chuyến đi có phải là bản trùng lặp của cùng 1 chuyến hay không
+  static bool isDuplicateTrip(TripRecord a, TripRecord b) {
+    if (a.id == b.id) return true;
+
+    final sameDistance = (a.distanceKm - b.distanceKm).abs() <= 0.05;
+    if (!sameDistance) return false;
+
+    final sameStartTime = a.startTime.difference(b.startTime).inSeconds.abs() <= 5;
+    if (sameStartTime) return true;
+
+    final sameEndTime = a.endTime.difference(b.endTime).inSeconds.abs() <= 5;
+    final sameDuration = (a.durationSec - b.durationSec).abs() <= 15;
+    final sameStartOdo = a.startOdo != null &&
+        b.startOdo != null &&
+        (a.startOdo! - b.startOdo!).abs() <= 0.05;
+    final sameEndOdo = a.endOdo != null &&
+        b.endOdo != null &&
+        (a.endOdo! - b.endOdo!).abs() <= 0.05;
+
+    if (sameEndTime && (sameDuration || sameStartOdo || sameEndOdo)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /// Khử trùng lặp danh sách chuyến đi, ưu tiên giữ bản ghi đầy đủ hơn (durationSec lớn hơn hoặc nằm trước)
+  static List<TripRecord> _deduplicateTrips(List<TripRecord> trips) {
+    final result = <TripRecord>[];
+    for (final candidate in trips) {
+      final dupIndex = result.indexWhere((existing) => isDuplicateTrip(existing, candidate));
+      if (dupIndex == -1) {
+        result.add(candidate);
+      } else if (candidate.durationSec > result[dupIndex].durationSec) {
+        result[dupIndex] = candidate;
+      }
+    }
+    return result;
+  }
 
   /// Lấy thư mục lưu trữ các tệp tọa độ GPS chuyến đi
   Future<Directory> getTripsDirectory() async {
@@ -43,8 +96,8 @@ class TripStorageService {
     }
   }
 
-  /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi
-  Future<List<TripRecord>> loadAllTrips() async {
+  /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi (không khóa)
+  Future<List<TripRecord>> _loadAllTripsUnsafe() async {
     try {
       final prefs = await SharedPreferences.getInstance();
 
@@ -95,6 +148,24 @@ class TripStorageService {
     return [];
   }
 
+  /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi
+  Future<List<TripRecord>> loadAllTrips() {
+    return _synchronized(() async {
+      final loaded = await _loadAllTripsUnsafe();
+      final deduped = _deduplicateTrips(loaded);
+      if (deduped.length < loaded.length) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final metaStr = jsonEncode(deduped.map((e) => e.toMetadataJson()).toList());
+          await prefs.setString(_kTripMetadataKey, metaStr);
+        } catch (e) {
+          debugPrint('[TripStorageService] Lỗi dọn dẹp chuyến đi trùng lặp: $e');
+        }
+      }
+      return deduped;
+    });
+  }
+
   /// Tải lười (Lazy load) tọa độ GPS chi tiết của 1 chuyến đi cụ thể
   Future<List<TripGpsPoint>> loadTripRoute(TripRecord trip) async {
     if (trip.route.isNotEmpty) return trip.route;
@@ -120,81 +191,109 @@ class TripStorageService {
   Future<void> saveTrip({
     required TripRecord trip,
     required List<TripGpsPoint> route,
-  }) async {
-    try {
-      // 1. Lưu file tọa độ GPS chi tiết (Atomic write)
-      if (route.isNotEmpty) {
+  }) {
+    return _synchronized(() async {
+      try {
         final dir = await getTripsDirectory();
-        final tmpFile = File('${dir.path}/${trip.id}.json.tmp');
-        final targetFile = File('${dir.path}/${trip.id}.json');
-        final routeJson = jsonEncode(route.map((p) => p.toJson()).toList());
-        await tmpFile.writeAsString(routeJson, flush: true);
-        if (await targetFile.exists()) {
-          await targetFile.delete();
+
+        // 1. Lưu file tọa độ GPS chi tiết (Atomic write)
+        if (route.isNotEmpty) {
+          final tmpFile = File('${dir.path}/${trip.id}.json.tmp');
+          final targetFile = File('${dir.path}/${trip.id}.json');
+          final routeJson = jsonEncode(route.map((p) => p.toJson()).toList());
+          await tmpFile.writeAsString(routeJson, flush: true);
+          if (await targetFile.exists()) {
+            await targetFile.delete();
+          }
+          await tmpFile.rename(targetFile.path);
         }
-        await tmpFile.rename(targetFile.path);
+
+        // 2. Cập nhật Metadata danh bạ (Tầng 1) & khử trùng lặp
+        final existing = await _loadAllTripsUnsafe();
+        final filteredExisting = <TripRecord>[];
+        for (final t in existing) {
+          if (isDuplicateTrip(t, trip)) {
+            if (t.id != trip.id) {
+              try {
+                final oldFile = File('${dir.path}/${t.id}.json');
+                if (await oldFile.exists()) {
+                  await oldFile.delete();
+                }
+              } catch (e) {
+                debugPrint('[TripStorageService] Lỗi xóa file lộ trình trùng ${t.id}: $e');
+              }
+            }
+          } else {
+            filteredExisting.add(t);
+          }
+        }
+
+        final metaRecord = trip.copyWith(route: const []);
+        final updated = [metaRecord, ...filteredExisting].take(_kMaxTrips).toList();
+
+        final prefs = await SharedPreferences.getInstance();
+        final metaStr = jsonEncode(updated.map((e) => e.toMetadataJson()).toList());
+        await prefs.setString(_kTripMetadataKey, metaStr);
+        await prefs.remove(_kLegacyTripKey);
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi lưu chuyến đi: $e');
       }
-
-      // 2. Cập nhật Metadata danh bạ (Tầng 1)
-      final existing = await loadAllTrips();
-      final metaRecord = trip.copyWith(route: const []);
-      final updated = [metaRecord, ...existing.where((t) => t.id != trip.id)].take(_kMaxTrips).toList();
-
-      final prefs = await SharedPreferences.getInstance();
-      final metaStr = jsonEncode(updated.map((e) => e.toMetadataJson()).toList());
-      await prefs.setString(_kTripMetadataKey, metaStr);
-      await prefs.remove(_kLegacyTripKey);
-    } catch (e) {
-      debugPrint('[TripStorageService] Lỗi lưu chuyến đi: $e');
-    }
+    });
   }
 
   /// Xóa 1 chuyến đi: xóa file tọa độ và xóa khỏi metadata
-  Future<void> deleteTrip(TripRecord trip) async {
-    try {
-      // 1. Xóa file tọa độ
-      final dir = await getTripsDirectory();
-      final file = File('${dir.path}/${trip.id}.json');
-      if (await file.exists()) {
-        await file.delete();
+  Future<void> deleteTrip(TripRecord trip) {
+    return _synchronized(() async {
+      try {
+        final existing = await _loadAllTripsUnsafe();
+        final idsToDelete = <String>{
+          trip.id,
+          ...existing.where((t) => isDuplicateTrip(t, trip)).map((t) => t.id),
+        };
+
+        // 1. Xóa file tọa độ
+        final dir = await getTripsDirectory();
+        for (final id in idsToDelete) {
+          final file = File('${dir.path}/$id.json');
+          if (await file.exists()) {
+            await file.delete();
+          }
+        }
+
+        // 2. Cập nhật metadata
+        final updated = existing.where((t) => !isDuplicateTrip(t, trip)).toList();
+
+        final prefs = await SharedPreferences.getInstance();
+        final metaStr = jsonEncode(updated.map((e) => e.toMetadataJson()).toList());
+        await prefs.setString(_kTripMetadataKey, metaStr);
+        await prefs.remove(_kLegacyTripKey);
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi xóa chuyến đi: $e');
       }
-
-      // 2. Cập nhật metadata
-      final existing = await loadAllTrips();
-      final updated = existing.where((t) =>
-        t.id != trip.id &&
-        !(t.startTime.millisecondsSinceEpoch == trip.startTime.millisecondsSinceEpoch &&
-          (t.distanceKm - trip.distanceKm).abs() < 0.001)
-      ).toList();
-
-      final prefs = await SharedPreferences.getInstance();
-      final metaStr = jsonEncode(updated.map((e) => e.toMetadataJson()).toList());
-      await prefs.setString(_kTripMetadataKey, metaStr);
-      await prefs.remove(_kLegacyTripKey);
-    } catch (e) {
-      debugPrint('[TripStorageService] Lỗi xóa chuyến đi: $e');
-    }
+    });
   }
 
   /// Xóa toàn bộ lịch sử chuyến đi
-  Future<void> clearAll() async {
-    try {
-      final dir = await getTripsDirectory();
-      if (await dir.exists()) {
-        final files = dir.listSync();
-        for (final f in files) {
-          if (f is File) {
-            try {
-              f.deleteSync();
-            } catch (_) {}
+  Future<void> clearAll() {
+    return _synchronized(() async {
+      try {
+        final dir = await getTripsDirectory();
+        if (await dir.exists()) {
+          final files = dir.listSync();
+          for (final f in files) {
+            if (f is File) {
+              try {
+                f.deleteSync();
+              } catch (_) {}
+            }
           }
         }
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_kTripMetadataKey);
+        await prefs.remove(_kLegacyTripKey);
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi xóa toàn bộ lịch sử: $e');
       }
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_kTripMetadataKey);
-      await prefs.remove(_kLegacyTripKey);
-    } catch (e) {
-      debugPrint('[TripStorageService] Lỗi xóa toàn bộ lịch sử: $e');
-    }
+    });
   }
 }
