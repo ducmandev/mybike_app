@@ -8,28 +8,36 @@ import CoreLocation
   private var isKeepAliveActive: Bool = false
   private var bgTask: UIBackgroundTaskIdentifier = .invalid
   private var backgroundChannel: FlutterMethodChannel?
+  private var didEnterBackgroundObserver: NSObjectProtocol?
+
+  deinit {
+    if let observer = didEnterBackgroundObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
+  }
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    let result = super.application(application, didFinishLaunchingWithOptions: launchOptions)
-
-    let messenger: FlutterBinaryMessenger? = (window?.rootViewController as? FlutterViewController)?.binaryMessenger
-      ?? self.registrar(forPlugin: "com.datbike.mybike/ios_background")?.messenger()
-
-    if let messenger = messenger {
-      setupMethodChannel(messenger: messenger)
+    // Tuyệt đối không truy cập window hoặc gọi self.registrar(forPlugin:) ở đây:
+    // App sử dụng UISceneDelegate (FlutterImplicitEngineDelegate), nên window chưa tồn tại
+    // và gọi registrar(forPlugin:) sớm sẽ gây trùng plugin key khi didInitializeImplicitFlutterEngine chạy.
+    if didEnterBackgroundObserver == nil {
+      didEnterBackgroundObserver = NotificationCenter.default.addObserver(
+        forName: UIApplication.didEnterBackgroundNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.handleDidEnterBackground()
+      }
     }
-
-    return result
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    if let messenger = engineBridge.pluginRegistry.registrar(forPlugin: "com.datbike.mybike/ios_background")?.messenger() {
-      setupMethodChannel(messenger: messenger)
-    }
+    setupMethodChannel(messenger: engineBridge.applicationRegistrar.messenger())
   }
 
   private func setupMethodChannel(messenger: FlutterBinaryMessenger) {
@@ -122,12 +130,16 @@ import CoreLocation
     }
   }
 
-  override func applicationDidEnterBackground(_ application: UIApplication) {
-    super.applicationDidEnterBackground(application)
+  private func handleDidEnterBackground() {
     if isKeepAliveActive {
       beginOrRenewBackgroundTask()
       keepAliveLocationManager?.startUpdatingLocation()
     }
+  }
+
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    super.applicationDidEnterBackground(application)
+    handleDidEnterBackground()
   }
 
   // MARK: - CLLocationManagerDelegate
