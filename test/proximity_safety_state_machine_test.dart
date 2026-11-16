@@ -1,14 +1,16 @@
-﻿// Unit Test Suite: Proximity & Safety State Machine (Â§4.6)
+// Unit Test Suite: Proximity & Safety State Machine (§4.6)
 //
-// Kiá»ƒm chá»©ng toÃ n diá»‡n logic & thuáº­t toÃ¡n cho 7 ká»‹ch báº£n an toÃ n:
-// 1. Luá»“ng 1: Walk-Up Fast-Track Kalman Convergence
-// 2. Luá»“ng 2A: Body Shadowing Protection (Äá»©ng gáº§n 2-3m bá»‹ suy hao thoÃ¡ng qua)
-// 3. Luá»“ng 2B: Chá»‘t 1 láº§n _walkUpConsumed & Timeout 90 giÃ¢y Ä‘á»©ng gáº§n khÃ´ng di chuyá»ƒn
-// 4. Luá»“ng 3: Láº¡i gáº§n má»Ÿ xe láº¥y Ä‘á»“ trong 5 giÃ¢y rá»“i Ä‘i xa ngay (Expedited Auto-Lock)
-// 5. Case 4: Báº£o vá»‡ khi dá»«ng Ä‘Ã¨n Ä‘á» á»Ÿ mode Drive / Super (Red Light Safety)
-// 6. Case 5: TÃ¡i vÅ© trang _walkUpConsumed khi thá»±c sá»± rá»i xa (Rearm Hysteresis)
-// 7. Case 6: Chá»‘ng trá»™m antiTheft5m phÃ¢n biá»‡t tá»‘c Ä‘á»™ tháº¥p (<=15km/h) vÃ  cao (>15km/h)
+// Kiểm chứng toàn diện logic & thuật toán cho 7 kịch bản an toàn:
+// 1. Luồng 1: Walk-Up Fast-Track Kalman Convergence
+// 2. Luồng 2A: Body Shadowing Protection (Đứng gần 2-3m bị suy hao thoáng qua)
+// 3. Luồng 2B: Chốt 1 lần _walkUpConsumed & Timeout 90 giây đứng gần không di chuyển
+// 4. Luồng 3: Lại gần mở xe lấy đồ trong 5 giây rồi đi xa ngay (Expedited Auto-Lock)
+// 5. Case 4: Bảo vệ khi dừng đèn đỏ ở mode Drive / Super (Red Light Safety)
+// 6. Case 5: Tái vũ trang _walkUpConsumed khi thực sự rời xa (Rearm Hysteresis)
+// 7. Case 6: Chống trộm antiTheft5m phân biệt tốc độ thấp (<=15km/h) và cao (>15km/h)
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,19 +18,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mybike_app/core/proto/bike_log.dart';
 import 'package:mybike_app/core/utils/kalman_filter.dart';
 import 'package:mybike_app/core/ble/ble_controller.dart';
+import 'package:mybike_app/core/ble/gatt.dart';
 
-/// MÃ¡y tráº¡ng thÃ¡i mÃ´ phá»ng Proximity & Safety State Machine cá»§a Dat Bike App.
-/// Thá»±c thi chÃ­nh xÃ¡c cÃ¡c quy táº¯c nghiá»‡p vá»¥ theo Ä‘áº·c táº£ ká»¹ thuáº­t Â§4.6.
+/// Máy trạng thái mô phỏng Proximity & Safety State Machine của Dat Bike App.
+/// Thực thi chính xác các quy tắc nghiệp vụ theo đặc tả kỹ thuật §4.6.
 class ProximitySafetyStateMachine {
-  // --- Cáº¥u hÃ¬nh (Configuration) ---
+  // --- Cấu hình (Configuration) ---
   bool walkUpUnlock;
   bool walkUpAutoPowerOn;
   bool autoLockWalkAway;
   bool antiTheft5m;
 
-  double nearThreshold; // Máº·c Ä‘á»‹nh -55.0 dBm (~1-2m)
-  double targetThreshold; // Máº·c Ä‘á»‹nh -75.0 dBm
-  double rearmThreshold; // Máº·c Ä‘á»‹nh -78.0 dBm
+  double nearThreshold; // Mặc định -55.0 dBm (~1-2m)
+  double targetThreshold; // Mặc định -75.0 dBm
+  double rearmThreshold; // Mặc định -78.0 dBm
 
   static const double kTheftLowSpeedThreshold = -78.0;
   static const double kTheftHighSpeedThreshold = -85.0;
@@ -37,10 +40,10 @@ class ProximitySafetyStateMachine {
   static const int kTheftHighSpeedCycles = 8;
   static const int kIdleTimeoutSeconds = 90;
 
-  // --- Bá»™ lá»c tÃ­n hiá»‡u Kalman 1D ---
+  // --- Bộ lọc tín hiệu Kalman 1D ---
   final KalmanFilter1D kalman;
 
-  // --- Biáº¿n tráº¡ng thÃ¡i mÃ¡y (State Variables) ---
+  // --- Biến trạng thái máy (State Variables) ---
   double? smoothedRssi;
   bool walkUpConsumed = false;
   bool openedByWalkUp = false;
@@ -75,28 +78,28 @@ class ProximitySafetyStateMachine {
     KalmanFilter1D? customKalman,
   }) : kalman = customKalman ?? KalmanFilter1D(processNoise: 0.05, measurementNoise: 3.0);
 
-  /// RÃ o cháº¯n 15s Ä‘áº§u vá»«a káº¿t ná»‘i:
-  /// ÄÆ°á»£c gá»¡ bá» NGAY Láº¬P Tá»¨C khi xe Ä‘Ã£ Ä‘Æ°á»£c má»Ÿ bá»Ÿi Walk-Up hoáº·c user Ä‘Ã£ tá»«ng bÆ°á»›c sÃ¡t xe!
+  /// Rào chắn 15s đầu vừa kết nối:
+  /// Được gỡ bỏ NGAY LẬP TỨC khi xe đã được mở bởi Walk-Up hoặc user đã từng bước sát xe!
   bool isEffectiveJustConnected(DateTime now) {
     if (connectedAt == null) return false;
     final in15sWindow = now.difference(connectedAt!) < const Duration(seconds: 15);
-    // Náº¿u Ä‘Ã£ tá»«ng gáº§n xe hoáº·c Ä‘Ã£ má»Ÿ bá»Ÿi Walk-Up -> rÃ o cháº¯n máº¥t hiá»‡u lá»±c
+    // Nếu đã từng gần xe hoặc đã mở bởi Walk-Up -> rào chắn mất hiệu lực
     if (hasBeenNearBike || openedByWalkUp) {
       return false;
     }
     return in15sWindow;
   }
 
-  /// Kiá»ƒm tra xe Ä‘ang á»Ÿ cháº¿ Ä‘á»™ Äá»— / Standby an toÃ n Ä‘á»ƒ khÃ³a tá»± Ä‘á»™ng
-  /// Dá»«ng Ä‘Ã¨n Ä‘á» á»Ÿ Drive hoáº·c Super tuyá»‡t Ä‘á»‘i KHÃ”NG pháº£i lÃ  Ä‘á»—!
+  /// Kiểm tra xe đang ở chế độ Đỗ / Standby an toàn để khóa tự động
+  /// Dừng đèn đỏ ở Drive hoặc Super tuyệt đối KHÔNG phải là đỗ!
   bool isParkedOrStandby(BikeLogMsg tele) {
     if ((tele.state == BikeState.drive || tele.state == BikeState.super_) && !tele.parking) {
-      return false; // Äang cháº¡y hoáº·c dá»«ng Ä‘Ã¨n Ä‘á» á»Ÿ sá»‘ Drive/Super!
+      return false; // Đang chạy hoặc dừng đèn đỏ ở số Drive/Super!
     }
     return true;
   }
 
-  /// Xá»­ lÃ½ máº«u RSSI Ä‘o Ä‘Æ°á»£c cÃ¹ng telemetry xe
+  /// Xử lý mẫu RSSI đo được cùng telemetry xe
   void processSample(
     double curRssi,
     BikeLogMsg tele, {
@@ -104,9 +107,9 @@ class ProximitySafetyStateMachine {
   }) {
     final currentTime = now ?? DateTime.now();
 
-    // 1. CÆ¡ cháº¿ Walk-Up Fast-Track Kalman
-    // Náº¿u cÃ³ Ä‘á»™ vá»t >= 8 dB vÃ  vÆ°á»£t ngÆ°á»¡ng gáº§n (>= nearThreshold),
-    // Fast-Track kÃ­ch hoáº¡t reset bá»™ lá»c vá» giÃ¡ trá»‹ Ä‘o má»›i nháº¥t Ä‘á»ƒ báº¯t sÃ³ng tá»©c thÃ¬.
+    // 1. Cơ chế Walk-Up Fast-Track Kalman
+    // Nếu có độ vọt >= 8 dB và vượt ngưỡng gần (>= nearThreshold),
+    // Fast-Track kích hoạt reset bộ lọc về giá trị đo mới nhất để bắt sóng tức thì.
     final prevEstimate = kalman.currentEstimate;
     if (prevEstimate != null &&
         (curRssi - prevEstimate) >= 8.0 &&
@@ -121,18 +124,18 @@ class ProximitySafetyStateMachine {
     final rssi = smoothedRssi!;
     final speed = tele.speed;
 
-    // Ghi nháº­n tráº¡ng thÃ¡i Ä‘Ã£ tá»«ng vÃ o sá»‘ Drive trong phiÃªn lÃ m viá»‡c
+    // Ghi nhận trạng thái đã từng vào số Drive trong phiên làm việc
     if (tele.state == BikeState.drive || tele.state == BikeState.super_) {
       hasEnteredDriveInSession = true;
     }
 
-    // Ghi nháº­n Ä‘Ã£ tá»«ng á»Ÿ gáº§n xe
+    // Ghi nhận đã từng ở gần xe
     if (rssi >= nearThreshold) {
       hasBeenNearBike = true;
     }
 
-    // 2. TÃ¡i vÅ© trang _walkUpConsumed khi thá»±c sá»± rá»i xa
-    // Cáº§n 3 chu ká»³ liÃªn tiáº¿p <= rearmThreshold
+    // 2. Tái vũ trang _walkUpConsumed khi thực sự rời xa
+    // Cần 3 chu kỳ liên tiếp <= rearmThreshold
     if (walkUpConsumed) {
       if (rssi <= rearmThreshold) {
         rearmCounter++;
@@ -148,7 +151,7 @@ class ProximitySafetyStateMachine {
       rearmCounter = 0;
     }
 
-    // Äiá»u kiá»‡n cho phÃ©p tá»± Ä‘á»™ng
+    // Điều kiện cho phép tự động
     final effectiveJustConnected = isEffectiveJustConnected(currentTime);
     final userRecent = lastUserCommandAt != null &&
         currentTime.difference(lastUserCommandAt!) < const Duration(seconds: 10);
@@ -185,7 +188,7 @@ class ProximitySafetyStateMachine {
       unlockNearCounter = 0;
     }
 
-    // 4. Chá»‘ng trá»™m antiTheft5m (phÃ¢n biá»‡t tá»‘c Ä‘á»™ tháº¥p <=15 km/h vs tá»‘c Ä‘á»™ cao >15 km/h)
+    // 4. Chống trộm antiTheft5m (phân biệt tốc độ thấp <=15 km/h vs tốc độ cao >15 km/h)
     if (antiTheft5m && autoAllowed && isBikeOn && hasBeenNearBike) {
       final isHighSpeed = speed > kSpeedCutoff;
       final theftThresh = isHighSpeed ? kTheftHighSpeedThreshold : kTheftLowSpeedThreshold;
@@ -207,10 +210,10 @@ class ProximitySafetyStateMachine {
       theftCounter = 0;
     }
 
-    // 5. Tá»± Ä‘á»™ng khÃ³a khi rá»i xa (Auto-Lock Walk-Away)
-    // - Báº¯t buá»™c isParkedOrStandby == true (báº£o vá»‡ dá»«ng Ä‘Ã¨n Ä‘á»)
-    // - Náº¿u chÆ°a tá»«ng vÃ o Drive trong session: chá»‰ cáº§n 2 chu ká»³ (má»Ÿ láº¥y Ä‘á»“ rá»“i Ä‘i)
-    // - Náº¿u Ä‘Ã£ tá»«ng vÃ o Drive: cáº§n 3 chu ká»³ tiÃªu chuáº©n
+    // 5. Tự động khóa khi rời xa (Auto-Lock Walk-Away)
+    // - Bắt buộc isParkedOrStandby == true (bảo vệ dừng đèn đỏ)
+    // - Nếu chưa từng vào Drive trong session: chỉ cần 2 chu kỳ (mở lấy đồ rồi đi)
+    // - Nếu đã từng vào Drive: cần 3 chu kỳ tiêu chuẩn
     final safeToAutoLock = isParkedOrStandby(tele) && speed <= 0.5;
     if (autoLockWalkAway && autoAllowed && isBikeOn && safeToAutoLock && hasBeenNearBike) {
       final requiredCycles = hasEnteredDriveInSession ? 3 : 2;
@@ -231,7 +234,7 @@ class ProximitySafetyStateMachine {
     }
   }
 
-  /// Kiá»ƒm tra timeout 90 giÃ¢y khÃ´ng vÃ o Drive sau khi má»Ÿ báº±ng Walk-Up
+  /// Kiểm tra timeout 90 giây không vào Drive sau khi mở bằng Walk-Up
   void checkIdleTimeout(BikeLogMsg tele, DateTime now) {
     if (openedByWalkUp && !hasEnteredDriveInSession && isBikeOn) {
       final parked = tele.parking || tele.state == BikeState.parking || tele.state == BikeState.standBy;
@@ -246,7 +249,7 @@ class ProximitySafetyStateMachine {
     }
   }
 
-  /// NgÆ°á»i dÃ¹ng chá»§ Ä‘á»™ng báº¥m táº¯t xe trÃªn á»©ng dá»¥ng
+  /// Người dùng chủ động bấm tắt xe trên ứng dụng
   void userManualTurnOff(DateTime now) {
     isBikeOn = false;
     isLocked = true;
@@ -267,17 +270,17 @@ class TestBleControllerHarness extends BleController {
 }
 
 void main() {
-  group('Luá»“ng 1 (Walk-Up Fast-Track Kalman)', () {
+  group('Luồng 1 (Walk-Up Fast-Track Kalman)', () {
     test('Standard Kalman without Fast-Track is sluggish after distant connection (-78 dBm -> -50 dBm)', () {
       final kalman = KalmanFilter1D(processNoise: 0.05, measurementNoise: 3.0, initialEstimate: -78.0);
       expect(kalman.currentEstimate, -78.0);
 
-      // BÆ°á»›c sÃ¡t vÃ o xe, nháº­n Ä‘Æ°á»£c máº«u máº¡nh -50 dBm
+      // Bước sát vào xe, nhận được mẫu mạnh -50 dBm
       final standardEstimate = kalman.filter(-50.0);
 
-      // Náº¿u khÃ´ng cÃ³ fast-track, bá»™ lá»c bá»‹ trá»… náº·ng ná», káº¹t trong khoáº£ng -72 dBm .. -62 dBm
+      // Nếu không có fast-track, bộ lọc bị trễ nặng nề, kẹt trong khoảng -72 dBm .. -62 dBm
       expect(standardEstimate, lessThan(-60.0),
-          reason: 'Bá»™ lá»c thÆ°á»ng pháº£i bá»‹ trá»… vÃ  chÆ°a thá»ƒ cháº¡m tá»›i ngÆ°á»¡ng -55 dBm ngay');
+          reason: 'Bộ lọc thường phải bị trễ và chưa thể chạm tới ngưỡng -55 dBm ngay');
       expect(standardEstimate, greaterThan(-75.0));
     });
 
@@ -291,22 +294,22 @@ void main() {
       expect(jump, greaterThanOrEqualTo(8.0));
       expect(curRssi, greaterThanOrEqualTo(nearThreshold));
 
-      // KÃ­ch hoáº¡t cÆ¡ cháº¿ Fast-Track
+      // Kích hoạt cơ chế Fast-Track
       kalman.reset(curRssi);
 
       expect(kalman.currentEstimate, equals(-50.0),
-          reason: 'Fast-track pháº£i Ä‘Æ°a estimate vá» ngay -50.0 dBm chá»‰ trong 1 chu ká»³');
+          reason: 'Fast-track phải đưa estimate về ngay -50.0 dBm chỉ trong 1 chu kỳ');
     });
 
     test('Small jump (< 8 dB) does NOT trigger fast-track reset, preserving Kalman noise suppression', () {
       final kalman = KalmanFilter1D(processNoise: 0.05, measurementNoise: 3.0, initialEstimate: -78.0);
-      const curRssi = -72.0; // TÄƒng 6 dB (< 8 dB)
+      const curRssi = -72.0; // Tăng 6 dB (< 8 dB)
       final jump = curRssi - kalman.currentEstimate!;
       expect(jump, lessThan(8.0));
 
       final filtered = kalman.filter(curRssi);
       expect(filtered, isNot(equals(curRssi)),
-          reason: 'CÃº nháº£y nhá» pháº£i Ä‘Æ°á»£c lá»c mÆ°á»£t, khÃ´ng Ä‘Æ°á»£c reset Ä‘á»™t ngá»™t');
+          reason: 'Cú nhảy nhỏ phải được lọc mượt, không được reset đột ngột');
     });
 
     test('StateMachine executes instant walk-up unlock on cycle 1 with Fast-Track', () {
@@ -316,7 +319,7 @@ void main() {
       );
       final tele = BikeLogMsg()..state = BikeState.off..parking = true..speed = 0.0;
 
-      // BÆ°á»›c sÃ¡t xe: curRssi = -50.0 dBm
+      // Bước sát xe: curRssi = -50.0 dBm
       sm.processSample(-50.0, tele);
 
       expect(sm.eventLog, contains('fast_track_kalman_reset'));
@@ -329,19 +332,19 @@ void main() {
     });
   });
 
-  group('Luá»“ng 2A (Äá»©ng gáº§n 2-3m bá»‹ Body Shadowing suy hao thoÃ¡ng qua)', () {
+  group('Luồng 2A (Đứng gần 2-3m bị Body Shadowing suy hao thoáng qua)', () {
     test('Kalman filter dampens transient drop (-60 dBm -> -76 dBm -> -62 dBm)', () {
       final kalman = KalmanFilter1D(processNoise: 0.05, measurementNoise: 3.0, initialEstimate: -60.0);
 
-      // 1 máº«u nhiá»…u do cÆ¡ thá»ƒ xoay ngÆ°á»i che khuáº¥t tÃ­n hiá»‡u tá»¥t xuá»‘ng -76 dBm
+      // 1 mẫu nhiễu do cơ thể xoay người che khuất tín hiệu tụt xuống -76 dBm
       final filteredDip = kalman.filter(-76.0);
 
-      // GiÃ¡ trá»‹ sau lá»c chá»‰ giáº£m nháº¹ (~ -63..-65 dBm), tuyá»‡t Ä‘á»‘i khÃ´ng xuyÃªn thá»§ng ngÆ°á»¡ng -75 dBm
+      // Giá trị sau lọc chỉ giảm nhẹ (~ -63..-65 dBm), tuyệt đối không xuyên thủng ngưỡng -75 dBm
       expect(filteredDip, greaterThan(-70.0),
-          reason: 'Kalman pháº£i lá»c mÆ°á»£t cÃº tá»¥t tá»©c thá»i do body shadowing');
+          reason: 'Kalman phải lọc mượt cú tụt tức thời do body shadowing');
       expect(filteredDip, greaterThan(-75.0));
 
-      // Máº«u tiáº¿p theo há»“i phá»¥c láº¡i -62 dBm
+      // Mẫu tiếp theo hồi phục lại -62 dBm
       final filteredRecover = kalman.filter(-62.0);
       expect(filteredRecover, greaterThan(-65.0));
     });
@@ -351,30 +354,30 @@ void main() {
       sm.hasBeenNearBike = true;
       sm.isBikeOn = true;
       sm.isLocked = false;
-      sm.hasEnteredDriveInSession = true; // YÃªu cáº§u 3 chu ká»³
+      sm.hasEnteredDriveInSession = true; // Yêu cầu 3 chu kỳ
 
       final tele = BikeLogMsg()..state = BikeState.parking..parking = true..speed = 0.0;
 
-      // Äá»©ng á»•n Ä‘á»‹nh á»Ÿ -60 dBm
+      // Đứng ổn định ở -60 dBm
       sm.processSample(-60.0, tele);
       expect(sm.autoLockCounter, 0);
 
-      // Giáº£ sá»­ cÃ³ máº«u nhiá»…u cá»±c Ä‘oan khiáº¿n smoothedRssi cháº¡m -76 dBm trong 1 chu ká»³
-      sm.kalman.reset(-76.0); // Ã‰p giáº£ láº­p smoothedRssi = -76.0
+      // Giả sử có mẫu nhiễu cực đoan khiến smoothedRssi chạm -76 dBm trong 1 chu kỳ
+      sm.kalman.reset(-76.0); // Ép giả lập smoothedRssi = -76.0
       sm.processSample(-76.0, tele);
       expect(sm.autoLockCounter, 1);
       expect(sm.eventLog, isNot(contains('auto_lock_walk_away')));
 
-      // Chu ká»³ tiáº¿p theo sÃ³ng há»“i vá» -62 dBm
+      // Chu kỳ tiếp theo sóng hồi về -62 dBm
       sm.kalman.reset(-62.0);
       sm.processSample(-62.0, tele);
-      expect(sm.autoLockCounter, 0, reason: 'Bá»™ Ä‘áº¿m auto-lock pháº£i reset vá» 0 ngay khi RSSI há»“i phá»¥c');
+      expect(sm.autoLockCounter, 0, reason: 'Bộ đếm auto-lock phải reset về 0 ngay khi RSSI hồi phục');
       expect(sm.isLocked, isFalse);
       expect(sm.isBikeOn, isTrue);
     });
   });
 
-  group('Luá»“ng 2B (Chá»‘t 1 láº§n _walkUpConsumed & Timeout 90 giÃ¢y)', () {
+  group('Luồng 2B (Chốt 1 lần _walkUpConsumed & Timeout 90 giây)', () {
     test('Walk-Up locks once: _walkUpConsumed = true and _openedByWalkUp = true', () {
       final sm = ProximitySafetyStateMachine(nearThreshold: -55.0);
       final tele = BikeLogMsg()..state = BikeState.off..parking = true..speed = 0.0;
@@ -391,24 +394,24 @@ void main() {
       final tele = BikeLogMsg()..state = BikeState.off..parking = true..speed = 0.0;
       final t0 = DateTime(2026, 11, 9, 10, 0, 0);
 
-      // Walk-up má»Ÿ xe
+      // Walk-up mở xe
       sm.processSample(-52.0, tele, now: t0);
       expect(sm.isBikeOn, isTrue);
       expect(sm.walkUpConsumed, isTrue);
 
-      // NgÆ°á»i dÃ¹ng báº¥m táº¯t xe lÃºc t = 10s
+      // Người dùng bấm tắt xe lúc t = 10s
       final t1 = t0.add(const Duration(seconds: 10));
       sm.userManualTurnOff(t1);
       expect(sm.isBikeOn, isFalse);
       expect(sm.isLocked, isTrue);
 
-      // NgÆ°á»i dÃ¹ng váº«n Ä‘á»©ng cÃ¡ch xe 1-2m (-52 dBm) trong 5 chu ká»³ tiáº¿p theo
+      // Người dùng vẫn đứng cách xe 1-2m (-52 dBm) trong 5 chu kỳ tiếp theo
       tele.state = BikeState.off;
       for (int i = 1; i <= 5; i++) {
         final tStep = t1.add(Duration(seconds: 15 + i * 2));
         sm.processSample(-52.0, tele, now: tStep);
         expect(sm.isBikeOn, isFalse,
-            reason: 'Xe TUYá»†T Äá»I KHÃ”NG tá»± báº­t láº¡i láº§n 2 khi user chÆ°a rá»i xa');
+            reason: 'Xe TUYỆT ĐỐI KHÔNG tự bật lại lần 2 khi user chưa rời xa');
         expect(sm.isLocked, isTrue);
       }
       expect(sm.eventLog.where((e) => e == 'walk_up_unlocked').length, 1);
@@ -419,12 +422,12 @@ void main() {
       final tele = BikeLogMsg()..state = BikeState.standBy..parking = true..speed = 0.0;
       final t0 = DateTime(2026, 11, 9, 10, 0, 0);
 
-      // Walk-up má»Ÿ xe lÃºc t = 0s
+      // Walk-up mở xe lúc t = 0s
       sm.processSample(-52.0, tele, now: t0);
       expect(sm.openedByWalkUp, isTrue);
       expect(sm.hasEnteredDriveInSession, isFalse);
 
-      // Äá»©ng nÃ³i chuyá»‡n gáº§n xe 90s (speed = 0, parking = true)
+      // Đứng nói chuyện gần xe 90s (speed = 0, parking = true)
       final t90 = t0.add(const Duration(seconds: 90));
       sm.checkIdleTimeout(tele, t90);
 
@@ -433,7 +436,7 @@ void main() {
       expect(sm.isLocked, isTrue);
       expect(sm.walkUpConsumed, isTrue);
 
-      // Tiáº¿p tá»¥c Ä‘á»©ng á»Ÿ -52 dBm á»Ÿ giÃ¢y 95..110
+      // Tiếp tục đứng ở -52 dBm ở giây 95..110
       for (int sec = 95; sec <= 110; sec += 3) {
         final tLater = t0.add(Duration(seconds: sec));
         sm.processSample(-52.0, tele, now: tLater);
@@ -443,22 +446,22 @@ void main() {
     });
   });
 
-  group('Luá»“ng 3 (Láº¡i gáº§n má»Ÿ xe láº¥y Ä‘á»“ trong 5 giÃ¢y rá»“i Ä‘i xa ngay - Expedited Auto-Lock)', () {
+  group('Luồng 3 (Lại gần mở xe lấy đồ trong 5 giây rồi đi xa ngay - Expedited Auto-Lock)', () {
     test('Approaching bike immediately removes effectiveJustConnected 15s barrier', () {
       final sm = ProximitySafetyStateMachine();
       final t0 = DateTime(2026, 11, 9, 10, 0, 0);
       sm.connectedAt = t0;
 
-      // Ban Ä‘áº§u á»Ÿ xa (-80 dBm), barrier cÃ³ hiá»‡u lá»±c trong 15s Ä‘áº§u
+      // Ban đầu ở xa (-80 dBm), barrier có hiệu lực trong 15s đầu
       expect(sm.isEffectiveJustConnected(t0.add(const Duration(seconds: 2))), isTrue);
 
-      // Láº¡i gáº§n xe (-50 dBm) lÃºc t = 3s
+      // Lại gần xe (-50 dBm) lúc t = 3s
       final tele = BikeLogMsg()..state = BikeState.off..parking = true..speed = 0.0;
       sm.processSample(-50.0, tele, now: t0.add(const Duration(seconds: 3)));
 
       expect(sm.hasBeenNearBike, isTrue);
       expect(sm.openedByWalkUp, isTrue);
-      // RÃ o cháº¯n 15s pháº£i bá»‹ xoÃ¡ bá» ngay láº­p tá»©c!
+      // Rào chắn 15s phải bị xoá bỏ ngay lập tức!
       expect(sm.isEffectiveJustConnected(t0.add(const Duration(seconds: 4))), isFalse);
     });
 
@@ -468,20 +471,20 @@ void main() {
       sm.connectedAt = t0;
       final tele = BikeLogMsg()..state = BikeState.standBy..parking = true..speed = 0.0;
 
-      // GiÃ¢y thá»© 2: Má»Ÿ xe láº¥y Ä‘á»“
+      // Giây thứ 2: Mở xe lấy đồ
       final t2 = t0.add(const Duration(seconds: 2));
       sm.processSample(-50.0, tele, now: t2);
       expect(sm.isBikeOn, isTrue);
       expect(sm.hasEnteredDriveInSession, isFalse);
 
-      // GiÃ¢y thá»© 5: Äi ra xa, smoothed RSSI Ä‘áº¡t -76 dBm <= targetThreshold (-75 dBm) (chu ká»³ 1)
+      // Giây thứ 5: Đi ra xa, smoothed RSSI đạt -76 dBm <= targetThreshold (-75 dBm) (chu kỳ 1)
       final t5 = t0.add(const Duration(seconds: 5));
       sm.kalman.reset(-76.0);
       sm.processSample(-76.0, tele, now: t5);
       expect(sm.autoLockCounter, 1);
       expect(sm.isLocked, isFalse);
 
-      // GiÃ¢y thá»© 7: Váº«n á»Ÿ xa, smoothed RSSI Ä‘áº¡t -78 dBm <= targetThreshold (-75 dBm) (chu ká»³ 2)
+      // Giây thứ 7: Vẫn ở xa, smoothed RSSI đạt -78 dBm <= targetThreshold (-75 dBm) (chu kỳ 2)
       final t7 = t0.add(const Duration(seconds: 7));
       sm.processSample(-78.0, tele, now: t7);
       expect(sm.eventLog, contains('auto_lock_walk_away'));
@@ -491,7 +494,7 @@ void main() {
     });
   });
 
-  group('Case 4 (Báº£o vá»‡ khi dá»«ng Ä‘Ã¨n Ä‘á» á»Ÿ mode Drive / Super)', () {
+  group('Case 4 (Bảo vệ khi dừng đèn đỏ ở mode Drive / Super)', () {
     test('isParkedOrStandby is false when in Drive or Super mode without parking stand', () {
       final sm = ProximitySafetyStateMachine();
 
@@ -511,23 +514,23 @@ void main() {
     test('Auto-lock is NEVER triggered at red light even if RSSI drops to -80 dBm for 5 cycles', () {
       final sm = ProximitySafetyStateMachine(
         targetThreshold: -75.0,
-        antiTheft5m: false, // CÃ´ láº­p kiá»ƒm tra tÃ­nh nÄƒng autoLockWalkAway
+        antiTheft5m: false, // Cô lập kiểm tra tính năng autoLockWalkAway
       );
       sm.hasBeenNearBike = true;
       sm.isBikeOn = true;
       sm.isLocked = false;
 
-      // Xe Ä‘ang dá»«ng Ä‘Ã¨n Ä‘á»: sá»‘ Drive, khÃ´ng háº¡ chÃ¢n chá»‘ng, tá»‘c Ä‘á»™ 0.0 km/h
+      // Xe đang dừng đèn đỏ: số Drive, không hạ chân chống, tốc độ 0.0 km/h
       final redLightMsg = BikeLogMsg()
         ..state = BikeState.drive
         ..parking = false
         ..speed = 0.0;
 
-      // Äiá»‡n thoáº¡i Ä‘Ãºt sÃ¢u tÃºi quáº§n hoáº·c bá»‹ nhiá»…u sÃ³ng, RSSI = -80 dBm trong 5 chu ká»³
+      // Điện thoại đút sâu túi quần hoặc bị nhiễu sóng, RSSI = -80 dBm trong 5 chu kỳ
       for (int i = 1; i <= 5; i++) {
         sm.processSample(-80.0, redLightMsg);
         expect(sm.autoLockCounter, 0,
-            reason: 'Chu ká»³ $i: KhÃ´ng Ä‘Æ°á»£c tÄƒng autoLockCounter khi xe á»Ÿ sá»‘ Drive táº¡i ngÃ£ tÆ°');
+            reason: 'Chu kỳ $i: Không được tăng autoLockCounter khi xe ở số Drive tại ngã tư');
         expect(sm.isBikeOn, isTrue);
         expect(sm.isLocked, isFalse);
       }
@@ -538,7 +541,7 @@ void main() {
     test('Super mode red light stop is equally protected against walk-away auto lock', () {
       final sm = ProximitySafetyStateMachine(
         targetThreshold: -75.0,
-        antiTheft5m: false, // CÃ´ láº­p kiá»ƒm tra tÃ­nh nÄƒng autoLockWalkAway
+        antiTheft5m: false, // Cô lập kiểm tra tính năng autoLockWalkAway
       );
       sm.hasBeenNearBike = true;
       sm.isBikeOn = true;
@@ -558,18 +561,18 @@ void main() {
     });
   });
 
-  group('Case 5 (TÃ¡i vÅ© trang _walkUpConsumed khi thá»±c sá»± rá»i xa)', () {
+  group('Case 5 (Tái vũ trang _walkUpConsumed khi thực sự rời xa)', () {
     test('_walkUpConsumed remains true for 1 or 2 cycles <= rearmThreshold', () {
       final sm = ProximitySafetyStateMachine(rearmThreshold: -78.0);
       sm.walkUpConsumed = true;
       final tele = BikeLogMsg()..state = BikeState.off..parking = true..speed = 0.0;
 
-      // Chu ká»³ 1: -80 dBm
+      // Chu kỳ 1: -80 dBm
       sm.processSample(-80.0, tele);
       expect(sm.rearmCounter, 1);
       expect(sm.walkUpConsumed, isTrue);
 
-      // Chu ká»³ 2: -82 dBm
+      // Chu kỳ 2: -82 dBm
       sm.processSample(-82.0, tele);
       expect(sm.rearmCounter, 2);
       expect(sm.walkUpConsumed, isTrue);
@@ -585,7 +588,7 @@ void main() {
       sm.processSample(-85.0, tele);
 
       expect(sm.rearmCounter, 0);
-      expect(sm.walkUpConsumed, isFalse, reason: 'Sau 3 chu ká»³ rá»i xa, walkUpConsumed pháº£i Ä‘Æ°á»£c náº¡p láº¡i');
+      expect(sm.walkUpConsumed, isFalse, reason: 'Sau 3 chu kỳ rời xa, walkUpConsumed phải được nạp lại');
       expect(sm.eventLog, contains('walk_up_rearmed'));
     });
 
@@ -597,11 +600,11 @@ void main() {
       sm.processSample(-80.0, tele); // Counter = 1
       sm.processSample(-81.0, tele); // Counter = 2
 
-      // SÃ³ng há»“i phá»¥c Ä‘Æ°a smoothedRssi lÃªn trÃªn ngÆ°á»¡ng rearmThreshold (-78 dBm)
+      // Sóng hồi phục đưa smoothedRssi lên trên ngưỡng rearmThreshold (-78 dBm)
       sm.kalman.reset(-70.0);
       sm.processSample(-70.0, tele);
 
-      expect(sm.rearmCounter, 0, reason: 'Nhiá»…u sÃ³ng báº­t láº¡i pháº£i reset rearmCounter');
+      expect(sm.rearmCounter, 0, reason: 'Nhiễu sóng bật lại phải reset rearmCounter');
       expect(sm.walkUpConsumed, isTrue);
     });
 
@@ -612,13 +615,13 @@ void main() {
       sm.isBikeOn = false;
       final tele = BikeLogMsg()..state = BikeState.off..parking = true..speed = 0.0;
 
-      // 3 chu ká»³ rá»i xa
+      // 3 chu kỳ rời xa
       sm.processSample(-80.0, tele);
       sm.processSample(-82.0, tele);
       sm.processSample(-84.0, tele);
       expect(sm.walkUpConsumed, isFalse);
 
-      // Quay láº¡i gáº§n xe
+      // Quay lại gần xe
       sm.processSample(-52.0, tele);
       expect(sm.eventLog, contains('walk_up_unlocked'));
       expect(sm.isLocked, isFalse);
@@ -627,14 +630,14 @@ void main() {
     });
   });
 
-  group('Case 6 (Chá»‘ng trá»™m antiTheft5m phÃ¢n biá»‡t tá»‘c Ä‘á»™ tháº¥p vÃ  cao)', () {
+  group('Case 6 (Chống trộm antiTheft5m phân biệt tốc độ thấp và cao)', () {
     test('Low speed (speed <= 15 km/h): triggers after 5 consecutive cycles with RSSI <= -78 dBm', () {
       final sm = ProximitySafetyStateMachine();
       sm.hasBeenNearBike = true;
       sm.isBikeOn = true;
       sm.isLocked = false;
 
-      // Xe Ä‘ang bá»‹ dáº¯t trá»™m vá»›i tá»‘c Ä‘á»™ 6.0 km/h (<= 15 km/h)
+      // Xe đang bị dắt trộm với tốc độ 6.0 km/h (<= 15 km/h)
       final lowSpeedMsg = BikeLogMsg()..state = BikeState.drive..parking = false..speed = 6.0;
 
       for (int i = 1; i <= 4; i++) {
@@ -643,7 +646,7 @@ void main() {
         expect(sm.eventLog, isNot(contains('anti_theft_triggered')));
       }
 
-      // Chu ká»³ thá»© 5
+      // Chu kỳ thứ 5
       sm.processSample(-80.0, lowSpeedMsg);
       expect(sm.eventLog, contains('anti_theft_triggered'));
       expect(sm.isLocked, isTrue);
@@ -657,14 +660,14 @@ void main() {
       sm.isBikeOn = true;
       sm.isLocked = false;
 
-      // Xe Ä‘ang di chuyá»ƒn tá»‘c Ä‘á»™ cao 45 km/h
+      // Xe đang di chuyển tốc độ cao 45 km/h
       final highSpeedMsg = BikeLogMsg()..state = BikeState.drive..parking = false..speed = 45.0;
 
-      // RSSI = -80 dBm (má»©c kÃ­ch hoáº¡t tá»‘c Ä‘á»™ tháº¥p) trong 10 chu ká»³
+      // RSSI = -80 dBm (mức kích hoạt tốc độ thấp) trong 10 chu kỳ
       for (int i = 1; i <= 10; i++) {
         sm.processSample(-80.0, highSpeedMsg);
         expect(sm.theftCounter, 0,
-            reason: 'Tá»‘c Ä‘á»™ cao yÃªu cáº§u RSSI <= -85 dBm; -80 dBm khÃ´ng Ä‘Æ°á»£c tÃ­nh vÃ o counter');
+            reason: 'Tốc độ cao yêu cầu RSSI <= -85 dBm; -80 dBm không được tính vào counter');
       }
       expect(sm.eventLog, isNot(contains('anti_theft_triggered')));
       expect(sm.isBikeOn, isTrue);
@@ -678,22 +681,22 @@ void main() {
 
       final highSpeedMsg = BikeLogMsg()..state = BikeState.drive..parking = false..speed = 35.0;
 
-      // 5 chu ká»³ Ä‘áº§u (Ä‘á»§ vá»›i low-speed nhÆ°ng KHÃ”NG Ä‘á»§ vá»›i high-speed)
+      // 5 chu kỳ đầu (đủ với low-speed nhưng KHÔNG đủ với high-speed)
       for (int i = 1; i <= 5; i++) {
         sm.processSample(-88.0, highSpeedMsg);
         expect(sm.theftCounter, i);
         expect(sm.eventLog, isNot(contains('anti_theft_triggered')),
-            reason: '5 chu ká»³ chÆ°a Ä‘á»§ Ä‘á»‘i vá»›i cháº¿ Ä‘á»™ cháº¡y nhanh');
+            reason: '5 chu kỳ chưa đủ đối với chế độ chạy nhanh');
       }
 
-      // Chu ká»³ 6 vÃ  7
+      // Chu kỳ 6 và 7
       sm.processSample(-88.0, highSpeedMsg);
       expect(sm.theftCounter, 6);
       sm.processSample(-88.0, highSpeedMsg);
       expect(sm.theftCounter, 7);
       expect(sm.eventLog, isNot(contains('anti_theft_triggered')));
 
-      // Chu ká»³ thá»© 8: KÃ­ch hoáº¡t chá»‘ng trá»™m
+      // Chu kỳ thứ 8: Kích hoạt chống trộm
       sm.processSample(-88.0, highSpeedMsg);
       expect(sm.eventLog, contains('anti_theft_triggered'));
       expect(sm.isLocked, isTrue);
@@ -708,16 +711,16 @@ void main() {
 
       final highSpeedMsg = BikeLogMsg()..state = BikeState.drive..parking = false..speed = 40.0;
 
-      // 5 chu ká»³ sÃ¢u
+      // 5 chu kỳ sâu
       for (int i = 1; i <= 5; i++) {
         sm.processSample(-89.0, highSpeedMsg);
       }
       expect(sm.theftCounter, 5);
 
-      // Chu ká»³ 6: TÃ­n hiá»‡u vá»t lÃªn trÃªn -85 dBm (vÃ­ dá»¥ -75 dBm)
+      // Chu kỳ 6: Tín hiệu vọt lên trên -85 dBm (ví dụ -75 dBm)
       sm.kalman.reset(-75.0);
       sm.processSample(-75.0, highSpeedMsg);
-      expect(sm.theftCounter, 0, reason: 'Nhiá»…u sÃ³ng vá»t lÃªn pháº£i xÃ³a chuá»—i counter vá» 0');
+      expect(sm.theftCounter, 0, reason: 'Nhiễu sóng vọt lên phải xóa chuỗi counter về 0');
       expect(sm.eventLog, isNot(contains('anti_theft_triggered')));
     });
   });
@@ -729,7 +732,7 @@ void main() {
       expect(state.antiTheft5m, isFalse);
       expect(state.walkUpAutoPowerOn, isFalse);
       expect(state.autoLockWalkAway, isFalse);
-      expect(state.walkUpRssiThreshold, isNull); // Sáº½ fallback vá» -55.0 dBm
+      expect(state.walkUpRssiThreshold, isNull); // Sẽ fallback về -55.0 dBm
       expect(state.autoLockRssiThreshold, isNull);
     });
 
@@ -754,5 +757,306 @@ void main() {
       expect(s.walkUpRssiThreshold, -52.0);
     });
   });
-}
 
+  group('Real BleController Proximity & iOS Bugfixes', () {
+    Future<void> waitUntil(
+      bool Function() condition, {
+      Duration timeout = const Duration(seconds: 5),
+    }) async {
+      final deadline = DateTime.now().add(timeout);
+      while (!condition()) {
+        if (DateTime.now().isAfter(deadline)) break;
+        await Future.delayed(const Duration(milliseconds: 20));
+      }
+    }
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('BleState.forNewConnection preserves user proximity settings while resetting session state', () {
+      final dev = BluetoothDevice.fromId('AA:BB:CC:DD:EE:01');
+      final prev = BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        rssi: -70,
+        filteredRssi: -71,
+        autoLockWalkAway: true,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: true,
+        walkUpRssiThreshold: -62.0,
+        autoLockRssiThreshold: -80.0,
+        antiTheft5m: true,
+        antiForgetAlert: true,
+        autoLockDistance: 2,
+      );
+
+      final next = prev.forNewConnection(
+        device: dev,
+        bikeName: 'My Quantum',
+        bikeModel: BikeModel.qtS1,
+      );
+
+      expect(next.phase, BlePhase.connecting);
+      expect(next.isAuthorized, isFalse);
+      expect(next.isLocked, isFalse);
+      expect(next.rssi, isNull);
+      expect(next.filteredRssi, isNull);
+      expect(next.autoLockWalkAway, isTrue);
+      expect(next.walkUpUnlock, isTrue);
+      expect(next.walkUpAutoPowerOn, isTrue);
+      expect(next.walkUpRssiThreshold, -62.0);
+      expect(next.autoLockRssiThreshold, -80.0);
+      expect(next.antiTheft5m, isTrue);
+      expect(next.antiForgetAlert, isTrue);
+      expect(next.autoLockDistance, 2);
+    });
+
+    test('iOS uses calibrated RSSI defaults (-62 walk-up, [-72, -80, -88] auto-lock)', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final iosController = TestBleControllerHarness(const BleState(phase: BlePhase.idle));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => iosController)],
+      );
+      addTearDown(container.dispose);
+
+      container.read(bleProvider);
+      expect(iosController.effectiveWalkUpRssiThreshold, -62.0);
+      expect(iosController.effectiveAutoLockRssiThreshold, -80.0);
+
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      expect(iosController.effectiveWalkUpRssiThreshold, -55.0);
+      expect(iosController.effectiveAutoLockRssiThreshold, -83.0);
+    });
+
+    test('Invalid RSSI sentinels (127, 0, +5, -120) are ignored', () {
+      final tele = BikeLogMsg()
+        ..state = BikeState.lock
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      var writeCalled = false;
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        writeCalled = true;
+        return 'Đã ghi $label xuống xe (0)';
+      };
+
+      controller.ingestRssiForTest(127);
+      controller.ingestRssiForTest(0);
+      controller.ingestRssiForTest(5);
+      controller.ingestRssiForTest(-120);
+
+      expect(controller.smoothedRssiForTest, isNull);
+      expect(container.read(bleProvider).rssi, isNull);
+      expect(writeCalled, isFalse);
+    });
+
+    test('Walk-up unlocks BikeState.lock and immediately powers on without lock guard error, then expedited walk-away locks', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final tele = BikeLogMsg()
+        ..state = BikeState.lock
+        ..parking = true
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: true,
+        autoLockWalkAway: true,
+        sessionKey: Uint8List(16),
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      final ops = <String>[];
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        if (uuid == Gatt.powerProtectedChar) {
+          ops.add(data.first == 0x30 ? 'unlock' : 'lock');
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+      controller.sendPowerTestOverride = (val, label) async {
+        ops.add(val == '1' ? 'power_on' : 'power_off');
+      };
+
+      final t0 = DateTime(2026, 1, 1, 10, 0, 0);
+      controller.setProximityTestTimestamps(connectedAt: t0.subtract(const Duration(seconds: 1)));
+
+      // Bắt đầu ở -66 dBm -> bước gần tới -60 dBm (trên iOS threshold -62 dBm với jump >= 5 dB)
+      controller.ingestRssiForTest(-66, now: t0);
+      controller.ingestRssiForTest(-60, now: t0.add(const Duration(seconds: 1)));
+
+      await waitUntil(() =>
+          ops.length == 2 &&
+          !container.read(bleProvider).isLocked &&
+          container.read(bleProvider).lastTelemetry?.isBikeOn == true);
+
+      expect(ops, ['unlock', 'power_on']);
+      final afterWalkUp = container.read(bleProvider);
+      expect(afterWalkUp.isLocked, isFalse);
+      expect(afterWalkUp.lastTelemetry?.isBikeOn, isTrue);
+
+      // Rời xa ngay sau 3 giây: không bị block bởi 10s manual cooldown!
+      final tLeave = t0.add(const Duration(seconds: 4));
+      controller.ingestRssiForTest(-82, now: tLeave);
+      controller.ingestRssiForTest(-83, now: tLeave.add(const Duration(seconds: 1)));
+      controller.ingestRssiForTest(-84, now: tLeave.add(const Duration(seconds: 2)));
+      controller.ingestRssiForTest(-85, now: tLeave.add(const Duration(seconds: 3)));
+      await waitUntil(() =>
+          ops.length == 4 &&
+          container.read(bleProvider).isLocked &&
+          !controller.walkUpConsumedForTest);
+
+      expect(ops, ['unlock', 'power_on', 'power_off', 'lock']);
+      expect(container.read(bleProvider).isLocked, isTrue);
+      // Walk-up phải tự tái vũ trang nếu user quay lại trước khi BLE ngắt
+      expect(controller.walkUpConsumedForTest, isFalse);
+    });
+
+    test('Failed unlock keeps isLocked=true and retries after 3s cooldown', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final tele = BikeLogMsg()
+        ..state = BikeState.lock
+        ..parking = true
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: false,
+        sessionKey: Uint8List(16),
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      int attempt = 0;
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        attempt++;
+        if (attempt == 1) {
+          return 'Lỗi ghi $label: BLE timeout';
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+
+      final t0 = DateTime(2026, 1, 1, 10, 0, 0);
+      controller.ingestRssiForTest(-58, now: t0);
+      await waitUntil(() => attempt == 1);
+
+      expect(attempt, 1);
+      expect(container.read(bleProvider).isLocked, isTrue);
+      expect(controller.walkUpConsumedForTest, isFalse);
+
+      // Trong thời gian cooldown 3s không spam gửi lại
+      controller.ingestRssiForTest(-58, now: t0.add(const Duration(seconds: 1)));
+      await Future.delayed(const Duration(milliseconds: 40));
+      expect(attempt, 1);
+
+      // Sau 3s cooldown: tự thử lại và mở khóa thành công
+      controller.ingestRssiForTest(-58, now: t0.add(const Duration(seconds: 4)));
+      await waitUntil(() => attempt == 2 && !container.read(bleProvider).isLocked);
+      expect(attempt, 2);
+      expect(container.read(bleProvider).isLocked, isFalse);
+    });
+
+    test('Walk-away locks unlocked bike even when walkUpAutoPowerOn is false, while single spike does not lock', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final tele = BikeLogMsg()
+        ..state = BikeState.off
+        ..parking = true
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: false,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: false,
+        autoLockWalkAway: true,
+        sessionKey: Uint8List(16),
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      int lockCount = 0;
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        if (uuid == Gatt.powerProtectedChar && data.first == 0x31) {
+          lockCount++;
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+
+      final t0 = DateTime(2026, 1, 1, 10, 0, 0);
+      // Đã đứng gần xe
+      controller.ingestRssiForTest(-60, now: t0);
+      expect(controller.hasBeenNearBikeForTest, isTrue);
+
+      // 1-2 nhịp che thân thoáng qua KHÔNG được khóa
+      controller.ingestRssiForTest(-85, now: t0.add(const Duration(seconds: 1)));
+      controller.ingestRssiForTest(-60, now: t0.add(const Duration(seconds: 2)));
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(lockCount, 0);
+
+      // Rời xa thực sự 5 nhịp -> tự khóa dù xe đang tắt máy (walkUpAutoPowerOn == false)
+      for (int i = 1; i <= 5; i++) {
+        controller.ingestRssiForTest(-84, now: t0.add(Duration(seconds: 2 + i)));
+      }
+      await waitUntil(() => lockCount == 1 && container.read(bleProvider).isLocked);
+      expect(lockCount, 1);
+      expect(container.read(bleProvider).isLocked, isTrue);
+    });
+
+    test('onAppResumed clears stale RSSI when last sample is > 4 seconds old', () async {
+      final tele = BikeLogMsg()..state = BikeState.off;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      controller.ingestRssiForTest(
+        -58,
+        now: DateTime.now().subtract(const Duration(seconds: 10)),
+      );
+      expect(container.read(bleProvider).rssi, -58);
+      expect(container.read(bleProvider).filteredRssi, -58);
+
+      await controller.onAppResumed();
+      expect(container.read(bleProvider).rssi, isNull);
+      expect(container.read(bleProvider).filteredRssi, isNull);
+    });
+  });
+}

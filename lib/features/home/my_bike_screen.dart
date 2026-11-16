@@ -55,7 +55,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
   }
 
   void _onAppResume() {
-    _checkAndRestore();
+    ref.read(bleProvider.notifier).onAppResumed();
   }
 
   Future<void> _checkAndRestore() async {
@@ -343,114 +343,128 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           },
                         ),
                         if (ble.autoLockWalkAway) ...[
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      'Mức sóng tự khóa khi rời xa:',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: const Color(0xFF64748B),
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFEFF6FF),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: Text(
-                                        '${(ble.autoLockRssiThreshold ?? [-75.0, -83.0, -90.0][ble.autoLockDistance.clamp(0, 2)]).round()} dBm · ~${_lockDistLabel(ble.autoLockRssiThreshold ?? [-75.0, -83.0, -90.0][ble.autoLockDistance.clamp(0, 2)])}',
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 10.5,
-                                          fontWeight: FontWeight.w700,
-                                          color: const Color(0xFF2563EB),
+                          Builder(builder: (_) {
+                            final isIos = BleController.isIosPlatform;
+                            final lockPresets = BleController.defaultAutoLockThresholds(isIos: isIos);
+                            final curAutoLock = ble.autoLockRssiThreshold ??
+                                lockPresets[ble.autoLockDistance.clamp(0, 2)];
+                            final lockMin = -95.0;
+                            final lockMax = isIos ? -65.0 : -68.0;
+                            final midUpper = (lockPresets[0] + lockPresets[1]) / 2.0;
+                            final midLower = (lockPresets[1] + lockPresets[2]) / 2.0;
+                            final liveRssi = ble.filteredRssi ?? ble.rssi;
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          liveRssi != null
+                                              ? 'Mức sóng tự khóa (Hiện tại: $liveRssi dBm):'
+                                              : 'Mức sóng tự khóa khi rời xa:',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: const Color(0xFF64748B),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Row(
-                                  children: [
-                                    _sheetSegmentPill(
-                                      label: 'Gần',
-                                      sub: '~3m (-75dBm)',
-                                      selected: (ble.autoLockRssiThreshold ?? -83.0) >= -78.0,
-                                      onTap: () {
-                                        ref.read(bleProvider.notifier).setAutoLockRssiThreshold(-75.0);
-                                        setSheetState(() {});
-                                        _heroSnack('Ngưỡng khóa: Gần (~3m · -75 dBm)');
-                                      },
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _sheetSegmentPill(
-                                      label: 'Vừa',
-                                      sub: '~5m (-83dBm)',
-                                      selected: (ble.autoLockRssiThreshold ?? -83.0) < -78.0 &&
-                                          (ble.autoLockRssiThreshold ?? -83.0) > -88.0,
-                                      onTap: () {
-                                        ref.read(bleProvider.notifier).setAutoLockRssiThreshold(-83.0);
-                                        setSheetState(() {});
-                                        _heroSnack('Ngưỡng khóa: Vừa (~5m · -83 dBm)');
-                                      },
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _sheetSegmentPill(
-                                      label: 'Xa',
-                                      sub: '~8m (-90dBm)',
-                                      selected: (ble.autoLockRssiThreshold ?? -83.0) <= -88.0,
-                                      onTap: () {
-                                        ref.read(bleProvider.notifier).setAutoLockRssiThreshold(-90.0);
-                                        setSheetState(() {});
-                                        _heroSnack('Ngưỡng khóa: Xa (~8m · -90 dBm)');
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                // Slider tùy chỉnh dải sóng khi rời xa
-                                SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    trackHeight: 4,
-                                    activeTrackColor: const Color(0xFF2563EB),
-                                    inactiveTrackColor: const Color(0xFFE2E8F0),
-                                    thumbColor: const Color(0xFF2563EB),
-                                    overlayColor: const Color(0xFF2563EB).withValues(alpha: 0.15),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFEFF6FF),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          '${curAutoLock.round()} dBm · ~${_lockDistLabel(curAutoLock)}',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.w700,
+                                            color: const Color(0xFF2563EB),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  child: Slider(
-                                    value: (ble.autoLockRssiThreshold ?? -83.0).clamp(-95.0, -68.0),
-                                    min: -95.0,
-                                    max: -68.0,
-                                    divisions: 27,
-                                    onChanged: (val) {
-                                      ref.read(bleProvider.notifier).setAutoLockRssiThreshold(val);
-                                      setSheetState(() {});
-                                    },
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      _sheetSegmentPill(
+                                        label: 'Gần',
+                                        sub: '~3m (${lockPresets[0].round()}dBm)',
+                                        selected: curAutoLock >= midUpper,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setAutoLockRssiThreshold(lockPresets[0]);
+                                          setSheetState(() {});
+                                          _heroSnack('Ngưỡng khóa: Gần (~3m · ${lockPresets[0].round()} dBm)');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: 'Vừa',
+                                        sub: '~5m (${lockPresets[1].round()}dBm)',
+                                        selected: curAutoLock < midUpper && curAutoLock > midLower,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setAutoLockRssiThreshold(lockPresets[1]);
+                                          setSheetState(() {});
+                                          _heroSnack('Ngưỡng khóa: Vừa (~5m · ${lockPresets[1].round()} dBm)');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: 'Xa',
+                                        sub: '~8m (${lockPresets[2].round()}dBm)',
+                                        selected: curAutoLock <= midLower,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setAutoLockRssiThreshold(lockPresets[2]);
+                                          setSheetState(() {});
+                                          _heroSnack('Ngưỡng khóa: Xa (~8m · ${lockPresets[2].round()} dBm)');
+                                        },
+                                      ),
+                                    ],
                                   ),
-                                ),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      '-95 dBm (Xa ~10m)',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                  const SizedBox(height: 8),
+                                  // Slider tùy chỉnh dải sóng khi rời xa
+                                  SliderTheme(
+                                    data: SliderTheme.of(context).copyWith(
+                                      trackHeight: 4,
+                                      activeTrackColor: const Color(0xFF2563EB),
+                                      inactiveTrackColor: const Color(0xFFE2E8F0),
+                                      thumbColor: const Color(0xFF2563EB),
+                                      overlayColor: const Color(0xFF2563EB).withValues(alpha: 0.15),
                                     ),
-                                    Text(
-                                      '-68 dBm (Gần ~2m)',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                    child: Slider(
+                                      value: curAutoLock.clamp(lockMin, lockMax),
+                                      min: lockMin,
+                                      max: lockMax,
+                                      divisions: (lockMax - lockMin).round(),
+                                      onChanged: (val) {
+                                        ref.read(bleProvider.notifier).setAutoLockRssiThreshold(val);
+                                        setSheetState(() {});
+                                      },
                                     ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
+                                  ),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        '${lockMin.round()} dBm (Xa ~10m)',
+                                        style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                      ),
+                                      Text(
+                                        '${lockMax.round()} dBm (Gần ~2m)',
+                                        style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
                         ],
                         const Divider(color: Color(0xFFF8FAFC), height: 1, thickness: 1, indent: 56, endIndent: 16),
                         _sheetToggleRow(
@@ -551,114 +565,130 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           ),
 
                           // Tùy chỉnh mức sóng khi đến gần
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      'Mức sóng kích hoạt khi đến gần:',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: const Color(0xFF64748B),
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFF0FDF4),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: Text(
-                                        '${(ble.walkUpRssiThreshold ?? -55.0).round()} dBm · ~${_nearDistLabel(ble.walkUpRssiThreshold ?? -55.0)}',
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 10.5,
-                                          fontWeight: FontWeight.w700,
-                                          color: const Color(0xFF10B981),
+                          Builder(builder: (_) {
+                            final isIos = BleController.isIosPlatform;
+                            final nearPresets = isIos
+                                ? const [-56.0, -62.0, -68.0]
+                                : const [-50.0, -55.0, -62.0];
+                            final curWalkUp = ble.walkUpRssiThreshold ??
+                                BleController.defaultWalkUpThreshold(isIos: isIos);
+                            final nearMin = isIos ? -75.0 : -70.0;
+                            final nearMax = -45.0;
+                            final midUpper = (nearPresets[0] + nearPresets[1]) / 2.0;
+                            final midLower = (nearPresets[1] + nearPresets[2]) / 2.0;
+                            final liveRssi = ble.filteredRssi ?? ble.rssi;
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          liveRssi != null
+                                              ? 'Mức sóng mở xe (Hiện tại: $liveRssi dBm):'
+                                              : 'Mức sóng kích hoạt khi đến gần:',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: const Color(0xFF64748B),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Row(
-                                  children: [
-                                    _sheetSegmentPill(
-                                      label: 'Cực gần',
-                                      sub: '~0.8m (-50dBm)',
-                                      selected: (ble.walkUpRssiThreshold ?? -55.0) >= -52.0,
-                                      onTap: () {
-                                        ref.read(bleProvider.notifier).setWalkUpRssiThreshold(-50.0);
-                                        setSheetState(() {});
-                                        _heroSnack('Ngưỡng đến gần: Cực gần (~0.8m · -50 dBm)');
-                                      },
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _sheetSegmentPill(
-                                      label: 'Rất gần',
-                                      sub: '~1.5m (-55dBm)',
-                                      selected: (ble.walkUpRssiThreshold ?? -55.0) < -52.0 &&
-                                          (ble.walkUpRssiThreshold ?? -55.0) > -58.0,
-                                      onTap: () {
-                                        ref.read(bleProvider.notifier).setWalkUpRssiThreshold(-55.0);
-                                        setSheetState(() {});
-                                        _heroSnack('Ngưỡng đến gần: Rất gần (~1.5m · -55 dBm)');
-                                      },
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _sheetSegmentPill(
-                                      label: 'Vừa',
-                                      sub: '~2.5m (-62dBm)',
-                                      selected: (ble.walkUpRssiThreshold ?? -55.0) <= -58.0,
-                                      onTap: () {
-                                        ref.read(bleProvider.notifier).setWalkUpRssiThreshold(-62.0);
-                                        setSheetState(() {});
-                                        _heroSnack('Ngưỡng đến gần: Vừa (~2.5m · -62 dBm)');
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                // Slider tùy chỉnh mức sóng khi lại gần
-                                SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    trackHeight: 4,
-                                    activeTrackColor: const Color(0xFF10B981),
-                                    inactiveTrackColor: const Color(0xFFE2E8F0),
-                                    thumbColor: const Color(0xFF10B981),
-                                    overlayColor: const Color(0xFF10B981).withValues(alpha: 0.15),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF0FDF4),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          '${curWalkUp.round()} dBm · ~${_nearDistLabel(curWalkUp)}',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.w700,
+                                            color: const Color(0xFF10B981),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                  child: Slider(
-                                    value: (ble.walkUpRssiThreshold ?? -55.0).clamp(-70.0, -45.0),
-                                    min: -70.0,
-                                    max: -45.0,
-                                    divisions: 25,
-                                    onChanged: (val) {
-                                      ref.read(bleProvider.notifier).setWalkUpRssiThreshold(val);
-                                      setSheetState(() {});
-                                    },
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      _sheetSegmentPill(
+                                        label: 'Cực gần',
+                                        sub: '~0.8m (${nearPresets[0].round()}dBm)',
+                                        selected: curWalkUp >= midUpper,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setWalkUpRssiThreshold(nearPresets[0]);
+                                          setSheetState(() {});
+                                          _heroSnack('Ngưỡng đến gần: Cực gần (~0.8m · ${nearPresets[0].round()} dBm)');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: 'Rất gần',
+                                        sub: '~1.5m (${nearPresets[1].round()}dBm)',
+                                        selected: curWalkUp < midUpper && curWalkUp > midLower,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setWalkUpRssiThreshold(nearPresets[1]);
+                                          setSheetState(() {});
+                                          _heroSnack('Ngưỡng đến gần: Rất gần (~1.5m · ${nearPresets[1].round()} dBm)');
+                                        },
+                                      ),
+                                      const SizedBox(width: 8),
+                                      _sheetSegmentPill(
+                                        label: 'Vừa',
+                                        sub: '~2.5m (${nearPresets[2].round()}dBm)',
+                                        selected: curWalkUp <= midLower,
+                                        onTap: () {
+                                          ref.read(bleProvider.notifier).setWalkUpRssiThreshold(nearPresets[2]);
+                                          setSheetState(() {});
+                                          _heroSnack('Ngưỡng đến gần: Vừa (~2.5m · ${nearPresets[2].round()} dBm)');
+                                        },
+                                      ),
+                                    ],
                                   ),
-                                ),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      '-70 dBm (Xa hơn ~3m)',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                  const SizedBox(height: 8),
+                                  // Slider tùy chỉnh mức sóng khi lại gần
+                                  SliderTheme(
+                                    data: SliderTheme.of(context).copyWith(
+                                      trackHeight: 4,
+                                      activeTrackColor: const Color(0xFF10B981),
+                                      inactiveTrackColor: const Color(0xFFE2E8F0),
+                                      thumbColor: const Color(0xFF10B981),
+                                      overlayColor: const Color(0xFF10B981).withValues(alpha: 0.15),
                                     ),
-                                    Text(
-                                      '-45 dBm (Sát xe ~0.5m)',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                    child: Slider(
+                                      value: curWalkUp.clamp(nearMin, nearMax),
+                                      min: nearMin,
+                                      max: nearMax,
+                                      divisions: (nearMax - nearMin).round(),
+                                      onChanged: (val) {
+                                        ref.read(bleProvider.notifier).setWalkUpRssiThreshold(val);
+                                        setSheetState(() {});
+                                      },
                                     ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                          ),
+                                  ),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        '${nearMin.round()} dBm (Xa hơn ~3m)',
+                                        style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                      ),
+                                      Text(
+                                        '-45 dBm (Sát xe ~0.5m)',
+                                        style: GoogleFonts.plusJakartaSans(fontSize: 10, color: const Color(0xFF94A3B8)),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
                         ],
                         const Divider(color: Color(0xFFF8FAFC), height: 1, thickness: 1, indent: 56, endIndent: 16),
                         _sheetToggleRow(
@@ -1243,17 +1273,19 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
   }
 
   String _lockDistLabel(double rssi) {
-    if (rssi >= -76.0) return '3m';
-    if (rssi >= -84.0) return '5m';
-    if (rssi >= -90.0) return '8m';
+    final normalized = BleController.isIosPlatform ? rssi + 3.0 : rssi;
+    if (normalized >= -76.0) return '3m';
+    if (normalized >= -84.0) return '5m';
+    if (normalized >= -90.0) return '8m';
     return '10m';
   }
 
   String _nearDistLabel(double rssi) {
-    if (rssi >= -48.0) return '0.5m';
-    if (rssi >= -52.0) return '0.8m';
-    if (rssi >= -58.0) return '1.5m';
-    if (rssi >= -65.0) return '2.5m';
+    final normalized = BleController.isIosPlatform ? rssi + 6.0 : rssi;
+    if (normalized >= -48.0) return '0.5m';
+    if (normalized >= -52.0) return '0.8m';
+    if (normalized >= -58.0) return '1.5m';
+    if (normalized >= -65.0) return '2.5m';
     return '3.5m';
   }
 
