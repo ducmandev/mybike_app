@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../ble/ble_controller.dart' show TripRecord, TripGpsPoint;
+import '../models/merged_trip_session.dart';
 
 /// Dịch vụ quản lý lưu trữ hành trình chuẩn 2 tầng (Two-Tier Storage):
 /// - Tầng 1: Metadata tóm tắt (id, thời gian, km, vận tốc, pin) lưu trong SharedPreferences (siêu nhẹ < 30KB).
@@ -17,7 +18,8 @@ class TripStorageService {
 
   static const String _kTripMetadataKey = 'trip_history_metadata_v2';
   static const String _kLegacyTripKey = 'trip_history_v1';
-  static const int _kMaxTrips = 50;
+  static const String _kMergedChainsKey = 'trip_merged_chains_v1';
+  static const int _kMaxTrips = 250;
 
   Directory? _tripsDir;
   Completer<Directory>? _initCompleter;
@@ -187,6 +189,100 @@ class TripStorageService {
     return [];
   }
 
+  /// Tải song song tọa độ GPS của nhiều chuyến đi (tùy chọn áp dụng hàm lọc/làm mượt [cleaner]).
+  Future<Map<String, List<TripGpsPoint>>> loadMultipleTripRoutes(
+    List<TripRecord> trips, {
+    List<TripGpsPoint> Function(List<TripGpsPoint>)? cleaner,
+  }) async {
+    if (trips.isEmpty) return {};
+    final entries = await Future.wait(
+      trips.map((trip) async {
+        final raw = await loadTripRoute(trip);
+        final processed = cleaner != null ? cleaner(raw) : raw;
+        return MapEntry(trip.id, processed);
+      }),
+    );
+    return Map<String, List<TripGpsPoint>>.fromEntries(entries);
+  }
+
+  /// Tải toàn bộ lộ trình của [trips] và dựng [MergedTripSession] thống nhất.
+  Future<MergedTripSession> buildMergedSession(
+    List<TripRecord> trips, {
+    TripMergeMode mode = TripMergeMode.customChain,
+    String? customTitle,
+    List<TripGpsPoint> Function(List<TripGpsPoint>)? cleaner,
+  }) async {
+    final routesByTripId = await loadMultipleTripRoutes(trips, cleaner: cleaner);
+    return MergedTripSession.fromTrips(
+      trips: trips,
+      routesByTripId: routesByTripId,
+      mode: mode,
+      customTitle: customTitle,
+    );
+  }
+
+  Future<List<SavedMergedTripChain>> _loadSavedMergedChainsUnsafe() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kMergedChainsKey);
+      if (raw != null && raw.isNotEmpty) {
+        final decoded = jsonDecode(raw) as List<dynamic>;
+        return decoded
+            .map((e) => SavedMergedTripChain.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (e) {
+      debugPrint('[TripStorageService] Lỗi nạp chuỗi hành trình đã lưu: $e');
+    }
+    return [];
+  }
+
+  Future<void> _persistMergedChainsUnsafe(
+    List<SavedMergedTripChain> chains,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(chains.map((c) => c.toJson()).toList());
+    await prefs.setString(_kMergedChainsKey, encoded);
+  }
+
+  /// Tải danh sách các chuỗi hành trình đã lưu.
+  Future<List<SavedMergedTripChain>> loadSavedMergedChains() {
+    return _synchronized(_loadSavedMergedChainsUnsafe);
+  }
+
+  /// Lưu (hoặc cập nhật nếu trùng id) một chuỗi hành trình đã ghép.
+  Future<List<SavedMergedTripChain>> saveMergedChain(
+    SavedMergedTripChain chain,
+  ) {
+    return _synchronized(() async {
+      final existing = await _loadSavedMergedChainsUnsafe();
+      final updated = <SavedMergedTripChain>[
+        chain,
+        ...existing.where((c) => c.id != chain.id),
+      ];
+      try {
+        await _persistMergedChainsUnsafe(updated);
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi lưu chuỗi hành trình: $e');
+      }
+      return updated;
+    });
+  }
+
+  /// Xóa một chuỗi hành trình đã lưu theo [chainId].
+  Future<List<SavedMergedTripChain>> deleteMergedChain(String chainId) {
+    return _synchronized(() async {
+      final existing = await _loadSavedMergedChainsUnsafe();
+      final updated = existing.where((c) => c.id != chainId).toList();
+      try {
+        await _persistMergedChainsUnsafe(updated);
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi xóa chuỗi hành trình: $e');
+      }
+      return updated;
+    });
+  }
+
   /// Lưu một chuyến đi mới: Tách riêng file tọa độ GPS và lưu tóm tắt vào metadata
   Future<void> saveTrip({
     required TripRecord trip,
@@ -291,6 +387,7 @@ class TripStorageService {
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove(_kTripMetadataKey);
         await prefs.remove(_kLegacyTripKey);
+        await prefs.remove(_kMergedChainsKey);
       } catch (e) {
         debugPrint('[TripStorageService] Lỗi xóa toàn bộ lịch sử: $e');
       }
