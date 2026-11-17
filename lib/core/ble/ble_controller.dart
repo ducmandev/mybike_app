@@ -797,13 +797,13 @@ class BleController extends Notifier<BleState> {
       final trip = state.trip;
       final durSec = trip.duration.inSeconds;
       final gpsDistKm = TripGpsTracker.instance.totalDistanceKm;
-      // Lấy quãng đường lớn hơn giữa ODO xe và GPS
-      final effectiveDistKm = max(trip.distanceKm, gpsDistKm);
+      // Dùng trực tiếp quãng đường đọc từ ODO xe chạy (trip.distanceKm)
+      final effectiveDistKm = trip.distanceKm;
       final currentRoute = TripGpsTracker.instance.getCurrentRoute();
 
-      // Bỏ qua nếu quãng đường chưa đạt tối thiểu 2.0 km (kể cả khi có điểm GPS đứng yên / chạy ngắn)
+      // Bỏ qua nếu quãng đường xe chạy chưa đạt tối thiểu 1.0 km
       if (effectiveDistKm < TripStorageService.kMinTripDistanceKm || _tripStartTime == null) {
-        BleLogger.instance.event('trip_skipped_under_2km', {
+        BleLogger.instance.event('trip_skipped_under_1km', {
           'distance_km': effectiveDistKm,
           'odo_dist_km': trip.distanceKm,
           'gps_dist_km': gpsDistKm,

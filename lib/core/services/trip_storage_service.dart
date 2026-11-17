@@ -20,7 +20,7 @@ class TripStorageService {
   static const String _kLegacyTripKey = 'trip_history_v1';
   static const String _kMergedChainsKey = 'trip_merged_chains_v1';
   static const int _kMaxTrips = 250;
-  static const double kMinTripDistanceKm = 2.0;
+  static const double kMinTripDistanceKm = 1.0;
 
   Directory? _tripsDir;
   Future<Directory>? _initFuture;

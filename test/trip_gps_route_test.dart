@@ -156,14 +156,14 @@ void main() {
       expect(kalman.lat!, greaterThan(10.771900));
     });
 
-    test('Trips below 2km are rejected from storage', () {
-      expect(TripStorageService.kMinTripDistanceKm, 2.0);
+    test('Trips below 1km are rejected from storage', () {
+      expect(TripStorageService.kMinTripDistanceKm, 1.0);
 
       final trips = [
         TripRecord(
           startTime: DateTime(2026, 10, 27, 8, 0, 0),
           endTime: DateTime(2026, 10, 27, 8, 5, 0),
-          distanceKm: 0.45, // < 2km
+          distanceKm: 0.45, // < 1km
           durationSec: 300,
           avgSpeedKmh: 15.0,
           maxSpeedKmh: 25.0,
@@ -172,16 +172,16 @@ void main() {
         TripRecord(
           startTime: DateTime(2026, 10, 27, 8, 30, 0),
           endTime: DateTime(2026, 10, 27, 8, 36, 0),
-          distanceKm: 1.99, // < 2km
+          distanceKm: 0.99, // < 1km
           durationSec: 360,
           avgSpeedKmh: 20.0,
           maxSpeedKmh: 30.0,
-          usedPercent: 2,
+          usedPercent: 1,
         ),
         TripRecord(
           startTime: DateTime(2026, 10, 27, 9, 0, 0),
           endTime: DateTime(2026, 10, 27, 9, 20, 0),
-          distanceKm: 3.8, // >= 2km
+          distanceKm: 3.8, // >= 1km
           durationSec: 1200,
           avgSpeedKmh: 30.0,
           maxSpeedKmh: 48.0,
@@ -196,7 +196,7 @@ void main() {
       expect(filtered.first.distanceKm, 3.8);
     });
 
-    test('TripStorageService.saveTrip skips trips below 2km (0.0, 0.85, 1.99)', () async {
+    test('TripStorageService.saveTrip skips trips below 1km (0.0, 0.85, 0.99)', () async {
       SharedPreferences.setMockInitialValues({});
       final t0 = DateTime(2026, 10, 27, 8, 0, 0);
       final nonEmptyRoute = [
@@ -230,27 +230,27 @@ void main() {
         maxSpeedKmh: 28.0,
         usedPercent: 1,
       );
-      final shortTrip1990m = TripRecord(
-        id: 'trip_199',
+      final shortTrip990m = TripRecord(
+        id: 'trip_099',
         startTime: t0.add(const Duration(hours: 2)),
         endTime: t0.add(const Duration(hours: 2, minutes: 8)),
-        distanceKm: 1.99,
+        distanceKm: 0.99,
         durationSec: 480,
         avgSpeedKmh: 22.0,
         maxSpeedKmh: 35.0,
-        usedPercent: 2,
+        usedPercent: 1,
       );
 
       await TripStorageService.instance.saveTrip(trip: zeroTrip, route: nonEmptyRoute);
       await TripStorageService.instance.saveTrip(trip: shortTrip850m, route: const []);
-      await TripStorageService.instance.saveTrip(trip: shortTrip1990m, route: nonEmptyRoute);
+      await TripStorageService.instance.saveTrip(trip: shortTrip990m, route: nonEmptyRoute);
 
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getString('trip_history_metadata_v2'), isNull);
       expect(await TripStorageService.instance.loadAllTrips(), isEmpty);
     });
 
-    test('TripStorageService.loadAllTrips filters and purges pre-existing trips below 2km', () async {
+    test('TripStorageService.loadAllTrips filters and purges pre-existing trips below 1km', () async {
       final t0 = DateTime(2026, 10, 27, 8, 0, 0);
       final storedRecords = [
         TripRecord(
@@ -264,20 +264,20 @@ void main() {
           usedPercent: 0,
         ),
         TripRecord(
-          id: 'short_199',
+          id: 'short_099',
           startTime: t0.add(const Duration(hours: 1)),
           endTime: t0.add(const Duration(hours: 1, minutes: 10)),
-          distanceKm: 1.99,
+          distanceKm: 0.99,
           durationSec: 600,
           avgSpeedKmh: 20.0,
           maxSpeedKmh: 30.0,
-          usedPercent: 2,
+          usedPercent: 1,
         ),
         TripRecord(
-          id: 'valid_20',
+          id: 'valid_10',
           startTime: t0.add(const Duration(hours: 2)),
           endTime: t0.add(const Duration(hours: 2, minutes: 12)),
-          distanceKm: 2.0,
+          distanceKm: 1.0,
           durationSec: 720,
           avgSpeedKmh: 25.0,
           maxSpeedKmh: 40.0,
@@ -302,8 +302,8 @@ void main() {
       });
 
       final loaded = await TripStorageService.instance.loadAllTrips();
-      expect(loaded.map((t) => t.id).toList(), ['valid_20', 'valid_38']);
-      expect(loaded.map((t) => t.distanceKm).toList(), [2.0, 3.8]);
+      expect(loaded.map((t) => t.id).toList(), ['valid_10', 'valid_38']);
+      expect(loaded.map((t) => t.distanceKm).toList(), [1.0, 3.8]);
 
       final prefs = await SharedPreferences.getInstance();
       final purgedJson = prefs.getString('trip_history_metadata_v2');
@@ -311,7 +311,7 @@ void main() {
       final purgedList = (jsonDecode(purgedJson!) as List<dynamic>)
           .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
           .toList();
-      expect(purgedList.map((t) => t.id).toList(), ['valid_20', 'valid_38']);
+      expect(purgedList.map((t) => t.id).toList(), ['valid_10', 'valid_38']);
     });
   });
 }
