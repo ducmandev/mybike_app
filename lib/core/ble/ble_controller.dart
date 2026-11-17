@@ -798,16 +798,17 @@ class BleController extends Notifier<BleState> {
       final durSec = trip.duration.inSeconds;
       final gpsDistKm = TripGpsTracker.instance.totalDistanceKm;
       // Lấy quãng đường lớn hơn giữa ODO xe và GPS
-      final effectiveDistKm = trip.distanceKm > 0 ? trip.distanceKm : gpsDistKm;
+      final effectiveDistKm = max(trip.distanceKm, gpsDistKm);
       final currentRoute = TripGpsTracker.instance.getCurrentRoute();
 
-      // Bỏ qua nếu quãng đường quá ngắn (< 100m) VÀ không có điểm GPS thực tế nào được ghi nhận
-      if ((effectiveDistKm < 0.1 && currentRoute.isEmpty) || _tripStartTime == null) {
-        BleLogger.instance.event('trip_skipped_under_100m', {
+      // Bỏ qua nếu quãng đường chưa đạt tối thiểu 2.0 km (kể cả khi có điểm GPS đứng yên / chạy ngắn)
+      if (effectiveDistKm < TripStorageService.kMinTripDistanceKm || _tripStartTime == null) {
+        BleLogger.instance.event('trip_skipped_under_2km', {
           'distance_km': effectiveDistKm,
           'odo_dist_km': trip.distanceKm,
           'gps_dist_km': gpsDistKm,
           'duration_sec': durSec,
+          'gps_points': currentRoute.length,
         });
         // Dừng tracking và giải phóng bộ nhớ GPS của cuốc đi ngắn
         TripGpsTracker.instance.stopTracking();
@@ -862,7 +863,7 @@ class BleController extends Notifier<BleState> {
             t.id != record.id &&
             !TripStorageService.isDuplicateTrip(t, record)
           ),
-        ].take(50).toList(),
+        ].take(250).toList(),
         trip: TripData(powerKw: state.trip.powerKw),
       );
 

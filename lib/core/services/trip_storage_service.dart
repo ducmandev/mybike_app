@@ -20,9 +20,10 @@ class TripStorageService {
   static const String _kLegacyTripKey = 'trip_history_v1';
   static const String _kMergedChainsKey = 'trip_merged_chains_v1';
   static const int _kMaxTrips = 250;
+  static const double kMinTripDistanceKm = 2.0;
 
   Directory? _tripsDir;
-  Completer<Directory>? _initCompleter;
+  Future<Directory>? _initFuture;
   Future<void> _opLock = Future.value();
 
   Future<T> _synchronized<T>(Future<T> Function() action) {
@@ -78,24 +79,25 @@ class TripStorageService {
   }
 
   /// Lấy thư mục lưu trữ các tệp tọa độ GPS chuyến đi
-  Future<Directory> getTripsDirectory() async {
-    if (_tripsDir != null) return _tripsDir!;
-    if (_initCompleter != null) return _initCompleter!.future;
-    _initCompleter = Completer<Directory>();
-    try {
-      final base = await getApplicationDocumentsDirectory();
-      final dir = Directory('${base.path}/trips');
-      if (!await dir.exists()) {
-        await dir.create(recursive: true);
+  Future<Directory> getTripsDirectory() {
+    if (_tripsDir != null) return Future.value(_tripsDir!);
+    if (_initFuture != null) return _initFuture!;
+    final future = () async {
+      try {
+        final base = await getApplicationDocumentsDirectory();
+        final dir = Directory('${base.path}/trips');
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
+        _tripsDir = dir;
+        return dir;
+      } catch (e) {
+        _initFuture = null;
+        rethrow;
       }
-      _tripsDir = dir;
-      _initCompleter!.complete(dir);
-      return dir;
-    } catch (e) {
-      _initCompleter!.completeError(e);
-      _initCompleter = null;
-      rethrow;
-    }
+    }();
+    _initFuture = future;
+    return future;
   }
 
   /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi (không khóa)
@@ -109,7 +111,7 @@ class TripStorageService {
         final decoded = jsonDecode(metaJson) as List<dynamic>;
         return decoded
             .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= 0.1 || e.durationSec >= 30)
+            .where((e) => e.distanceKm >= kMinTripDistanceKm)
             .toList();
       }
 
@@ -119,15 +121,24 @@ class TripStorageService {
         final decoded = jsonDecode(legacyJson) as List<dynamic>;
         final legacyTrips = decoded
             .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= 0.1 || e.route.isNotEmpty)
+            .where((e) => e.distanceKm >= kMinTripDistanceKm)
             .toList();
 
+        if (legacyTrips.isEmpty) {
+          return [];
+        }
+
         // Tách file lộ trình chi tiết cho từng chuyến legacy sang Tầng 2
-        final dir = await getTripsDirectory();
+        Directory? dir;
+        try {
+          dir = await getTripsDirectory();
+        } catch (e) {
+          debugPrint('[TripStorageService] Lỗi mở thư mục di trú: $e');
+        }
         final metadataList = <TripRecord>[];
 
         for (final trip in legacyTrips) {
-          if (trip.route.isNotEmpty) {
+          if (trip.route.isNotEmpty && dir != null) {
             try {
               final file = File('${dir.path}/${trip.id}.json');
               final routeJson = jsonEncode(trip.route.map((p) => p.toJson()).toList());
@@ -153,15 +164,52 @@ class TripStorageService {
   /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi
   Future<List<TripRecord>> loadAllTrips() {
     return _synchronized(() async {
+      final rawIds = <String>{};
+      int rawMetaCount = 0;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final metaJson = prefs.getString(_kTripMetadataKey);
+        if (metaJson != null && metaJson.isNotEmpty) {
+          final decoded = jsonDecode(metaJson) as List<dynamic>;
+          rawMetaCount = decoded.length;
+          for (final item in decoded) {
+            if (item is Map<String, dynamic>) {
+              rawIds.add(TripRecord.fromJson(item).id);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi kiểm tra metadata thô: $e');
+      }
+
       final loaded = await _loadAllTripsUnsafe();
       final deduped = _deduplicateTrips(loaded);
-      if (deduped.length < loaded.length) {
+      final keptIds = deduped.map((e) => e.id).toSet();
+      final removedIds = rawIds.difference(keptIds);
+
+      if (deduped.length < loaded.length ||
+          (rawMetaCount > 0 && deduped.length < rawMetaCount) ||
+          removedIds.isNotEmpty) {
         try {
           final prefs = await SharedPreferences.getInstance();
           final metaStr = jsonEncode(deduped.map((e) => e.toMetadataJson()).toList());
           await prefs.setString(_kTripMetadataKey, metaStr);
         } catch (e) {
-          debugPrint('[TripStorageService] Lỗi dọn dẹp chuyến đi trùng lặp: $e');
+          debugPrint('[TripStorageService] Lỗi dọn dẹp chuyến đi trùng lặp/ngắn: $e');
+        }
+
+        if (removedIds.isNotEmpty) {
+          try {
+            final dir = await getTripsDirectory();
+            for (final id in removedIds) {
+              try {
+                final file = File('${dir.path}/$id.json');
+                if (await file.exists()) {
+                  await file.delete();
+                }
+              } catch (_) {}
+            }
+          } catch (_) {}
         }
       }
       return deduped;
@@ -287,7 +335,8 @@ class TripStorageService {
   Future<void> saveTrip({
     required TripRecord trip,
     required List<TripGpsPoint> route,
-  }) {
+  }) async {
+    if (trip.distanceKm < kMinTripDistanceKm) return;
     return _synchronized(() async {
       try {
         final dir = await getTripsDirectory();
