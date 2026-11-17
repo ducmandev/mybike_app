@@ -10,6 +10,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/ble/ble_controller.dart';
 import '../../core/proto/bike_log.dart';
@@ -32,6 +33,17 @@ enum DashboardFocusMode {
   map,
 }
 
+typedef _DashBleView = ({
+  BlePhase phase,
+  String? bikeName,
+  BikeModel bikeModel,
+  bool dashboardEncrypted,
+  String? message,
+  bool isLocked,
+  TripData trip,
+  BikeLogMsg? fallbackTelemetry,
+});
+
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
@@ -40,12 +52,47 @@ class DashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
+  static const _nightTaploPrefKey = 'dashboard_night_taplo_mode';
+
   BikeLogMsg? _msg;
   DateTime? _last;
   StreamSubscription? _sub;
   bool _powerBusy = false;
   int _activeTab = 0; // 0: Cockpit & Chuyến đi, 1: Giám sát nhiệt & Lỗi
   DashboardFocusMode _focusMode = DashboardFocusMode.normal;
+  bool _isNightMode = false;
+
+  // Adaptive Cockpit Palette (Light Kinetic Stitch EV <-> Deep Slate Night Cockpit)
+  Color get _bg => _isNightMode ? const Color(0xFF0B1120) : AppColors.bg;
+  Color get _panel => _isNightMode ? const Color(0xFF111827) : AppColors.panel;
+  Color get _panelSecondary => _isNightMode ? const Color(0xFF0F172A) : AppColors.panelSecondary;
+  Color get _panelBorder => _isNightMode ? const Color(0xFF1E293B) : AppColors.panelBorder;
+  Color get _panelBorderBright => _isNightMode ? const Color(0xFF334155) : AppColors.panelBorderBright;
+  Color get _surfaceContainerHigh => _isNightMode ? const Color(0xFF1E293B) : AppColors.surfaceContainerHigh;
+  Color get _textPrimary => _isNightMode ? const Color(0xFFF8FAFC) : AppColors.textPrimary;
+  Color get _textDim => _isNightMode ? const Color(0xFF94A3B8) : AppColors.textDim;
+  Color get _accent => _isNightMode ? const Color(0xFF38BDF8) : AppColors.primary;
+  Color get _tabSelectedBg => _isNightMode ? const Color(0xFF0C223B) : const Color(0xFFF0F9FF);
+  Color get _tabSelectedBorder => _isNightMode ? const Color(0xFF38BDF8) : AppColors.secondary;
+
+  Future<void> _loadNightModePref() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getBool(_nightTaploPrefKey) ?? false;
+      if (mounted && saved != _isNightMode) {
+        setState(() => _isNightMode = saved);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleNightMode() async {
+    final next = !_isNightMode;
+    setState(() => _isNightMode = next);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_nightTaploPrefKey, next);
+    } catch (_) {}
+  }
 
   void _toggleSpeedZoom() {
     setState(() {
@@ -80,12 +127,12 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             height: 38,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: AppColors.panel.withValues(alpha: 0.94),
+              color: _panel.withValues(alpha: 0.94),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.panelBorderBright, width: 1),
+              border: Border.all(color: _panelBorderBright, width: 1),
               boxShadow: AppColors.cardShadow,
             ),
-            child: Icon(icon, size: 20, color: AppColors.textPrimary),
+            child: Icon(icon, size: 20, color: _textPrimary),
           ),
         ),
       ),
@@ -95,6 +142,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_loadNightModePref());
     _sub = ref.read(bleProvider.notifier).telemetry.listen((t) {
       if (!mounted) return;
       setState(() {
@@ -158,7 +206,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.panel,
+        backgroundColor: _panel,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         title: Row(
           children: [
@@ -167,7 +215,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             Text(
               'Xác nhận tắt xe',
               style: GoogleFonts.spaceGrotesk(
-                color: AppColors.textPrimary,
+                color: _textPrimary,
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
               ),
@@ -176,7 +224,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ),
         content: Text(
           'Bạn có chắc chắn muốn TẮT NGUỒN xe không?\nĐộng cơ sẽ ngắt và xe chuyển sang trạng thái chờ an toàn.',
-          style: GoogleFonts.plusJakartaSans(color: AppColors.textDim, fontSize: 14),
+          style: GoogleFonts.plusJakartaSans(color: _textDim, fontSize: 14),
         ),
         actions: [
           TextButton(
@@ -184,7 +232,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             child: Text(
               'HỦY',
               style: GoogleFonts.plusJakartaSans(
-                color: AppColors.textDim,
+                color: _textDim,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -232,7 +280,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     }
   }
 
-  Future<void> _toggleLockBike(BleState ble, BikeLogMsg m) async {
+  Future<void> _toggleLockBike(_DashBleView ble, BikeLogMsg m) async {
     if (!ble.bikeModel.supportsImmobilizerLock) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -307,9 +355,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ble = ref.watch(bleProvider);
+    final ble = ref.watch(
+      bleProvider.select(
+        (s) => (
+          phase: s.phase,
+          bikeName: s.bikeName,
+          bikeModel: s.bikeModel,
+          dashboardEncrypted: s.dashboardEncrypted,
+          message: s.message,
+          isLocked: s.isLocked,
+          trip: s.trip,
+          fallbackTelemetry: _msg == null ? s.lastTelemetry : null,
+        ),
+      ),
+    );
     final m = _msg ??
-        (ble.lastTelemetry ??
+        (ble.fallbackTelemetry ??
             (BikeLogMsg()
               ..model = (ble.bikeName ?? 'Dat Bike Quantum')
               ..version = '1.14.0'
@@ -323,122 +384,136 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final isDraw = powerKw < -0.05; // Đang xả điện chạy động cơ
     final isRecup = powerKw > 0.05; // Đang phanh tái sinh nạp ngược pin
 
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      appBar: _focusMode == DashboardFocusMode.map ? null : AppBar(
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: const [
-                  BoxShadow(color: Color(0x180F172A), blurRadius: 4, offset: Offset(0, 1)),
-                ],
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+      color: _bg,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: _focusMode == DashboardFocusMode.map ? null : AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          iconTheme: IconThemeData(color: _textPrimary, size: 20),
+          actionsIconTheme: IconThemeData(color: _textPrimary, size: 20),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: const [
+                    BoxShadow(color: Color(0x180F172A), blurRadius: 4, offset: Offset(0, 1)),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Image.asset(
+                  'assets/images/bike_logo_3d.png',
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => Icon(Icons.two_wheeler_rounded, color: _accent, size: 20),
+                ),
               ),
-              clipBehavior: Clip.antiAlias,
-              child: Image.asset(
-                'assets/images/bike_logo_3d.png',
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 20),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text.rich(
-                TextSpan(
-                  text: (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
-                  style: GoogleFonts.spaceGrotesk(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
-                    letterSpacing: 0.5,
-                    color: AppColors.textPrimary,
-                  ),
-                  children: [
-                    const WidgetSpan(child: SizedBox(width: 6)),
-                    WidgetSpan(
-                      alignment: PlaceholderAlignment.middle,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(5),
-                          border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
-                        ),
-                        child: Text(
-                          ble.bikeModel.code,
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.primary,
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    text: (ble.bikeName ?? 'Dat Bike EV').toUpperCase(),
+                    style: GoogleFonts.spaceGrotesk(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                      letterSpacing: 0.5,
+                      color: _textPrimary,
+                    ),
+                    children: [
+                      const WidgetSpan(child: SizedBox(width: 6)),
+                      WidgetSpan(
+                        alignment: PlaceholderAlignment.middle,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: _accent.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(5),
+                            border: Border.all(color: _accent.withValues(alpha: 0.35)),
+                          ),
+                          child: Text(
+                            ble.bikeModel.code,
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 9.5,
+                              fontWeight: FontWeight.w700,
+                              color: _accent,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.battery_charging_full_rounded),
+              tooltip: 'Bác Sĩ Pin & OBD 24-Cell',
+              onPressed: () => Navigator.of(context).pushNamed('/battery'),
+            ),
+            IconButton(
+              icon: const Icon(Icons.access_time_rounded),
+              tooltip: 'Đồng bộ giờ Taplo xe',
+              onPressed: () async {
+                final res = await ref.read(bleProvider.notifier).syncTimeWithBike();
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(res),
+                    backgroundColor: res.contains('thành công') ? AppColors.tertiary : AppColors.amber,
+                    duration: const Duration(seconds: 3),
+                  ),
+                );
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded),
+              tooltip: 'Đặt lại Trip A',
+              onPressed: () {
+                ref.read(bleProvider.notifier).resetTrip();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Đã đặt lại đồng hồ chuyến đi Trip A!'), duration: Duration(seconds: 2)),
+                );
+              },
+            ),
+            IconButton(
+              icon: Icon(_isNightMode ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
+              tooltip: 'Chế độ Taplo Đêm / Sáng',
+              onPressed: _toggleNightMode,
+            ),
+            IconButton(
+              icon: const Icon(Icons.tune_rounded),
+              tooltip: 'Cài đặt xe & Cảm giác lái',
+              onPressed: () => Navigator.of(context).pushNamed('/settings'),
+            ),
+            IconButton(
+              icon: const Icon(Icons.link_off_rounded),
+              tooltip: 'Ngắt kết nối',
+              onPressed: () async {
+                await ref.read(bleProvider.notifier).disconnect();
+                if (!context.mounted) return;
+                Navigator.of(context).pushReplacementNamed('/scan');
+              },
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.battery_charging_full_rounded),
-            tooltip: 'Bác Sĩ Pin & OBD 24-Cell',
-            onPressed: () => Navigator.of(context).pushNamed('/battery'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.access_time_rounded),
-            tooltip: 'Đồng bộ giờ Taplo xe',
-            onPressed: () async {
-              final res = await ref.read(bleProvider.notifier).syncTimeWithBike();
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(res),
-                  backgroundColor: res.contains('thành công') ? AppColors.tertiary : AppColors.amber,
-                  duration: const Duration(seconds: 3),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Đặt lại Trip A',
-            onPressed: () {
-              ref.read(bleProvider.notifier).resetTrip();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Đã đặt lại đồng hồ chuyến đi Trip A!'), duration: Duration(seconds: 2)),
-              );
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.tune_rounded),
-            tooltip: 'Cài đặt xe & Cảm giác lái',
-            onPressed: () => Navigator.of(context).pushNamed('/settings'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.link_off_rounded),
-            tooltip: 'Ngắt kết nối',
-            onPressed: () async {
-              await ref.read(bleProvider.notifier).disconnect();
-              if (!context.mounted) return;
-              Navigator.of(context).pushReplacementNamed('/scan');
-            },
-          ),
-        ],
-      ),
-      body: OrientationBuilder(
-        builder: (context, orientation) {
-          if (orientation == Orientation.landscape) {
-            return _buildLandscapeLayout(context, ble, m, trip, powerKw, isRecup, isDraw, isEncrypted);
-          }
-          return _buildPortraitLayout(context, ble, m, trip, powerKw, isRecup, isDraw, isEncrypted);
-        },
+        body: OrientationBuilder(
+          builder: (context, orientation) {
+            if (orientation == Orientation.landscape) {
+              return _buildLandscapeLayout(context, ble, m, trip, powerKw, isRecup, isDraw, isEncrypted);
+            }
+            return _buildPortraitLayout(context, ble, m, trip, powerKw, isRecup, isDraw, isEncrypted);
+          },
+        ),
       ),
     );
   }
@@ -448,7 +523,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   // =========================================================================
   Widget _buildPortraitLayout(
     BuildContext context,
-    BleState ble,
+    _DashBleView ble,
     BikeLogMsg m,
     TripData trip,
     double powerKw,
@@ -493,8 +568,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           ),
           const SizedBox(height: 10),
         ] else if (isEncrypted) ...[
-          const NoticeBanner(
-            color: AppColors.secondary,
+          NoticeBanner(
+            color: _isNightMode ? const Color(0xFF38BDF8) : AppColors.secondary,
             text: 'Đã thiết lập phiên làm việc an toàn với xe. Cụm điều khiển sẵn sàng.',
           ),
           const SizedBox(height: 10),
@@ -515,6 +590,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           isLeft: m.left,
           isRight: m.right,
           child: Panel(
+            color: _panel,
+            borderColor: _panelBorder,
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
             borderRadius: 22,
             child: LayoutBuilder(
@@ -544,7 +621,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 child: Image.asset(
                                   'assets/images/bike_logo_3d.png',
                                   fit: BoxFit.cover,
-                                  errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 18),
+                                  errorBuilder: (_, _, _) => Icon(Icons.two_wheeler_rounded, color: _accent, size: 18),
                                 ),
                               ),
                               const SizedBox(width: 8),
@@ -555,7 +632,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     fontSize: 13,
                                     fontWeight: FontWeight.w700,
                                     letterSpacing: 0.5,
-                                    color: AppColors.textPrimary,
+                                    color: _textPrimary,
                                   ),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -661,7 +738,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         const SizedBox(height: 14),
 
         // 6. Footer đồng bộ telemetry
-        _buildSyncFooter(ble),
+        _buildSyncFooter(),
       ],
     );
   }
@@ -671,7 +748,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   // =========================================================================
   Widget _buildLandscapeLayout(
     BuildContext context,
-    BleState ble,
+    _DashBleView ble,
     BikeLogMsg m,
     TripData trip,
     double powerKw,
@@ -705,6 +782,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               isLeft: m.left,
               isRight: m.right,
               child: Panel(
+                color: _panel,
+                borderColor: _panelBorder,
                 padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
                 borderRadius: 22,
                 child: LayoutBuilder(
@@ -741,7 +820,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                           style: GoogleFonts.spaceGrotesk(
                                             fontSize: 12,
                                             fontWeight: FontWeight.w700,
-                                            color: AppColors.textPrimary,
+                                            color: _textPrimary,
                                           ),
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
@@ -792,7 +871,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                   children: [
                                     Text(
                                       'PIN: ',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: _textDim),
                                     ),
                                     Text(
                                       '${m.percent}%',
@@ -806,7 +885,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     const SizedBox(width: 4),
                                     Text(
                                       '(${m.kmLeft.toStringAsFixed(0)} km)',
-                                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
+                                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: _textDim),
                                     ),
                                     const SizedBox(width: 8),
                                     _miniGlassActionBtn(
@@ -863,7 +942,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     style: GoogleFonts.spaceGrotesk(
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.w700,
-                                      color: AppColors.textDim,
+                                      color: _textDim,
                                       fontFeatures: const [FontFeature.tabularFigures()],
                                     ),
                                   ),
@@ -872,7 +951,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     style: GoogleFonts.spaceGrotesk(
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.w700,
-                                      color: AppColors.textDim,
+                                      color: _textDim,
                                       fontFeatures: const [FontFeature.tabularFigures()],
                                     ),
                                   ),
@@ -920,11 +999,13 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   // =========================================================================
   // ========== CỤM 3 NÚT ĐIỀU KHIỂN CHÍNH NẰM CÙNG 1 HÀNG (ẨN CÒI) ===========
   // =========================================================================
-  Widget _buildControlButtonsRow(BleState ble, BikeLogMsg m) {
+  Widget _buildControlButtonsRow(_DashBleView ble, BikeLogMsg m) {
     final isLocked = ble.isLocked || m.state == BikeState.lock;
     final isRunning = m.speed > 0.5;
 
     return Panel(
+      color: _panel,
+      borderColor: _panelBorder,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       borderRadius: 18,
       child: Row(
@@ -954,8 +1035,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               message: isRunning ? 'Đang chạy' : 'Tắt nguồn xe',
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: isRunning ? AppColors.surfaceContainerHigh : AppColors.error,
-                  foregroundColor: isRunning ? AppColors.textDim : Colors.white,
+                  backgroundColor: isRunning ? _surfaceContainerHigh : AppColors.error,
+                  foregroundColor: isRunning ? _textDim : Colors.white,
                   elevation: 0,
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -974,8 +1055,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 message: isLocked ? 'Mở khóa an toàn' : 'Khóa xe (Anti-theft)',
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: isLocked ? AppColors.error : AppColors.surfaceContainerHigh,
-                    foregroundColor: isLocked ? Colors.white : AppColors.textPrimary,
+                    backgroundColor: isLocked ? AppColors.error : _surfaceContainerHigh,
+                    foregroundColor: isLocked ? Colors.white : _textPrimary,
                     elevation: 0,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -1000,7 +1081,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// 1. Phóng to riêng Cụm đồng hồ tốc độ ở chế độ dọc (Portrait Speedometer Zoom)
   Widget _buildPortraitSpeedZoomLayout(
     BuildContext context,
-    BleState ble,
+    _DashBleView ble,
     BikeLogMsg m,
     TripData trip,
     double powerKw,
@@ -1017,6 +1098,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               isLeft: m.left,
               isRight: m.right,
               child: Panel(
+                color: _panel,
+                borderColor: _panelBorder,
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
                 borderRadius: 22,
                 child: LayoutBuilder(
@@ -1046,7 +1129,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                     child: Image.asset(
                                       'assets/images/bike_logo_3d.png',
                                       fit: BoxFit.cover,
-                                      errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 18),
+                                      errorBuilder: (_, _, _) => Icon(Icons.two_wheeler_rounded, color: _accent, size: 18),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
@@ -1056,7 +1139,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                       style: GoogleFonts.spaceGrotesk(
                                         fontSize: 13,
                                         fontWeight: FontWeight.w700,
-                                        color: AppColors.textPrimary,
+                                        color: _textPrimary,
                                       ),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
@@ -1153,7 +1236,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// 2. Phóng to riêng Bản đồ GPS ở chế độ dọc (Portrait Map Zoom - Full-bleed viền tràn màn hình)
   Widget _buildPortraitMapZoomLayout(
     BuildContext context,
-    BleState ble,
+    _DashBleView ble,
     BikeLogMsg m,
     TripData trip,
     bool isLocked,
@@ -1174,7 +1257,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// 3. Phóng to riêng Cụm đồng hồ tốc độ ở chế độ ngang (Landscape Speedometer Zoom - 100% full-width)
   Widget _buildLandscapeSpeedZoomLayout(
     BuildContext context,
-    BleState ble,
+    _DashBleView ble,
     BikeLogMsg m,
     TripData trip,
     double powerKw,
@@ -1188,6 +1271,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         isLeft: m.left,
         isRight: m.right,
         child: Panel(
+          color: _panel,
+          borderColor: _panelBorder,
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
           borderRadius: 22,
           child: LayoutBuilder(
@@ -1217,7 +1302,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                               child: Image.asset(
                                 'assets/images/bike_logo_3d.png',
                                 fit: BoxFit.cover,
-                                errorBuilder: (_, _, _) => const Icon(Icons.two_wheeler_rounded, color: AppColors.primary, size: 16),
+                                errorBuilder: (_, _, _) => Icon(Icons.two_wheeler_rounded, color: _accent, size: 16),
                               ),
                             ),
                             const SizedBox(width: 6),
@@ -1227,7 +1312,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 style: GoogleFonts.spaceGrotesk(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary,
+                                  color: _textPrimary,
                                 ),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -1275,7 +1360,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text('PIN: ', style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim)),
+                          Text('PIN: ', style: GoogleFonts.plusJakartaSans(fontSize: 11, color: _textDim)),
                           Text(
                             '${m.percent}%',
                             style: GoogleFonts.spaceGrotesk(
@@ -1286,7 +1371,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             ),
                           ),
                           const SizedBox(width: 4),
-                          Text('(${m.kmLeft.toStringAsFixed(0)} km)', style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim)),
+                          Text('(${m.kmLeft.toStringAsFixed(0)} km)', style: GoogleFonts.plusJakartaSans(fontSize: 11, color: _textDim)),
                           const SizedBox(width: 10),
                           _miniGlassActionBtn(
                             icon: Icons.fullscreen_exit_rounded,
@@ -1334,7 +1419,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           style: GoogleFonts.spaceGrotesk(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
-                            color: AppColors.textDim,
+                            color: _textDim,
                             fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
@@ -1343,7 +1428,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                           style: GoogleFonts.spaceGrotesk(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
-                            color: AppColors.textDim,
+                            color: _textDim,
                             fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
@@ -1362,7 +1447,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   /// 4. Phóng to riêng Bản đồ GPS ở chế độ ngang (Landscape Map Zoom - 100% full-width full-bleed)
   Widget _buildLandscapeMapZoomLayout(
     BuildContext context,
-    BleState ble,
+    _DashBleView ble,
     BikeLogMsg m,
     TripData trip,
     bool isLocked,
@@ -1401,7 +1486,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               fontSize: (gaugeSize * 0.28).clamp(36.0, 56.0),
               fontWeight: FontWeight.w700,
               height: 1.0,
-              color: AppColors.textPrimary,
+              color: _textPrimary,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
@@ -1409,10 +1494,133 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           Text(
             'KM / H',
             style: GoogleFonts.plusJakartaSans(
-              color: AppColors.textDim,
+              color: _textDim,
               fontSize: (gaugeSize * 0.05).clamp(10.0, 12.0),
               fontWeight: FontWeight.w700,
               letterSpacing: 0.08 * 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cockpitMetricTile({
+    required IconData icon,
+    required String label,
+    required String value,
+    String? unit,
+    Color? valueColor,
+    Color? accentColor,
+  }) {
+    if (!_isNightMode) {
+      return MetricTile(
+        icon: icon,
+        label: label,
+        value: value,
+        unit: unit,
+        valueColor: valueColor,
+        accentColor: accentColor,
+      );
+    }
+
+    final effectiveAccent = accentColor ?? _accent;
+    return Panel(
+      color: _panelSecondary,
+      borderColor: _panelBorder,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+      borderRadius: 16,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              color: effectiveAccent.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 15, color: effectiveAccent),
+          ),
+          const SizedBox(height: 8),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              label.toUpperCase(),
+              maxLines: 1,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.04 * 10.5,
+                color: _textDim,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  value,
+                  maxLines: 1,
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: valueColor ?? _textPrimary,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+                if (unit != null) ...[
+                  const SizedBox(width: 4),
+                  Text(
+                    unit,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      color: _textDim,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String text) {
+    if (!_isNightMode) {
+      return SectionTitle(text);
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            width: 3.5,
+            height: 14,
+            margin: const EdgeInsets.only(right: 8),
+            decoration: BoxDecoration(
+              color: _accent,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              text.toUpperCase(),
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+                color: _textPrimary,
+              ),
             ),
           ),
         ],
@@ -1424,29 +1632,29 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return Row(
       children: [
         Expanded(
-          child: MetricTile(
+          child: _cockpitMetricTile(
             icon: Icons.battery_charging_full_rounded,
             label: 'PIN (${m.percent}%)',
             value: m.kmLeft.toStringAsFixed(0),
             unit: 'km',
-            valueColor: AppColors.primary,
-            accentColor: AppColors.primary,
+            valueColor: _accent,
+            accentColor: _accent,
           ),
         ),
         const SizedBox(width: 6),
         Expanded(
-          child: MetricTile(
+          child: _cockpitMetricTile(
             icon: Icons.electric_bolt_rounded,
             label: 'ĐIỆN ÁP',
             value: m.voltage > 0 ? m.voltage.toStringAsFixed(1) : '—',
             unit: 'V',
-            valueColor: AppColors.textPrimary,
-            accentColor: AppColors.secondary,
+            valueColor: _textPrimary,
+            accentColor: _isNightMode ? _accent : AppColors.secondary,
           ),
         ),
         const SizedBox(width: 6),
         Expanded(
-          child: MetricTile(
+          child: _cockpitMetricTile(
             icon: Icons.route_rounded,
             label: 'TỔNG ODO',
             value: m.odo.toStringAsFixed(0),
@@ -1501,10 +1709,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFF0F9FF) : AppColors.panel,
+          color: isSelected ? _tabSelectedBg : _panel,
           borderRadius: BorderRadius.circular(9999),
           border: Border.all(
-            color: isSelected ? AppColors.secondary : AppColors.panelBorder,
+            color: isSelected ? _tabSelectedBorder : _panelBorder,
             width: 1,
           ),
         ),
@@ -1515,7 +1723,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             Icon(
               icon,
               size: 13,
-              color: isSelected ? AppColors.primary : AppColors.textDim,
+              color: isSelected ? _accent : _textDim,
             ),
             const SizedBox(width: 4),
             Flexible(
@@ -1527,7 +1735,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 10.5,
                     fontWeight: FontWeight.w700,
-                    color: isSelected ? AppColors.primary : AppColors.textDim,
+                    color: isSelected ? _accent : _textDim,
                   ),
                 ),
               ),
@@ -1548,6 +1756,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ),
         const SizedBox(height: 12),
         Panel(
+          color: _panel,
+          borderColor: _panelBorder,
           padding: const EdgeInsets.all(14),
           borderRadius: 20,
           child: Column(
@@ -1555,7 +1765,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.timer_outlined, size: 18, color: AppColors.primary),
+                  Icon(Icons.timer_outlined, size: 18, color: _accent),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -1566,7 +1776,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 0.05 * 12,
-                        color: AppColors.textDim,
+                        color: _textDim,
                       ),
                     ),
                   ),
@@ -1575,9 +1785,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     child: InkWell(
                       borderRadius: BorderRadius.circular(8),
                       onTap: () => _openFullScreenMap(trip),
-                      child: const Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.open_in_new_rounded, size: 16, color: AppColors.primary),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(Icons.open_in_new_rounded, size: 16, color: _accent),
                       ),
                     ),
                   ),
@@ -1588,7 +1798,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                     style: GoogleFonts.spaceGrotesk(
                       fontWeight: FontWeight.w700,
                       fontSize: 15,
-                      color: AppColors.primary,
+                      color: _accent,
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
@@ -1598,21 +1808,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               Row(
                 children: [
                   Expanded(
-                    child: MetricTile(
+                    child: _cockpitMetricTile(
                       icon: Icons.navigation_rounded,
                       label: 'QUÃNG ĐƯỜNG',
                       value: trip.distanceKm.toStringAsFixed(2),
                       unit: 'km',
-                      valueColor: AppColors.primary,
+                      valueColor: _accent,
+                      accentColor: _accent,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: MetricTile(
+                    child: _cockpitMetricTile(
                       icon: Icons.speed_rounded,
                       label: 'VẬN TỐC MAX',
                       value: trip.maxSpeedKmh.toStringAsFixed(1),
                       unit: 'km/h',
+                      accentColor: _accent,
                     ),
                   ),
                 ],
@@ -1621,21 +1833,23 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               Row(
                 children: [
                   Expanded(
-                    child: MetricTile(
+                    child: _cockpitMetricTile(
                       icon: Icons.timeline_rounded,
                       label: 'VẬN TỐC TB',
                       value: trip.avgSpeedKmh.toStringAsFixed(1),
                       unit: 'km/h',
+                      accentColor: _accent,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: MetricTile(
+                    child: _cockpitMetricTile(
                       icon: Icons.battery_alert_rounded,
                       label: 'TIÊU HAO PIN',
                       value: '-${trip.usedPercent}',
                       unit: '% pin',
                       valueColor: AppColors.amber,
+                      accentColor: _accent,
                     ),
                   ),
                 ],
@@ -1649,51 +1863,53 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   Widget _buildDiagnosticsPanel(BikeLogMsg m) {
     return Panel(
+      color: _panel,
+      borderColor: _panelBorder,
       padding: const EdgeInsets.all(14),
       borderRadius: 20,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const SectionTitle('GIÁM SÁT NHIỆT ĐỘ 3 ĐIỂM'),
+          _buildSectionTitle('GIÁM SÁT NHIỆT ĐỘ 3 ĐIỂM'),
           const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
-                child: MetricTile(
+                child: _cockpitMetricTile(
                   icon: Icons.thermostat_rounded,
                   label: 'NHIỆT ECU',
                   value: '${m.ecu.toStringAsFixed(0)}°',
-                  valueColor: m.ecu > 65 ? AppColors.error : (m.ecu > 55 ? AppColors.amber : AppColors.textPrimary),
-                  accentColor: m.ecu > 65 ? AppColors.error : AppColors.secondary,
+                  valueColor: m.ecu > 65 ? AppColors.error : (m.ecu > 55 ? AppColors.amber : _textPrimary),
+                  accentColor: m.ecu > 65 ? AppColors.error : (_isNightMode ? _accent : AppColors.secondary),
                 ),
               ),
               const SizedBox(width: 6),
               Expanded(
-                child: MetricTile(
+                child: _cockpitMetricTile(
                   icon: Icons.device_thermostat_rounded,
                   label: 'NHIỆT MOTOR',
                   value: '${m.motor.toStringAsFixed(0)}°',
-                  valueColor: m.motor > 75 ? AppColors.error : (m.motor > 60 ? AppColors.amber : AppColors.textPrimary),
-                  accentColor: m.motor > 75 ? AppColors.error : AppColors.primary,
+                  valueColor: m.motor > 75 ? AppColors.error : (m.motor > 60 ? AppColors.amber : _textPrimary),
+                  accentColor: m.motor > 75 ? AppColors.error : _accent,
                 ),
               ),
               const SizedBox(width: 6),
               Expanded(
-                child: MetricTile(
+                child: _cockpitMetricTile(
                   icon: Icons.battery_std_rounded,
                   label: 'NHIỆT BMS',
                   value: '${m.bmsTemp.toStringAsFixed(0)}°',
-                  valueColor: m.bmsTemp > 50 ? AppColors.error : (m.bmsTemp > 45 ? AppColors.amber : AppColors.textPrimary),
+                  valueColor: m.bmsTemp > 50 ? AppColors.error : (m.bmsTemp > 45 ? AppColors.amber : _textPrimary),
                   accentColor: m.bmsTemp > 50 ? AppColors.error : AppColors.amber,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          const Divider(color: AppColors.panelBorder),
+          Divider(color: _panelBorder),
           const SizedBox(height: 12),
 
-          const SectionTitle('CHẨN ĐOÁN & MÃ LỖI HỆ THỐNG'),
+          _buildSectionTitle('CHẨN ĐOÁN & MÃ LỖI HỆ THỐNG'),
           const SizedBox(height: 8),
           for (final errLine in _decodeErrors(m.error))
             Padding(
@@ -1724,8 +1940,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             width: double.infinity,
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.primary,
-                side: const BorderSide(color: AppColors.primary, width: 1.2),
+                foregroundColor: _accent,
+                side: BorderSide(color: _accent, width: 1.2),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
@@ -1748,6 +1964,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
 
   Widget _buildHardwareInfo(BikeLogMsg m) {
     return Panel(
+      color: _panel,
+      borderColor: _panelBorder,
       padding: const EdgeInsets.symmetric(vertical: 4),
       borderRadius: 20,
       child: Column(
@@ -1768,23 +1986,31 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _buildSyncFooter(BleState ble) {
-    final telemetryTime = _last == null
-        ? 'Đang nhận telemetry…'
-        : 'Telemetry: ${_last!.toLocal().toString().substring(11, 19)}';
-    final taploTime = ble.lastTimeSynced == null
-        ? ''
-        : ' · Taplo: ${ble.lastTimeSynced!.hour.toString().padLeft(2, '0')}:${ble.lastTimeSynced!.minute.toString().padLeft(2, '0')}:${ble.lastTimeSynced!.second.toString().padLeft(2, '0')}';
-    final rssiStr = ble.filteredRssi != null ? ' · Sóng: ${ble.filteredRssi} dBm' : '';
+  Widget _buildSyncFooter() {
+    return Consumer(
+      builder: (context, footerRef, _) {
+        final syncInfo = footerRef.watch(
+          bleProvider.select((s) => (lastTimeSynced: s.lastTimeSynced, filteredRssi: s.filteredRssi)),
+        );
+        final telemetryTime = _last == null
+            ? 'Đang nhận telemetry…'
+            : 'Telemetry: ${_last!.toLocal().toString().substring(11, 19)}';
+        final taplo = syncInfo.lastTimeSynced;
+        final taploTime = taplo == null
+            ? ''
+            : ' · Taplo: ${taplo.hour.toString().padLeft(2, '0')}:${taplo.minute.toString().padLeft(2, '0')}:${taplo.second.toString().padLeft(2, '0')}';
+        final rssiStr = syncInfo.filteredRssi != null ? ' · Sóng: ${syncInfo.filteredRssi} dBm' : '';
 
-    return Text(
-      '$telemetryTime$taploTime$rssiStr',
-      textAlign: TextAlign.center,
-      style: GoogleFonts.spaceGrotesk(
-        fontSize: 11.5,
-        color: AppColors.textDim,
-        fontFeatures: const [FontFeature.tabularFigures()],
-      ),
+        return Text(
+          '$telemetryTime$taploTime$rssiStr',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.spaceGrotesk(
+            fontSize: 11.5,
+            color: _textDim,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        );
+      },
     );
   }
 
@@ -1793,14 +2019,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Row(
         children: [
-          Text(label, style: GoogleFonts.plusJakartaSans(color: AppColors.textDim, fontSize: 13.5)),
+          Text(label, style: GoogleFonts.plusJakartaSans(color: _textDim, fontSize: 13.5)),
           const Spacer(),
           Text(
             value,
             style: GoogleFonts.spaceGrotesk(
               fontSize: 13.5,
               fontWeight: FontWeight.w600,
-              color: valueColor ?? AppColors.textPrimary,
+              color: valueColor ?? _textPrimary,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
@@ -1809,5 +2035,5 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     );
   }
 
-  Widget _divider() => const Divider(height: 1, indent: 16, endIndent: 16, color: AppColors.panelBorder);
+  Widget _divider() => Divider(height: 1, indent: 16, endIndent: 16, color: _panelBorder);
 }

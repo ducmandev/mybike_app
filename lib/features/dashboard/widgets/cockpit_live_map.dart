@@ -460,22 +460,6 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
     );
   }
 
-  Color _getContinuousSpeedColor(double speedKmh) {
-    if (speedKmh <= 15.0) {
-      final t = (speedKmh / 15.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFF06B6D4), const Color(0xFF10B981), t)!;
-    } else if (speedKmh <= 35.0) {
-      final t = ((speedKmh - 15.0) / 20.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFF10B981), const Color(0xFF0EA5E9), t)!;
-    } else if (speedKmh <= 55.0) {
-      final t = ((speedKmh - 35.0) / 20.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFF97316), t)!;
-    } else {
-      final t = ((speedKmh - 55.0) / 30.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFFF97316), const Color(0xFFEF4444), t)!;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final bleState = ref.watch(bleProvider);
@@ -561,31 +545,34 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                   polylines: [
                     Polyline(
                       points: _liveRoute.map((p) => LatLng(p.lat, p.lng)).toList(),
-                      strokeWidth: 8.0,
+                      strokeWidth: 5.0,
+                      borderStrokeWidth: 2.2,
+                      borderColor: MapTileService.routeBorderColorFor(_tileStyle),
                       strokeCap: StrokeCap.round,
                       strokeJoin: StrokeJoin.round,
-                      color: AppColors.primary.withValues(alpha: 0.22),
+                      color: MapTileService.getHighContrastSpeedColor(_liveRoute.last.speedKmh),
                     ),
                   ],
                 ),
-                PolylineLayer(
-                  polylines: [
-                    for (int i = 0; i < _liveRoute.length - 1; i++)
-                      Polyline(
-                        points: [
-                          LatLng(_liveRoute[i].lat, _liveRoute[i].lng),
-                          LatLng(_liveRoute[i + 1].lat, _liveRoute[i + 1].lng),
-                        ],
-                        strokeWidth: 5.0,
-                        strokeCap: StrokeCap.round,
-                        strokeJoin: StrokeJoin.round,
-                        gradientColors: [
-                          _getContinuousSpeedColor(_liveRoute[i].speedKmh),
-                          _getContinuousSpeedColor(_liveRoute[i + 1].speedKmh),
-                        ],
-                      ),
-                  ],
-                ),
+                if (_liveRoute.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      for (int i = 0; i < _liveRoute.length - 1; i++)
+                        Polyline(
+                          points: [
+                            LatLng(_liveRoute[i].lat, _liveRoute[i].lng),
+                            LatLng(_liveRoute[i + 1].lat, _liveRoute[i + 1].lng),
+                          ],
+                          strokeWidth: 5.0,
+                          strokeCap: StrokeCap.round,
+                          strokeJoin: StrokeJoin.round,
+                          gradientColors: [
+                            MapTileService.getHighContrastSpeedColor(_liveRoute[i].speedKmh),
+                            MapTileService.getHighContrastSpeedColor(_liveRoute[i + 1].speedKmh),
+                          ],
+                        ),
+                    ],
+                  ),
               ],
 
               // Marker Vị trí xe Dat Bike với mũi tên xoay theo hướng đi thực tế

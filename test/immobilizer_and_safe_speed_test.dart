@@ -1,11 +1,13 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:mybike_app/core/ble/ble_controller.dart';
 import 'package:mybike_app/core/proto/bike_log.dart';
+import 'package:mybike_app/features/dashboard/dashboard_screen.dart';
 import 'package:mybike_app/features/home/my_bike_screen.dart';
 import 'package:mybike_app/features/settings/vehicle_settings_screen.dart';
+import 'package:mybike_app/ui/app_theme.dart';
 
 class TestBleController extends BleController {
   final BleState initialState;
@@ -211,8 +213,8 @@ void main() {
     });
   });
 
-  group('VehicleSettingsScreen Safe Speed Limit 60 km/h UI Tests', () {
-    testWidgets('VehicleSettingsScreen shows unified 60 km/h section in Advanced section', (tester) async {
+  group('VehicleSettingsScreen Cleaned Advanced Section UI Tests', () {
+    testWidgets('VehicleSettingsScreen hides deprecated 60 km/h & Grab controls and keeps BMS / Factory Reset', (tester) async {
       tester.view.physicalSize = const Size(360 * 2.0, 2200 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
@@ -223,6 +225,7 @@ void main() {
           bikeName: 'Dat Bike Quantum',
           speedLimitMode: 1,
           eceMode: 1,
+          grabMode: 1,
         ),
       );
 
@@ -247,63 +250,105 @@ void main() {
       final advFinder = find.text('NÂNG CAO & VẬN HÀNH THỬ NGHIỆM');
       await tester.scrollUntilVisible(advFinder, 300, scrollable: find.byType(Scrollable).first);
       expect(advFinder, findsOneWidget);
+      expect(find.text('Tắt hẳn BMS · Khôi phục cài đặt gốc BLE'), findsOneWidget);
 
       // Mở mục nâng cao
       await tester.tap(advFinder);
       await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
 
-      final limitFinder = find.text('Giới hạn 60 km/h');
-      await tester.scrollUntilVisible(limitFinder, 300, scrollable: find.byType(Scrollable).first);
-      expect(limitFinder, findsOneWidget);
+      // Các control cũ 60 km/h & Grab không còn hiển thị
+      expect(find.text('Giới hạn 60 km/h'), findsNothing);
+      expect(find.text('Không giới hạn'), findsNothing);
+      expect(find.textContaining('CHẾ ĐỘ GRAB'), findsNothing);
 
-      final unlimitedFinder = find.text('Không giới hạn');
-      expect(unlimitedFinder, findsOneWidget);
+      // BMS & Factory Reset vẫn hiển thị đầy đủ
+      final bmsFinder = find.text('TẮT HẲN BMS (ĐỖ LÂU)');
+      await tester.scrollUntilVisible(bmsFinder, 300, scrollable: find.byType(Scrollable).first);
+      expect(bmsFinder, findsOneWidget);
+
+      final resetFinder = find.text('FACTORY RESET CÀI ĐẶT BLE');
+      await tester.scrollUntilVisible(resetFinder, 300, scrollable: find.byType(Scrollable).first);
+      expect(resetFinder, findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
+  });
 
-    testWidgets('Tapping Không giới hạn when limited prompts power-cycle dialog', (tester) async {
-      tester.view.physicalSize = const Size(400 * 2.0, 3000 * 2.0);
+  group('MyBikeScreen Remote Sheet & Dashboard Night Cockpit Tests', () {
+    testWidgets('MyBikeScreen remote controls sheet removes 60 km/h and Grab toggles', (tester) async {
+      tester.view.physicalSize = const Size(800 * 2.0, 900 * 2.0);
       tester.view.devicePixelRatio = 2.0;
       addTearDown(() => tester.view.resetPhysicalSize());
 
       final controller = TestBleController(
         const BleState(
           phase: BlePhase.connected,
-          bikeName: 'Dat Bike Quantum',
-          speedLimitMode: 1,
-          eceMode: 1,
+          bikeName: 'Dat Bike Quantum S',
         ),
       );
 
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [
-            bleProvider.overrideWith(() => controller),
-          ],
-          child: const MaterialApp(
-            home: VehicleSettingsScreen(),
-          ),
+          overrides: [bleProvider.overrideWith(() => controller)],
+          child: const MaterialApp(home: MyBikeScreen()),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      final sheetTrigger = find.text('Cài đặt nhanh & Chống trộm');
+      await tester.scrollUntilVisible(sheetTrigger, 200, scrollable: find.byType(Scrollable).first);
+      await tester.tap(sheetTrigger);
+      await tester.pumpAndSettle();
+
+      expect(find.text('AN TOÀN & KHÓA XE'), findsOneWidget);
+      expect(find.text('TỰ ĐỘNG KẾT NỐI & QUÉT XE'), findsOneWidget);
+      expect(find.text('VẬN HÀNH & TỐC ĐỘ'), findsNothing);
+      expect(find.text('Giới hạn tốc độ 60 km/h'), findsNothing);
+      expect(find.text('Chế độ Grab (Ga êm)'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('DashboardScreen toggles Adaptive Night Cockpit mode and persists preference', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      tester.view.physicalSize = const Size(390 * 2.0, 844 * 2.0);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      final controller = TestBleController(
+        const BleState(
+          phase: BlePhase.connected,
+          bikeName: 'Dat Bike Quantum S1',
         ),
       );
 
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [bleProvider.overrideWith(() => controller)],
+          child: const MaterialApp(home: DashboardScreen()),
+        ),
+      );
       await tester.pumpAndSettle();
 
-      final advFinder = find.text('NÂNG CAO & VẬN HÀNH THỬ NGHIỆM');
-      await tester.scrollUntilVisible(advFinder, 300, scrollable: find.byType(Scrollable).first);
-      await tester.tap(advFinder);
+      final toggleBtn = find.byTooltip('Chế độ Taplo Đêm / Sáng');
+      expect(toggleBtn, findsOneWidget);
+
+      // Default is Light Kinetic Stitch EV
+      AnimatedContainer rootBg = tester.widget<AnimatedContainer>(find.byType(AnimatedContainer).first);
+      expect((rootBg.decoration as BoxDecoration).color, AppColors.bg);
+
+      // Switch to Night Cockpit
+      await tester.tap(toggleBtn);
       await tester.pumpAndSettle();
 
-      final unlimitedOption = find.text('Không giới hạn');
-      await tester.scrollUntilVisible(unlimitedOption, 300, scrollable: find.byType(Scrollable).first);
-      await tester.drag(find.byType(Scrollable).first, const Offset(0, -400));
-      await tester.pumpAndSettle();
-      expect(unlimitedOption, findsOneWidget);
-      await tester.tap(unlimitedOption);
-      await tester.pumpAndSettle();
+      rootBg = tester.widget<AnimatedContainer>(find.byType(AnimatedContainer).first);
+      expect((rootBg.decoration as BoxDecoration).color, const Color(0xFF0B1120));
+      expect(find.text('CHUYẾN ĐI (TRIP A)'), findsOneWidget);
+      expect(find.text('SỨC KHỎE & MÃ LỖI'), findsOneWidget);
+      expect(tester.takeException(), isNull);
 
-      // Check dialog appears with clean explanation
-      expect(find.text('Tắt Giới Hạn Tốc Độ?'), findsOneWidget);
-      expect(find.textContaining('tắt máy và khởi động lại xe'), findsOneWidget);
-      expect(find.text('XÁC NHẬN TẮT'), findsOneWidget);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool('dashboard_night_taplo_mode'), isTrue);
     });
   });
 }

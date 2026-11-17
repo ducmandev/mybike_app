@@ -31,26 +31,43 @@ class _ChargingScreenState extends ConsumerState<ChargingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ble = ref.watch(bleProvider);
-    final connected = ble.phase == BlePhase.connected;
-    final telemetry = ble.lastTelemetry;
-    final hasTelemetry = connected && telemetry != null;
+    final data = ref.watch(
+      bleProvider.select(
+        (s) => (
+          phase: s.phase,
+          chargingProfile: s.chargingProfile,
+          bikeModel: s.bikeModel,
+          hasTelemetry: s.lastTelemetry != null,
+          percent: s.lastTelemetry?.percent,
+          voltage: s.lastTelemetry?.voltage,
+          telemetryPhase: s.lastTelemetry?.phase,
+          kmLeft: s.lastTelemetry?.kmLeft,
+          isChargingPresent: s.lastTelemetry?.charging != null,
+          etaSec: s.lastTelemetry?.charging?.etaSec,
+          bmsTemp: s.lastTelemetry?.bmsTemp,
+        ),
+      ),
+    );
+    final connected = data.phase == BlePhase.connected;
+    final hasTelemetry = connected && data.hasTelemetry;
 
-    final isCharging = hasTelemetry && (telemetry.charging != null || telemetry.phase > 0.5);
-    final percent = telemetry?.percent;
+    final isCharging = hasTelemetry && (data.isChargingPresent || (data.telemetryPhase ?? 0.0) > 0.5);
+    final percent = data.percent;
     final percentStr = (hasTelemetry && percent != null) ? '$percent' : '--';
-    final voltage = telemetry?.voltage ?? 0.0;
-    final currentA = (telemetry?.phase ?? 0.0).abs();
+    final voltage = data.voltage ?? 0.0;
+    final currentA = (data.telemetryPhase ?? 0.0).abs();
     final powerKw = (voltage * currentA / 1000.0);
-    final kmLeftVal = (telemetry != null && telemetry.kmLeft > 0)
-        ? telemetry.kmLeft.round()
+    final rawKmLeft = data.kmLeft ?? 0.0;
+    final kmLeftVal = (hasTelemetry && rawKmLeft > 0)
+        ? rawKmLeft.round()
         : (percent != null ? ((percent / 100.0) * 270).round() : null);
     final kmLeftStr = (hasTelemetry && kmLeftVal != null) ? '$kmLeftVal' : '--';
 
-    final etaSec = telemetry?.charging?.etaSec ?? 0;
+    final etaSec = data.etaSec ?? 0;
     final remainingTimeStr = isCharging
         ? (etaSec > 0 ? '${(etaSec / 60).round()} phút' : 'Đang sạc...')
         : '---';
+    final bmsTemp = data.bmsTemp ?? 0.0;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
@@ -330,7 +347,7 @@ class _ChargingScreenState extends ConsumerState<ChargingScreen> {
                           ),
                         ),
                         Text(
-                          hasTelemetry ? '${(telemetry.bmsTemp).toStringAsFixed(1)} °C' : '---',
+                          hasTelemetry ? '${bmsTemp.toStringAsFixed(1)} °C' : '---',
                           style: GoogleFonts.spaceGrotesk(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
@@ -354,19 +371,19 @@ class _ChargingScreenState extends ConsumerState<ChargingScreen> {
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        _profilePill('Tiêu Chuẩn', 'Standard', ble.chargingProfile == 0, connected, () async {
+                        _profilePill('Tiêu Chuẩn', 'Standard', data.chargingProfile == 0, connected, () async {
                           ref.read(bleProvider.notifier).setChargingProfile(0);
                           final res = await ref.read(bleProvider.notifier).setFwChargingProfile(0);
                           _showSnack(res);
                         }),
                         const SizedBox(width: 8),
-                        _profilePill('Sạc Nhanh', 'Fast', ble.chargingProfile == 1, connected, () async {
+                        _profilePill('Sạc Nhanh', 'Fast', data.chargingProfile == 1, connected, () async {
                           ref.read(bleProvider.notifier).setChargingProfile(1);
                           final res = await ref.read(bleProvider.notifier).setFwChargingProfile(1);
                           _showSnack(res);
                         }),
                         const SizedBox(width: 8),
-                        _profilePill('Tăng Tốc', 'Boost', ble.chargingProfile == 2, connected, () async {
+                        _profilePill('Tăng Tốc', 'Boost', data.chargingProfile == 2, connected, () async {
                           ref.read(bleProvider.notifier).setChargingProfile(2);
                           final res = await ref.read(bleProvider.notifier).setFwChargingProfile(2);
                           _showSnack(res);

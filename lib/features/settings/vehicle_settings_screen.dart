@@ -87,10 +87,6 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ble = ref.watch(bleProvider);
-    final connected = ble.phase == BlePhase.connected;
-    final telemetry = ble.lastTelemetry;
-
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -119,47 +115,47 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
         children: [
           // 1. Thông Tin Xe & Serial Khung
-          _buildVehicleInfoCard(ble, connected, telemetry?.version ?? '1.14.0'),
+          _buildVehicleInfoCard(),
           const SizedBox(height: 16),
 
           // 2. Đồng Hồ Taplo & Thời Gian Thực
           const SectionTitle('ĐỒNG HỒ TAPLO'),
           const SizedBox(height: 10),
-          _buildTimeSyncCard(ble, connected),
+          _buildTimeSyncCard(),
           const SizedBox(height: 16),
 
           // 3. An toàn xe
           const SectionTitle('AN TOÀN XE'),
           const SizedBox(height: 10),
-          _buildLockLightsCard(ble, connected),
+          _buildLockLightsCard(),
           const SizedBox(height: 16),
 
           // 4. Tiện ích & Tự động hóa ECU
           const SectionTitle('TIỆN ÍCH & TỰ ĐỘNG'),
           const SizedBox(height: 10),
-          _buildUtilityCard(ble, connected),
+          _buildUtilityCard(),
           const SizedBox(height: 16),
 
           // 5. Tự động kết nối & Quét xe
           const SectionTitle('KẾT NỐI & TỰ ĐỘNG QUÉT'),
           const SizedBox(height: 10),
-          _buildAutoReconnectCard(ble),
+          _buildAutoReconnectCard(),
           const SizedBox(height: 16),
 
           // 6. Mẫu âm thanh còi tìm xe
           const SectionTitle('ÂM BÁO TÌM XE'),
           const SizedBox(height: 10),
-          _buildSoundPatternCard(ble, connected),
+          _buildSoundPatternCard(),
           const SizedBox(height: 16),
 
-          // 6. Nâng cao (lệnh nặng)
-          _buildAdvancedSection(ble, connected),
+          // 7. Nâng cao (lệnh nặng)
+          _buildAdvancedSection(),
           const SizedBox(height: 16),
 
-          // 7. Quản lý & Quên xe
+          // 8. Quản lý & Quên xe
           const SectionTitle('QUẢN LÝ XE'),
           const SizedBox(height: 10),
-          _buildVehicleManagementCard(ble),
+          _buildVehicleManagementCard(),
           const SizedBox(height: 40),
         ],
       ),
@@ -178,13 +174,34 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
   }
 
   // ========== THẺ 1: THÔNG TIN XE & SERIAL ==========
-  Widget _buildVehicleInfoCard(BleState ble, bool connected, String fwVersion) {
-    final telemetry = ble.lastTelemetry;
-    final displaySerial = (ble.frameSerial != null && ble.frameSerial!.trim().isNotEmpty)
-        ? ble.frameSerial!.trim()
-        : (telemetry != null && telemetry.frame.trim().isNotEmpty ? telemetry.frame.trim() : null);
+  Widget _buildVehicleInfoCard() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final info = cardRef.watch(
+          bleProvider.select(
+            (s) => (
+              connected: s.phase == BlePhase.connected,
+              fwVersion: s.lastTelemetry?.version ?? '1.14.0',
+              telemetryFrame: s.lastTelemetry?.frame,
+              frameSerial: s.frameSerial,
+              bikeName: s.bikeName,
+              bikeModel: s.bikeModel,
+              boardManifest: s.boardManifest,
+              vescCurrent: s.vescCurrent,
+              vescVoltage: s.vescVoltage,
+              vescDutyCycle: s.vescDutyCycle,
+            ),
+          ),
+        );
+        final connected = info.connected;
+        final fwVersion = info.fwVersion;
+        final displaySerial = (info.frameSerial != null && info.frameSerial!.trim().isNotEmpty)
+            ? info.frameSerial!.trim()
+            : (info.telemetryFrame != null && info.telemetryFrame!.trim().isNotEmpty
+                ? info.telemetryFrame!.trim()
+                : null);
 
-    return Panel(
+        return Panel(
       padding: const EdgeInsets.all(18),
       borderRadius: 20,
       child: Column(
@@ -214,7 +231,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      ble.bikeName ?? 'Dat Bike EV',
+                      info.bikeName ?? 'Dat Bike EV',
                       style: GoogleFonts.spaceGrotesk(
                         fontSize: 18,
                         fontWeight: FontWeight.w700,
@@ -467,7 +484,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                         ),
                         Expanded(
                           child: Text(
-                            '${ble.bikeModel.displayName} (${ble.bikeModel.code})',
+                            '${info.bikeModel.displayName} (${info.bikeModel.code})',
                             style: GoogleFonts.spaceGrotesk(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.textPrimary),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -483,7 +500,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                         ),
                         Expanded(
                           child: Text(
-                            ble.boardManifest ?? '—',
+                            info.boardManifest ?? '—',
                             style: GoogleFonts.spaceGrotesk(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -503,11 +520,11 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   ),
                   child: Row(
                     children: [
-                      _vescMetric('Dòng VESC', '${(ble.vescCurrent ?? 0.0).toStringAsFixed(2)} A'),
+                      _vescMetric('Dòng VESC', '${(info.vescCurrent ?? 0.0).toStringAsFixed(2)} A'),
                       Container(width: 1, height: 20, color: AppColors.panelBorder),
-                      _vescMetric('Điện Áp', '${(ble.vescVoltage ?? 0.0).toStringAsFixed(1)} V'),
+                      _vescMetric('Điện Áp', '${(info.vescVoltage ?? 0.0).toStringAsFixed(1)} V'),
                       Container(width: 1, height: 20, color: AppColors.panelBorder),
-                      _vescMetric('Duty Cycle', '${((ble.vescDutyCycle ?? 0.0) * 100).toStringAsFixed(1)}%'),
+                      _vescMetric('Duty Cycle', '${((info.vescDutyCycle ?? 0.0) * 100).toStringAsFixed(1)}%'),
                     ],
                   ),
                 ),
@@ -516,6 +533,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
         ],
       ),
+        );
+      },
     );
   }
 
@@ -539,13 +558,19 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
   }
 
   // ========== THẺ: ĐỒNG HỒ TAPLO & THỜI GIAN THỰC ==========
-  Widget _buildTimeSyncCard(BleState ble, bool connected) {
-    final lastSync = ble.lastTimeSynced;
-    final lastSyncStr = lastSync != null
-        ? '${lastSync.hour.toString().padLeft(2, '0')}:${lastSync.minute.toString().padLeft(2, '0')}:${lastSync.second.toString().padLeft(2, '0')} (${lastSync.day}/${lastSync.month})'
-        : 'Chưa đồng bộ phiên này';
+  Widget _buildTimeSyncCard() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final data = cardRef.watch(
+          bleProvider.select((s) => (connected: s.phase == BlePhase.connected, lastSync: s.lastTimeSynced)),
+        );
+        final connected = data.connected;
+        final lastSync = data.lastSync;
+        final lastSyncStr = lastSync != null
+            ? '${lastSync.hour.toString().padLeft(2, '0')}:${lastSync.minute.toString().padLeft(2, '0')}:${lastSync.second.toString().padLeft(2, '0')} (${lastSync.day}/${lastSync.month})'
+            : 'Chưa đồng bộ phiên này';
 
-    return Panel(
+        return Panel(
       padding: const EdgeInsets.all(18),
       borderRadius: 20,
       child: Column(
@@ -617,14 +642,28 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
         ],
       ),
+        );
+      },
     );
   }
 
 
 
   // ========== THẺ 3: MẪU ÂM THANH CÒI TÌM XE ==========
-  Widget _buildSoundPatternCard(BleState ble, bool connected) {
-    return Panel(
+  Widget _buildSoundPatternCard() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final data = cardRef.watch(
+          bleProvider.select(
+            (s) => (
+              connected: s.phase == BlePhase.connected,
+              findBikePattern: s.findBikePattern,
+              isFindingBike: s.isFindingBike,
+            ),
+          ),
+        );
+        final connected = data.connected;
+        return Panel(
       padding: const EdgeInsets.all(18),
       borderRadius: 20,
       child: Column(
@@ -641,7 +680,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             patternId: 0,
             title: 'Nhịp Tiêu Chuẩn (Single Beep)',
             subtitle: 'Bíp đơn cách nhau 1.1 giây — nhã nhặn, vang xa',
-            isSelected: ble.findBikePattern == 0,
+            isSelected: data.findBikePattern == 0,
             onTap: () => ref.read(bleProvider.notifier).setFindBikePattern(0),
           ),
           const SizedBox(height: 8),
@@ -649,7 +688,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             patternId: 1,
             title: 'Nhịp Đôi Thể Thao (Double Staccato)',
             subtitle: 'Bíp kép (bíp-bíp... bíp-bíp) — dễ phân biệt trong bãi xe đông',
-            isSelected: ble.findBikePattern == 1,
+            isSelected: data.findBikePattern == 1,
             onTap: () => ref.read(bleProvider.notifier).setFindBikePattern(1),
           ),
           const SizedBox(height: 8),
@@ -657,7 +696,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             patternId: 2,
             title: 'Báo Động Dồn Dập (Urgent SOS)',
             subtitle: 'Bíp liên hồi chu kỳ ngắn 450ms — định vị tức thời',
-            isSelected: ble.findBikePattern == 2,
+            isSelected: data.findBikePattern == 2,
             onTap: () => ref.read(bleProvider.notifier).setFindBikePattern(2),
           ),
           const SizedBox(height: 14),
@@ -667,18 +706,18 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             width: double.infinity,
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
-                backgroundColor: ble.isFindingBike ? AppColors.amber : AppColors.secondary,
+                backgroundColor: data.isFindingBike ? AppColors.amber : AppColors.secondary,
                 foregroundColor: Colors.white,
                 elevation: 0,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
               icon: Icon(
-                ble.isFindingBike ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                data.isFindingBike ? Icons.volume_off_rounded : Icons.volume_up_rounded,
                 size: 20,
               ),
               label: Text(
-                ble.isFindingBike ? 'DỪNG THỬ CÒI' : 'THỬ ÂM THANH NÀY (3 GIÂY)',
+                data.isFindingBike ? 'DỪNG THỬ CÒI' : 'THỬ ÂM THANH NÀY (3 GIÂY)',
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
@@ -687,7 +726,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               ),
               onPressed: connected
                   ? () async {
-                      if (ble.isFindingBike) {
+                      if (data.isFindingBike) {
                         await ref.read(bleProvider.notifier).stopFindBike();
                       } else {
                         await ref.read(bleProvider.notifier).findBike(timeout: const Duration(seconds: 3));
@@ -698,6 +737,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
         ],
       ),
+        );
+      },
     );
   }
 
@@ -754,159 +795,21 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
     );
   }
 
-  // ========== THẺ 3: GIỚI HẠN TỐC ĐỘ AN TOÀN & VẬN HÀNH ĐỘNG CƠ ==========
-  Widget _buildSpeedLimiterCard(BleState ble) {
-    final connected = ble.phase == BlePhase.connected;
-    return Panel(
-      padding: const EdgeInsets.all(18),
-      borderRadius: 20,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-
-          Text(
-            connected ? 'Tùy chọn tốc độ an toàn (ghi xuống xe ngay):' : 'Kết nối xe để ghi giới hạn tốc độ xuống firmware:',
-            style: GoogleFonts.plusJakartaSans(fontSize: 12.5, color: AppColors.textDim),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            children: [
-              StatusPill(
-                label: 'ECE: ${ble.eceMode == 1 ? "Mở" : "Đóng (Mặc định)"}',
-                color: ble.eceMode == 1 ? AppColors.amber : AppColors.tertiary,
-              ),
-              StatusPill(
-                label: 'TỐC ĐỘ: ${ble.speedLimitMode == 1 ? "60 km/h" : "Full Power"}',
-                color: ble.speedLimitMode == 1 ? AppColors.primary : AppColors.textDim,
-              ),
-
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              _buildSegmentOption(
-                label: 'Không giới hạn',
-                desc: 'Full Power',
-                isSelected: ble.speedLimitMode == 0,
-                onTap: () async {
-                  if (ble.speedLimitMode == 0) return;
-                  final confirm = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      backgroundColor: AppColors.panel,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                      title: Row(
-                        children: [
-                          const Icon(Icons.warning_amber_rounded, color: AppColors.amber, size: 22),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Tắt Giới Hạn Tốc Độ?',
-                              style: GoogleFonts.spaceGrotesk(fontSize: 16, fontWeight: FontWeight.w700),
-                            ),
-                          ),
-                        ],
-                      ),
-                      content: Text(
-                        'Khi tắt giới hạn tốc độ, bạn cần tắt máy và khởi động lại xe để kích hoạt lại mức công suất tối đa.\n\n'
-                        'Sau khi khởi động lại, xe sẽ vận hành và chuyển các chế độ lái bình thường.',
-                        style: GoogleFonts.plusJakartaSans(fontSize: 13, height: 1.45, color: AppColors.textPrimary),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx, false),
-                          child: Text('HỦY', style: GoogleFonts.spaceGrotesk(color: AppColors.textDim)),
-                        ),
-                        FilledButton(
-                          style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-                          onPressed: () => Navigator.pop(ctx, true),
-                          child: Text('XÁC NHẬN TẮT', style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700)),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (confirm != true) return;
-                  final res = await ref.read(bleProvider.notifier).setSafeSpeedLimit60(false);
-                  _showResult(res);
-                },
-              ),
-              const SizedBox(width: 8),
-              _buildSegmentOption(
-                label: 'Giới hạn 60 km/h',
-                desc: 'An toàn đô thị',
-                isSelected: ble.speedLimitMode == 1,
-                onTap: () async {
-                  if (ble.speedLimitMode == 1) return;
-                  final res = await ref.read(bleProvider.notifier).setSafeSpeedLimit60(true);
-                  _showResult(res);
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-
-          const Divider(color: AppColors.panelBorder, height: 1),
-          const SizedBox(height: 14),
-
-          // Chế độ Grab / Chở tải (a1d8e7c4 — MASTER_CONFIG_SERVICE)
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('CHẾ ĐỘ GRAB (XE DỊCH VỤ / CHỞ TẢI)',
-                        style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Điều chỉnh độ nhạy tay ga êm mượt, chống giật khi chở người hoặc hàng hóa',
-                      style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
-                    ),
-                  ],
-                ),
-              ),
-              StatusPill(
-                label: ble.grabMode == 1 ? 'GRAB: BẬT' : 'GRAB: TẮT',
-                color: ble.grabMode == 1 ? AppColors.tertiary : AppColors.textDim,
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              _buildSegmentOption(
-                label: 'Cá nhân',
-                desc: 'Ga nhạy',
-                isSelected: ble.grabMode == 0,
-                onTap: connected ? () async {
-                  ref.read(bleProvider.notifier).setGrabMode(0);
-                  _showResult(await ref.read(bleProvider.notifier).setFwGrabMode(false));
-                } : null,
-              ),
-              const SizedBox(width: 8),
-              _buildSegmentOption(
-                label: 'Dịch vụ / Tải',
-                desc: 'Ga êm mượt',
-                isSelected: ble.grabMode == 1,
-                onTap: connected ? () async {
-                  ref.read(bleProvider.notifier).setGrabMode(1);
-                  _showResult(await ref.read(bleProvider.notifier).setFwGrabMode(true));
-                } : null,
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   /// Tiện ích xe & Tự động hóa ECU: Tự tắt khi đỗ + Tự bật/tắt theo khoảng cách + Đặt tên + Thẻ NFC.
-  Widget _buildUtilityCard(BleState ble, bool connected) {
-
-    return Panel(
+  Widget _buildUtilityCard() {
+    return Consumer(
+      builder: (_, cardRef, _) {
+        final data = cardRef.watch(
+          bleProvider.select(
+            (s) => (
+              connected: s.phase == BlePhase.connected,
+              idlingTurnOff: s.idlingTurnOff,
+              distanceMode: s.distanceMode,
+            ),
+          ),
+        );
+        final connected = data.connected;
+        return Panel(
       padding: const EdgeInsets.all(18),
       borderRadius: 20,
       child: Column(
@@ -949,7 +852,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 ),
               ),
               Switch(
-                value: ble.idlingTurnOff,
+                value: data.idlingTurnOff,
                 activeThumbColor: AppColors.primary,
                 onChanged: connected ? (v) async {
                   ref.read(bleProvider.notifier).setIdlingTurnOff(v);
@@ -978,8 +881,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 ),
               ),
               StatusPill(
-                label: ble.distanceMode > 0 ? 'BẬT' : 'TẮT',
-                color: ble.distanceMode > 0 ? AppColors.tertiary : AppColors.textDim,
+                label: data.distanceMode > 0 ? 'BẬT' : 'TẮT',
+                color: data.distanceMode > 0 ? AppColors.tertiary : AppColors.textDim,
               ),
             ],
           ),
@@ -989,7 +892,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               _buildSegmentOption(
                 label: 'Tắt',
                 desc: 'Thủ công',
-                isSelected: ble.distanceMode == 0,
+                isSelected: data.distanceMode == 0,
                 onTap: connected ? () async {
                   ref.read(bleProvider.notifier).setDistanceMode(0);
                   _showResult(await ref.read(bleProvider.notifier).setFwDistanceMode(false));
@@ -999,7 +902,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               _buildSegmentOption(
                 label: 'Bật',
                 desc: 'Tự nhận diện',
-                isSelected: ble.distanceMode > 0,
+                isSelected: data.distanceMode > 0,
                 onTap: connected ? () async {
                   ref.read(bleProvider.notifier).setDistanceMode(1);
                   _showResult(await ref.read(bleProvider.notifier).setFwDistanceMode(true));
@@ -1109,12 +1012,27 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
         ],
       ),
+        );
+      },
     );
   }
 
   /// Khóa an toàn + Cổng cứu hộ b0ca953d — Cả hai đã verify trên xe thật (LAB).
-  Widget _buildLockLightsCard(BleState ble, bool connected) {
-    return Panel(
+  Widget _buildLockLightsCard() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final data = cardRef.watch(
+          bleProvider.select(
+            (s) => (
+              connected: s.phase == BlePhase.connected,
+              bikeModel: s.bikeModel,
+              isLocked: s.isLocked,
+              vescProgActive: s.vescProgActive,
+            ),
+          ),
+        );
+        final connected = data.connected;
+        return Panel(
       padding: const EdgeInsets.all(18),
       borderRadius: 20,
       child: Column(
@@ -1130,23 +1048,23 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                     Text('KHÓA AN TOÀN (CHỐNG TRỘM)', style: GoogleFonts.spaceGrotesk(fontSize: 12, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 2),
                     Text(
-                      !ble.bikeModel.supportsImmobilizerLock
+                      !data.bikeModel.supportsImmobilizerLock
                           ? 'Dòng xe Weaver không trang bị rơ-le khóa chống trộm điện tử'
-                          : (ble.isLocked
+                          : (data.isLocked
                               ? 'Đang khóa: cần QUẸT THẺ NFC để mở · Còi hú khi đá chống'
                               : 'Xe phải TẮT mới khóa — app sẽ tự tắt xe. Sau khóa: quẹt thẻ NFC để mở, còi hú báo động khi xe bị động vào'),
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 11,
-                        color: ble.isLocked ? AppColors.error : AppColors.textDim,
+                        color: data.isLocked ? AppColors.error : AppColors.textDim,
                       ),
                     ),
                   ],
                 ),
               ),
               Switch(
-                value: ble.isLocked,
+                value: data.isLocked,
                 activeThumbColor: AppColors.error,
-                onChanged: (connected && ble.bikeModel.supportsImmobilizerLock) ? (v) async {
+                onChanged: (connected && data.bikeModel.supportsImmobilizerLock) ? (v) async {
                   if (v) {
                     final ok = await showDialog<bool>(
                       context: context,
@@ -1188,14 +1106,14 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                       style: GoogleFonts.spaceGrotesk(
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
-                        color: ble.vescProgActive ? AppColors.error : AppColors.amber,
+                        color: data.vescProgActive ? AppColors.error : AppColors.amber,
                       ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   StatusPill(
-                    label: ble.vescProgActive ? 'ĐANG KẸT DEV MODE' : 'BÌNH THƯỜNG',
-                    color: ble.vescProgActive ? AppColors.error : AppColors.tertiary,
+                    label: data.vescProgActive ? 'ĐANG KẸT DEV MODE' : 'BÌNH THƯỜNG',
+                    color: data.vescProgActive ? AppColors.error : AppColors.tertiary,
                   ),
                 ],
               ),
@@ -1204,7 +1122,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 'Trạng thái giao tiếp nội bộ với bộ điều khiển động cơ VESC. Nếu xe gặp lỗi không phản hồi thông số động cơ, sử dụng nút khôi phục bên dưới.',
                 style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
               ),
-              if (ble.vescProgActive) ...[
+              if (data.vescProgActive) ...[
                 const SizedBox(height: 10),
                 SizedBox(
                   width: double.infinity,
@@ -1237,12 +1155,17 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
         ],
       ),
+        );
+      },
     );
   }
 
   /// NÂNG CAO & VẬN HÀNH THỬ NGHIỆM — chỉ dành cho kỹ thuật viên & thử nghiệm
-  Widget _buildAdvancedSection(BleState ble, bool connected) {
-    return Container(
+  Widget _buildAdvancedSection() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final connected = cardRef.watch(bleProvider.select((s) => s.phase == BlePhase.connected));
+        return Container(
       decoration: BoxDecoration(
         color: AppColors.bg,
         borderRadius: BorderRadius.circular(16),
@@ -1263,7 +1186,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
             subtitle: Padding(
               padding: const EdgeInsets.only(top: 3),
               child: Text(
-                'Vận hành & Giới hạn tốc độ · Tắt hẳn BMS · Khôi phục cài đặt gốc BLE',
+                'Tắt hẳn BMS · Khôi phục cài đặt gốc BLE',
                 style: GoogleFonts.plusJakartaSans(fontSize: 10.5, color: AppColors.textDim),
               ),
             ),
@@ -1283,7 +1206,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Các tính năng dưới đây can thiệp sâu vào cấu hình xe, nguồn pin và động cơ. Tính năng vận hành & tốc độ chưa phát hành chính thức, người dùng cần cân nhắc rủi ro trước khi thay đổi.',
+                        'Các tính năng dưới đây can thiệp sâu vào cấu hình xe, nguồn pin và động cơ. Người dùng cần cân nhắc rủi ro trước khi thay đổi.',
                         style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim, height: 1.35),
                       ),
                     ),
@@ -1291,21 +1214,19 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 ),
               ),
 
-              // 1. Vận hành & Giới hạn tốc độ (chuyển vào mục Nâng cao theo yêu cầu)
-              _buildSpeedLimiterCard(ble),
-              const SizedBox(height: 14),
-
-              // 2. Tắt BMS + Factory reset
-              _buildAdvancedCard(ble, connected),
+              // Tắt BMS + Factory reset
+              _buildAdvancedCard(connected),
             ],
           ),
         ),
       ),
+        );
+      },
     );
   }
 
   /// Nâng cao: Tắt BMS + Factory reset BLE.
-  Widget _buildAdvancedCard(BleState ble, bool connected) {
+  Widget _buildAdvancedCard(bool connected) {
     return Panel(
       padding: const EdgeInsets.all(18),
       borderRadius: 20,
@@ -1403,8 +1324,20 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
     );
   }
 
-  Widget _buildAutoReconnectCard(BleState ble) {
-    return Container(
+  Widget _buildAutoReconnectCard() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final data = cardRef.watch(
+          bleProvider.select(
+            (s) => (
+              autoReconnect: s.autoReconnect,
+              continuousScan: s.continuousScan,
+              reconnectMaxAttempts: s.reconnectMaxAttempts,
+              reconnectIntervalSeconds: s.reconnectIntervalSeconds,
+            ),
+          ),
+        );
+        return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.panel,
@@ -1440,7 +1373,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 ),
               ),
               Switch.adaptive(
-                value: ble.autoReconnect,
+                value: data.autoReconnect,
                 activeTrackColor: AppColors.primary,
                 onChanged: (v) {
                   ref.read(bleProvider.notifier).setAutoReconnect(v);
@@ -1449,7 +1382,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
               ),
             ],
           ),
-          if (ble.autoReconnect) ...[
+          if (data.autoReconnect) ...[
             const SizedBox(height: 12),
             const Divider(color: AppColors.panelBorder, height: 1),
             const SizedBox(height: 12),
@@ -1479,7 +1412,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   ),
                 ),
                 Switch.adaptive(
-                  value: ble.continuousScan,
+                  value: data.continuousScan,
                   activeTrackColor: AppColors.tertiary,
                   onChanged: (v) {
                     ref.read(bleProvider.notifier).setContinuousScan(v);
@@ -1488,7 +1421,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 ),
               ],
             ),
-            if (!ble.continuousScan) ...[
+            if (!data.continuousScan) ...[
               const SizedBox(height: 12),
               Text(
                 'Số lần thử kết nối lại tối đa:',
@@ -1504,7 +1437,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   _buildSegmentOption(
                     label: '3 lần',
                     desc: 'Nhanh',
-                    isSelected: ble.reconnectMaxAttempts == 3,
+                    isSelected: data.reconnectMaxAttempts == 3,
                     onTap: () {
                       ref.read(bleProvider.notifier).setReconnectMaxAttempts(3);
                       _showResult('Số lần quét tối đa: 3 lần');
@@ -1514,7 +1447,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   _buildSegmentOption(
                     label: '5 lần',
                     desc: 'Chuẩn',
-                    isSelected: ble.reconnectMaxAttempts == 5,
+                    isSelected: data.reconnectMaxAttempts == 5,
                     onTap: () {
                       ref.read(bleProvider.notifier).setReconnectMaxAttempts(5);
                       _showResult('Số lần quét tối đa: 5 lần');
@@ -1524,7 +1457,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   _buildSegmentOption(
                     label: '10 lần',
                     desc: 'Kiên trì',
-                    isSelected: ble.reconnectMaxAttempts == 10,
+                    isSelected: data.reconnectMaxAttempts == 10,
                     onTap: () {
                       ref.read(bleProvider.notifier).setReconnectMaxAttempts(10);
                       _showResult('Số lần quét tối đa: 10 lần');
@@ -1534,7 +1467,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   _buildSegmentOption(
                     label: '15 lần',
                     desc: 'Nhiều',
-                    isSelected: ble.reconnectMaxAttempts == 15,
+                    isSelected: data.reconnectMaxAttempts == 15,
                     onTap: () {
                       ref.read(bleProvider.notifier).setReconnectMaxAttempts(15);
                       _showResult('Số lần quét tối đa: 15 lần');
@@ -1558,7 +1491,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 _buildSegmentOption(
                   label: '3s',
                   desc: 'Rất nhanh',
-                  isSelected: ble.reconnectIntervalSeconds == 3,
+                  isSelected: data.reconnectIntervalSeconds == 3,
                   onTap: () {
                     ref.read(bleProvider.notifier).setReconnectIntervalSeconds(3);
                     _showResult('Chu kỳ quét: 3 giây');
@@ -1568,7 +1501,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 _buildSegmentOption(
                   label: '5s',
                   desc: 'Tiêu chuẩn',
-                  isSelected: ble.reconnectIntervalSeconds == 5,
+                  isSelected: data.reconnectIntervalSeconds == 5,
                   onTap: () {
                     ref.read(bleProvider.notifier).setReconnectIntervalSeconds(5);
                     _showResult('Chu kỳ quét: 5 giây');
@@ -1578,7 +1511,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 _buildSegmentOption(
                   label: '10s',
                   desc: 'Cân bằng',
-                  isSelected: ble.reconnectIntervalSeconds == 10,
+                  isSelected: data.reconnectIntervalSeconds == 10,
                   onTap: () {
                     ref.read(bleProvider.notifier).setReconnectIntervalSeconds(10);
                     _showResult('Chu kỳ quét: 10 giây');
@@ -1588,7 +1521,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                 _buildSegmentOption(
                   label: '20s',
                   desc: 'Tiết kiệm',
-                  isSelected: ble.reconnectIntervalSeconds == 20,
+                  isSelected: data.reconnectIntervalSeconds == 20,
                   onTap: () {
                     ref.read(bleProvider.notifier).setReconnectIntervalSeconds(20);
                     _showResult('Chu kỳ quét: 20 giây');
@@ -1599,6 +1532,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ],
         ],
       ),
+        );
+      },
     );
   }
 
@@ -1653,8 +1588,13 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
     );
   }
 
-  Widget _buildVehicleManagementCard(BleState ble) {
-    return Container(
+  Widget _buildVehicleManagementCard() {
+    return Consumer(
+      builder: (context, cardRef, _) {
+        final data = cardRef.watch(
+          bleProvider.select((s) => (savedCount: s.savedBikes.length, bikeName: s.bikeName)),
+        );
+        return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.panel,
@@ -1681,7 +1621,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Nhà xe (${ble.savedBikes.length} xe)',
+                      'Nhà xe (${data.savedCount} xe)',
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
@@ -1753,7 +1693,7 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
                       style: GoogleFonts.spaceGrotesk(fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.error),
                     ),
                     content: Text(
-                      'Hành động này sẽ ngắt kết nối và xóa thông tin xe "${ble.bikeName ?? "hiện tại"}" khỏi ứng dụng.\n\nTrên iOS: Hãy vào Cài đặt > Bluetooth > chọn biểu tượng (i) cạnh tên xe > Quên thiết bị này để hủy ghép đôi hệ thống hoàn toàn.',
+                      'Hành động này sẽ ngắt kết nối và xóa thông tin xe "${data.bikeName ?? "hiện tại"}" khỏi ứng dụng.\n\nTrên iOS: Hãy vào Cài đặt > Bluetooth > chọn biểu tượng (i) cạnh tên xe > Quên thiết bị này để hủy ghép đôi hệ thống hoàn toàn.',
                       style: GoogleFonts.plusJakartaSans(fontSize: 12.5, height: 1.4),
                     ),
                     actions: [
@@ -1775,6 +1715,8 @@ class _VehicleSettingsScreenState extends ConsumerState<VehicleSettingsScreen> {
           ),
         ],
       ),
+        );
+      },
     );
   }
 }

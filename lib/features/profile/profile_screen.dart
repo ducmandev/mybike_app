@@ -20,6 +20,7 @@ import '../ota/ota_screen.dart';
 import '../scan/scan_screen.dart';
 import '../settings/vehicle_settings_screen.dart';
 import '../settings/vehicle_management_screen.dart';
+import '../settings/maintenance_log_screen.dart';
 import '../logs/logs_screen.dart';
 import '../firmware_lab/firmware_lab_screen.dart';
 import '../dashboard/widgets/offline_map_sheet.dart';
@@ -73,7 +74,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     showAboutDialog(
       context: context,
       applicationName: 'Dat Bike Companion',
-      applicationVersion: 'v2.6.33',
+      applicationVersion: 'v2.6.45',
       applicationIcon: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: Image.asset(
@@ -95,7 +96,18 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ble = ref.watch(bleProvider);
+    final profile = ref.watch(
+      bleProvider.select(
+        (s) => (
+          phase: s.phase,
+          bikeName: s.bikeName,
+          userName: s.userName,
+          bikeModel: s.bikeModel,
+          savedBikesCount: s.savedBikes.length,
+        ),
+      ),
+    );
+    final trimmedUserName = profile.userName?.trim() ?? '';
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8F9FA),
@@ -168,8 +180,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 ),
                 alignment: Alignment.center,
                 child: Text(
-                  (ble.userName?.trim().isNotEmpty == true)
-                      ? ble.userName!.trim()[0].toUpperCase()
+                  trimmedUserName.isNotEmpty
+                      ? trimmedUserName[0].toUpperCase()
                       : 'D',
                   style: GoogleFonts.plusJakartaSans(
                     fontSize: 26,
@@ -185,7 +197,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               // 3. LỜI CHÀO LỚN Hello, [Tên chủ xe]
               // ══════════════════════════════════════════════════════════════
               Text(
-                'Hello,\n${(ble.userName?.trim().isNotEmpty == true) ? ble.userName!.trim() : "Dat Bike User"}',
+                'Hello,\n${trimmedUserName.isNotEmpty ? trimmedUserName : "Dat Bike User"}',
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 32,
                   fontWeight: FontWeight.w800,
@@ -198,25 +210,40 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               const SizedBox(height: 10),
 
               // 4. MÃ ĐỊNH DANH XE MÁY ĐIỆN: SERIAL KHUNG / MODEL / TRẠNG THÁI
-              Text(
-                (ble.frameSerial != null && ble.frameSerial!.isNotEmpty)
-                    ? ble.frameSerial!
-                    : (ble.bikeModelCode != null
-                        ? 'Model: ${ble.bikeModelCode}'
-                        : 'Chưa đồng bộ số khung (Kết nối xe để đọc)'),
-                style: GoogleFonts.spaceGrotesk(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: const Color(0xFF94A3B8),
-                  letterSpacing: 0.3,
-                ),
+              Consumer(
+                builder: (context, idRef, _) {
+                  final frameInfo = idRef.watch(
+                    bleProvider.select((s) => (s.frameSerial, s.bikeModelCode)),
+                  );
+                  final frameSerial = frameInfo.$1;
+                  final bikeModelCode = frameInfo.$2;
+                  return Text(
+                    (frameSerial != null && frameSerial.isNotEmpty)
+                        ? frameSerial
+                        : (bikeModelCode != null
+                            ? 'Model: $bikeModelCode (${profile.bikeModel.displayName})'
+                            : 'Chưa đồng bộ số khung (Kết nối xe để đọc)'),
+                    style: GoogleFonts.spaceGrotesk(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: const Color(0xFF94A3B8),
+                      letterSpacing: 0.3,
+                    ),
+                  );
+                },
               ),
 
               const SizedBox(height: 14),
 
               // 5. NÚT Edit Profile -> Mở hộp thoại chỉnh sửa
               InkWell(
-                onTap: () => _showEditProfileDialog(context, ref, ble),
+                onTap: () => _showEditProfileDialog(
+                  context,
+                  ref,
+                  phase: profile.phase,
+                  bikeName: profile.bikeName,
+                  userName: profile.userName,
+                ),
                 borderRadius: BorderRadius.circular(8),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
@@ -266,7 +293,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     // 0. Quản lý Nhà Xe (Garage)
                     _profileListItem(
                       icon: const Icon(Icons.garage_rounded, size: 22, color: Color(0xFF2563EB)),
-                      title: 'Nhà xe của tôi (${ble.savedBikes.length} xe)',
+                      title: 'Nhà xe của tôi (${profile.savedBikesCount} xe)',
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const VehicleManagementScreen()),
@@ -289,10 +316,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
                     const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
 
-                    // 1. Cài đặt xe & Phanh tái sinh
+                    // 1. Cài đặt xe
                     _profileListItem(
                       icon: const Icon(Icons.tune_rounded, size: 22, color: Color(0xFF0F172A)),
-                      title: 'Cài đặt xe & Phanh',
+                      title: 'Cài đặt xe',
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const VehicleSettingsScreen()),
@@ -309,6 +336,19 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       onTap: () {
                         Navigator.of(context).push(
                           MaterialPageRoute(builder: (_) => const BatteryDiagnosticsScreen()),
+                        );
+                      },
+                    ),
+
+                    const Divider(color: Color(0xFFF1F5F9), height: 1, thickness: 1, indent: 56, endIndent: 20),
+
+                    // 2.1 Sổ bảo dưỡng theo ODO
+                    _profileListItem(
+                      icon: const Icon(Icons.build_circle_outlined, size: 22, color: Color(0xFFF59E0B)),
+                      title: 'Sổ bảo dưỡng theo ODO',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const MaintenanceLogScreen()),
                         );
                       },
                     ),
@@ -386,7 +426,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                             title: Text('Ngắt Kết Nối Xe', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700)),
                             content: Text(
-                              'Bạn có chắc chắn muốn ngắt kết nối Bluetooth khỏi xe ${ble.bikeName ?? "Dat Bike"}?',
+                              'Bạn có chắc chắn muốn ngắt kết nối Bluetooth khỏi xe ${profile.bikeName ?? "Dat Bike"}?',
                               style: GoogleFonts.plusJakartaSans(fontSize: 14),
                             ),
                             actions: [
@@ -430,7 +470,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                             title: Text('Quên Xe Đã Kết Nối', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: const Color(0xFFEF4444))),
                             content: Text(
-                              'Hành động này sẽ ngắt kết nối và xóa thông tin xe "${ble.bikeName ?? "hiện tại"}" khỏi ứng dụng.\n\nTrên iOS: Hãy vào Cài đặt > Bluetooth > Quên thiết bị này để hủy ghép đôi hệ thống hoàn toàn.',
+                              'Hành động này sẽ ngắt kết nối và xóa thông tin xe "${profile.bikeName ?? "hiện tại"}" khỏi ứng dụng.\n\nTrên iOS: Hãy vào Cài đặt > Bluetooth > Quên thiết bị này để hủy ghép đôi hệ thống hoàn toàn.',
                               style: GoogleFonts.plusJakartaSans(fontSize: 14),
                             ),
                             actions: [
@@ -471,9 +511,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 
-  void _showEditProfileDialog(BuildContext context, WidgetRef ref, BleState ble) {
-    final userController = TextEditingController(text: ble.userName ?? '');
-    final bikeController = TextEditingController(text: ble.bikeName ?? '');
+  void _showEditProfileDialog(
+    BuildContext context,
+    WidgetRef ref, {
+    required BlePhase phase,
+    String? bikeName,
+    String? userName,
+  }) {
+    final userController = TextEditingController(text: userName ?? '');
+    final bikeController = TextEditingController(text: bikeName ?? '');
 
     showDialog(
       context: context,
@@ -515,7 +561,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),
-              if (ble.phase == BlePhase.connected) ...[
+              if (phase == BlePhase.connected) ...[
                 const SizedBox(height: 8),
                 Text(
                   '💡 Tên xe sẽ được lưu vào flash xe qua cổng Bluetooth.',
@@ -546,8 +592,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               if (newUserName.isNotEmpty) {
                 await ref.read(bleProvider.notifier).setUserName(newUserName);
               }
-              if (newBikeName.isNotEmpty && newBikeName != ble.bikeName) {
-                if (ble.phase == BlePhase.connected) {
+              if (newBikeName.isNotEmpty && newBikeName != bikeName) {
+                if (phase == BlePhase.connected) {
                   await ref.read(bleProvider.notifier).setFwBikeName(newBikeName);
                 } else {
                   await ref.read(bleProvider.notifier).setLocalBikeName(newBikeName);

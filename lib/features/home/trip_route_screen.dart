@@ -10,10 +10,12 @@ import 'package:latlong2/latlong.dart' hide Path;
 import '../../core/ble/ble_controller.dart' show TripRecord, TripGpsPoint, bleProvider, BlePhase;
 import '../../core/models/merged_trip_session.dart';
 import '../../core/services/map_tile_service.dart';
+import '../../core/services/trip_export_service.dart';
 import '../../core/services/trip_gps_tracker.dart';
 import '../../core/services/trip_storage_service.dart';
 import '../../ui/app_theme.dart';
 import '../dashboard/widgets/offline_map_sheet.dart';
+import 'widgets/trip_stats_insights_sheet.dart';
 
 /// Màn hình Bản Đồ Lộ Trình & Phát Lại Vận Tốc Từng Thời Điểm
 /// - Mặc định vào bản đồ: Bản đồ sạch sẽ, tự động định vị vị trí hiện tại của người dùng.
@@ -66,8 +68,10 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
   bool _isLocating = false;
   LatLng? _myLocation;
 
-  MapTileStyle _tileStyle = MapTileStyle.fastCdn;
+  MapTileStyle _tileStyle = MapTileStyle.minimalLight;
   bool _useNavPuckMarker = true;
+  bool _useHighlightMonoRoute = false;
+  bool _isCleanVideoMode = false;
 
   @override
   void initState() {
@@ -497,6 +501,320 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     return '$h:$m';
   }
 
+  String _formatHms(DateTime dt) {
+    final h = dt.hour.toString().padLeft(2, '0');
+    final m = dt.minute.toString().padLeft(2, '0');
+    final s = dt.second.toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
+  double _cumulativeDistanceKmAt(int index, double liveDistanceKm) {
+    if (_isViewingMerged && _mergedSession != null) {
+      return _mergedSession!.cumulativeDistanceAtPointIndex(index);
+    }
+    if (_isViewingLive) {
+      return liveDistanceKm;
+    }
+    if (_selectedTrip != null) {
+      if (_routePoints.length <= 1) return _selectedTrip!.distanceKm;
+      final ratio = index.clamp(0, _routePoints.length - 1) / (_routePoints.length - 1);
+      return _selectedTrip!.distanceKm * ratio;
+    }
+    return 0.0;
+  }
+
+  MergedTripSession? _buildExportableSession() {
+    if (_mergedSession != null) {
+      return _mergedSession!;
+    }
+    if (_selectedTrip != null) {
+      return TripExportService.instance.sessionFromSingleTrip(
+        _selectedTrip!,
+        _routePoints,
+        tripNumber: _selectedTripIndex > 0 ? _selectedTripIndex : 1,
+      );
+    }
+    if (_isViewingLive && _routePoints.length >= 2) {
+      final first = _routePoints.first;
+      final last = _routePoints.last;
+      final durSec = math.max(1, last.timestamp.difference(first.timestamp).inSeconds);
+      final distKm = TripGpsTracker.instance.totalDistanceKm;
+      double maxSpd = 0.0;
+      for (final p in _routePoints) {
+        if (p.speedKmh > maxSpd) maxSpd = p.speedKmh;
+      }
+      final liveTrip = TripRecord(
+        id: 'live_${first.timestamp.millisecondsSinceEpoch}',
+        startTime: first.timestamp,
+        endTime: last.timestamp,
+        distanceKm: distKm,
+        durationSec: durSec,
+        avgSpeedKmh: durSec > 0 ? distKm / (durSec / 3600.0) : 0.0,
+        maxSpeedKmh: maxSpd,
+        usedPercent: 0,
+        route: _routePoints,
+      );
+      return TripExportService.instance.sessionFromSingleTrip(liveTrip, _routePoints);
+    }
+    return null;
+  }
+
+  Future<void> _showExportShareSheet() async {
+    final session = _buildExportableSession();
+    if (session == null || session.allPoints.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Chưa có dữ liệu tọa độ GPS để xuất tệp.'),
+          backgroundColor: AppColors.textPrimary,
+        ),
+      );
+      return;
+    }
+
+    TripExportFormat? exportingFormat;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (sheetCtx, setSheetState) {
+            Future<void> handleExport(TripExportFormat format) async {
+              if (exportingFormat != null) return;
+              setSheetState(() => exportingFormat = format);
+              try {
+                await TripExportService.instance.shareSessionExport(session, format);
+                if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+              } catch (e) {
+                if (sheetCtx.mounted) {
+                  setSheetState(() => exportingFormat = null);
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Không thể xuất file: $e'),
+                      backgroundColor: AppColors.red,
+                    ),
+                  );
+                }
+              }
+            }
+
+            return Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.80,
+              ),
+              decoration: const BoxDecoration(
+                color: AppColors.panel,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                border: Border(top: BorderSide(color: AppColors.panelBorderBright)),
+                boxShadow: AppColors.modalShadow,
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 10, bottom: 6),
+                      width: 44,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 6, 12, 10),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.ios_share_rounded,
+                              color: AppColors.primary,
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'XUẤT LỘ TRÌNH & TELEMETRY',
+                                  style: GoogleFonts.spaceGrotesk(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w800,
+                                    letterSpacing: 0.5,
+                                    color: AppColors.textPrimary,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                Text(
+                                  '${session.title} · ${session.totalDistanceKm.toStringAsFixed(1)} km · ${session.allPoints.length} điểm GPS',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 11,
+                                    color: AppColors.textDim,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded, color: AppColors.textDim),
+                            onPressed: () => Navigator.pop(sheetCtx),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(color: AppColors.panelBorder, height: 1),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _buildExportOptionCard(
+                              badge: 'GPX',
+                              badgeColor: AppColors.primary,
+                              title: 'GPX 1.1 (Relive / Strava / Telemetry Overlay)',
+                              subtitle:
+                                  'Chuẩn GPS đa chặng (<trkseg>) giữ nguyên điểm nghỉ và tốc độ từng giây, tương thích Relive, Strava & video map overlay.',
+                              isLoading: exportingFormat == TripExportFormat.gpx,
+                              isDisabled: exportingFormat != null,
+                              onTap: () => handleExport(TripExportFormat.gpx),
+                            ),
+                            const SizedBox(height: 10),
+                            _buildExportOptionCard(
+                              badge: 'CSV',
+                              badgeColor: AppColors.tertiary,
+                              title: 'CSV Telemetry (GoPro / Insta360 / DashWare HUD)',
+                              subtitle:
+                                  'Dữ liệu timestamp, vận tốc, góc hướng & quãng đường tích lũy từng điểm để ghép đồng hồ HUD lên video.',
+                              isLoading: exportingFormat == TripExportFormat.csv,
+                              isDisabled: exportingFormat != null,
+                              onTap: () => handleExport(TripExportFormat.csv),
+                            ),
+                            const SizedBox(height: 10),
+                            _buildExportOptionCard(
+                              badge: 'KML',
+                              badgeColor: AppColors.amber,
+                              title: 'KML 3D (Google Earth)',
+                              subtitle:
+                                  'Tuyến đường 3D trực quan kèm ghim điểm đầu/cuối và các điểm dừng nghỉ P1..Pn.',
+                              isLoading: exportingFormat == TripExportFormat.kml,
+                              isDisabled: exportingFormat != null,
+                              onTap: () => handleExport(TripExportFormat.kml),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildExportOptionCard({
+    required String badge,
+    required Color badgeColor,
+    required String title,
+    required String subtitle,
+    required bool isLoading,
+    required bool isDisabled,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: isDisabled ? null : onTap,
+      child: Container(
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: AppColors.panelSecondary,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.panelBorderBright),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: badgeColor.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: badgeColor.withValues(alpha: 0.3)),
+              ),
+              child: Center(
+                child: Text(
+                  badge,
+                  style: GoogleFonts.spaceGrotesk(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: badgeColor,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: GoogleFonts.spaceGrotesk(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 11,
+                      height: 1.35,
+                      color: AppColors.textDim,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            isLoading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    Icons.share_rounded,
+                    size: 18,
+                    color: isDisabled ? AppColors.textMuted : badgeColor,
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String _formatDurationSec(int totalSec) {
     if (totalSec <= 0) return '0 giây';
     final hours = totalSec ~/ 3600;
@@ -553,23 +871,6 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
       );
     } catch (_) {
       _mapController.move(bounds.center, 15.0);
-    }
-  }
-
-  /// Nội suy màu chuyển sắc liên tục (Continuous Gradient) giữa các dải tốc độ
-  Color _getContinuousSpeedColor(double speedKmh) {
-    if (speedKmh <= 15.0) {
-      final t = (speedKmh / 15.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFF06B6D4), const Color(0xFF10B981), t)!;
-    } else if (speedKmh <= 35.0) {
-      final t = ((speedKmh - 15.0) / 20.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFF10B981), const Color(0xFF0EA5E9), t)!;
-    } else if (speedKmh <= 55.0) {
-      final t = ((speedKmh - 35.0) / 20.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFFF59E0B), const Color(0xFFF97316), t)!;
-    } else {
-      final t = ((speedKmh - 55.0) / 30.0).clamp(0.0, 1.0);
-      return Color.lerp(const Color(0xFFF97316), const Color(0xFFEF4444), t)!;
     }
   }
 
@@ -700,6 +1001,11 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                 ),
                               ],
                             ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.bar_chart_rounded, color: AppColors.primary),
+                            tooltip: 'Thống kê 7/30 ngày',
+                            onPressed: () => TripStatsInsightsSheet.show(context, _allTrips),
                           ),
                           IconButton(
                             icon: const Icon(Icons.close_rounded, color: AppColors.textDim),
@@ -1796,25 +2102,25 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       child: Column(
                         children: [
                           _speedLegendRow(
-                            const Color(0xFF06B6D4),
+                            MapTileService.getHighContrastSpeedColor(10),
                             '< 15 km/h',
                             'Dừng hoặc di chuyển chậm',
                           ),
                           const Divider(color: AppColors.panelBorder, height: 16),
                           _speedLegendRow(
-                            const Color(0xFF10B981),
+                            MapTileService.getHighContrastSpeedColor(25),
                             '15 – 35 km/h',
                             'Tốc độ ổn định trong phố',
                           ),
                           const Divider(color: AppColors.panelBorder, height: 16),
                           _speedLegendRow(
-                            const Color(0xFFF59E0B),
+                            MapTileService.getHighContrastSpeedColor(45),
                             '35 – 55 km/h',
                             'Đường thoáng / đại lộ',
                           ),
                           const Divider(color: AppColors.panelBorder, height: 16),
                           _speedLegendRow(
-                            const Color(0xFFEF4444),
+                            MapTileService.getHighContrastSpeedColor(70),
                             '> 55 km/h',
                             'Đường trường / tốc độ cao',
                           ),
@@ -1862,6 +2168,24 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       ),
 
                       const SizedBox(height: 20),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        icon: const Icon(Icons.ios_share_rounded, size: 18),
+                        label: Text(
+                          'XUẤT GPX / CSV / KML GHÉP VIDEO',
+                          style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _showExportShareSheet();
+                        },
+                      ),
+
+                      const SizedBox(height: 16),
                       Text(
                         'CHI TIẾT TỪNG CHẶNG & ĐIỂM NGHỈ',
                         style: GoogleFonts.spaceGrotesk(
@@ -1911,6 +2235,23 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       ),
 
                       const SizedBox(height: 20),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        icon: const Icon(Icons.ios_share_rounded, size: 18),
+                        label: Text(
+                          'XUẤT GPX / CSV / KML GHÉP VIDEO',
+                          style: GoogleFonts.spaceGrotesk(fontWeight: FontWeight.w700),
+                        ),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _showExportShareSheet();
+                        },
+                      ),
+                      const SizedBox(height: 10),
                       OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.red,
@@ -2146,6 +2487,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
   }
 
   List<Polyline> _buildBackgroundPolylines() {
+    final borderBase = MapTileService.routeBorderColorFor(_tileStyle);
     if (_mergedSession != null) {
       final polylines = <Polyline>[];
       TripSegment? prevWithPoints;
@@ -2161,6 +2503,8 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
               strokeWidth: 2.5,
               strokeCap: StrokeCap.round,
               color: AppColors.textMuted.withValues(alpha: 0.75),
+              borderStrokeWidth: 1.5,
+              borderColor: borderBase.withValues(alpha: 0.30),
               pattern: StrokePattern.dashed(segments: const [6, 6]),
             ),
           );
@@ -2173,6 +2517,8 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
               strokeCap: StrokeCap.round,
               strokeJoin: StrokeJoin.round,
               color: AppColors.primary.withValues(alpha: 0.20),
+              borderStrokeWidth: 2.5,
+              borderColor: borderBase.withValues(alpha: 0.25),
             ),
           );
         }
@@ -2189,6 +2535,8 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
         strokeCap: StrokeCap.round,
         strokeJoin: StrokeJoin.round,
         color: AppColors.primary.withValues(alpha: 0.20),
+        borderStrokeWidth: 2.5,
+        borderColor: borderBase.withValues(alpha: 0.25),
       ),
     ];
   }
@@ -2215,17 +2563,22 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
       }
     }
 
+    final borderBase = MapTileService.routeBorderColorFor(_tileStyle);
     final polylines = <Polyline>[];
     for (int k = 0; k < sampled.length - 1; k++) {
       final a = sampled[k];
       final b = sampled[k + 1];
       final isPlayed = (segStartGlobalIndex + b) <= _currentIndex;
 
-      var c1 = _getContinuousSpeedColor(segPoints[a].speedKmh);
-      var c2 = _getContinuousSpeedColor(segPoints[b].speedKmh);
+      var c1 = _useHighlightMonoRoute
+          ? const Color(0xFF2563EB)
+          : MapTileService.getHighContrastSpeedColor(segPoints[a].speedKmh);
+      var c2 = _useHighlightMonoRoute
+          ? const Color(0xFF2563EB)
+          : MapTileService.getHighContrastSpeedColor(segPoints[b].speedKmh);
       if (!isPlayed) {
-        c1 = c1.withValues(alpha: 0.28);
-        c2 = c2.withValues(alpha: 0.28);
+        c1 = c1.withValues(alpha: 0.35);
+        c2 = c2.withValues(alpha: 0.35);
       }
 
       polylines.add(
@@ -2237,6 +2590,8 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
           strokeWidth: isPlayed ? 5.5 : 4.5,
           strokeCap: StrokeCap.round,
           strokeJoin: StrokeJoin.round,
+          borderStrokeWidth: isPlayed ? 2.5 : 1.5,
+          borderColor: isPlayed ? borderBase : borderBase.withValues(alpha: 0.30),
           gradientColors: [c1, c2],
         ),
       );
@@ -2275,13 +2630,21 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     final currentPoint = hasPoints ? _routePoints[safeIndex] : null;
     final activeSegment = _isViewingMerged ? _mergedSession!.segmentAtPointIndex(safeIndex) : null;
 
-    final bleState = ref.watch(bleProvider);
+    final bleSummary = ref.watch(
+      bleProvider.select(
+        (s) => (
+          isConnected: s.phase == BlePhase.connected,
+          tripDurationSec: s.trip.duration.inSeconds,
+          tripDistanceKm: s.trip.distanceKm,
+        ),
+      ),
+    );
     final isTrackingActive = TripGpsTracker.instance.isTracking ||
         TripGpsTracker.instance.getCurrentRoute().isNotEmpty ||
-        (bleState.phase == BlePhase.connected && bleState.trip.duration.inSeconds > 0);
+        (bleSummary.isConnected && bleSummary.tripDurationSec > 0);
     final curLiveDistance = TripGpsTracker.instance.totalDistanceKm > 0
         ? TripGpsTracker.instance.totalDistanceKm
-        : bleState.trip.distanceKm;
+        : bleSummary.tripDistanceKm;
 
     final initialCenter = hasPoints
         ? LatLng(_routePoints.first.lat, _routePoints.first.lng)
@@ -2368,85 +2731,86 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
           ),
 
           // 2. HEADER TOP: Thanh tìm kiếm kiểu Textbox & Nút Info
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  children: [
-                    _glassIconButton(
-                      icon: Icons.arrow_back_ios_new_rounded,
-                      tooltip: 'Quay lại',
-                      onTap: () => Navigator.pop(context),
-                    ),
-                    const SizedBox(width: 8),
+          if (!_isCleanVideoMode)
+            SafeArea(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      _glassIconButton(
+                        icon: Icons.arrow_back_ios_new_rounded,
+                        tooltip: 'Quay lại',
+                        onTap: () => Navigator.pop(context),
+                      ),
+                      const SizedBox(width: 8),
 
-                    // Thanh tìm kiếm & chọn hành trình
-                    Expanded(
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: _openTripSearchModal,
-                        child: ClipRRect(
+                      // Thanh tìm kiếm & chọn hành trình
+                      Expanded(
+                        child: InkWell(
                           borderRadius: BorderRadius.circular(14),
-                          child: BackdropFilter(
-                            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                            child: Container(
-                              height: 38,
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              decoration: BoxDecoration(
-                                color: AppColors.panel.withValues(alpha: 0.94),
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: AppColors.panelBorderBright),
-                                boxShadow: AppColors.cardShadow,
-                              ),
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.search_rounded, size: 16, color: AppColors.primary),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      _isViewingLive
-                                          ? 'Đang định vị chuyến đi · ${curLiveDistance.toStringAsFixed(1)} km'
-                                          : (_isViewingMerged
-                                              ? '${_mergedSession!.title} · ${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km'
-                                              : (_selectedTrip != null
-                                                  ? '#$_selectedTripIndex · ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km'
-                                                  : 'Tìm kiếm hành trình...')),
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.textPrimary,
+                          onTap: _openTripSearchModal,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(14),
+                            child: BackdropFilter(
+                              filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                              child: Container(
+                                height: 38,
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                                decoration: BoxDecoration(
+                                  color: AppColors.panel.withValues(alpha: 0.94),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: AppColors.panelBorderBright),
+                                  boxShadow: AppColors.cardShadow,
+                                ),
+                                child: Row(
+                                  children: [
+                                    const Icon(Icons.search_rounded, size: 16, color: AppColors.primary),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        _isViewingLive
+                                            ? 'Đang định vị chuyến đi · ${curLiveDistance.toStringAsFixed(1)} km'
+                                            : (_isViewingMerged
+                                                ? '${_mergedSession!.title} · ${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km'
+                                                : (_selectedTrip != null
+                                                    ? '#$_selectedTripIndex · ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km'
+                                                    : 'Tìm kiếm hành trình...')),
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: AppColors.textPrimary,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                  ),
-                                  const Icon(Icons.unfold_more_rounded, size: 16, color: AppColors.textDim),
-                                ],
+                                    const Icon(Icons.unfold_more_rounded, size: 16, color: AppColors.textDim),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
+                      const SizedBox(width: 8),
 
-                    // Nút Info (ℹ️)
-                    _glassIconButton(
-                      icon: Icons.info_outline_rounded,
-                      iconColor: AppColors.primary,
-                      tooltip: 'Thông tin tốc độ & Lộ trình',
-                      onTap: _showTripInfoSheet,
-                    ),
-                  ],
+                      // Nút Info (ℹ️)
+                      _glassIconButton(
+                        icon: Icons.info_outline_rounded,
+                        iconColor: AppColors.primary,
+                        tooltip: 'Thông tin tốc độ & Lộ trình',
+                        onTap: _showTripInfoSheet,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
 
           // 3. NOTIFICATION BADGE NHỎ GÓC TRÊN BÊN PHẢI (Ngay dưới thanh tìm kiếm khi đang định vị chuyến đi)
-          if (isTrackingActive)
+          if (!_isCleanVideoMode && isTrackingActive)
             Positioned(
               top: MediaQuery.of(context).padding.top + 54,
               right: 12,
@@ -2523,45 +2887,171 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
             ),
 
           // 4. THANH CÔNG CỤ DỌC (Góc phải bản đồ)
-          Positioned(
-            top: MediaQuery.of(context).padding.top + (isTrackingActive ? 98 : 58),
-            right: 12,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (hasPoints) ...[
+          if (!_isCleanVideoMode)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + (isTrackingActive ? 98 : 58),
+              right: 12,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (hasPoints) ...[
+                    _glassIconButton(
+                      icon: Icons.crop_free_rounded,
+                      tooltip: 'Căn toàn bộ lộ trình',
+                      onTap: _fitRouteBounds,
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   _glassIconButton(
-                    icon: Icons.crop_free_rounded,
-                    tooltip: 'Căn toàn bộ lộ trình',
-                    onTap: _fitRouteBounds,
+                    icon: Icons.my_location_rounded,
+                    iconColor: _isLocating ? AppColors.primary : AppColors.textDim,
+                    tooltip: 'Vị trí của tôi',
+                    onTap: _locateMe,
                   ),
                   const SizedBox(height: 8),
+                  _glassIconButton(
+                    icon: Icons.layers_outlined,
+                    tooltip: 'Đổi kiểu bản đồ',
+                    onTap: _cycleTileStyle,
+                  ),
+                  const SizedBox(height: 8),
+                  _glassIconButton(
+                    icon: Icons.palette_outlined,
+                    tooltip: 'Đổi màu lộ trình: Tốc độ / Nổi bật',
+                    isActive: _useHighlightMonoRoute,
+                    onTap: () {
+                      setState(() => _useHighlightMonoRoute = !_useHighlightMonoRoute);
+                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            _useHighlightMonoRoute
+                                ? 'Màu lộ trình: Nổi bật đồng nhất'
+                                : 'Màu lộ trình: Dải tốc độ tương phản cao',
+                          ),
+                          duration: const Duration(seconds: 1),
+                          backgroundColor: AppColors.textPrimary,
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _glassIconButton(
+                    icon: Icons.videocam_outlined,
+                    tooltip: 'Chế độ quay Video Overlay',
+                    isActive: _isCleanVideoMode,
+                    onTap: () => setState(() => _isCleanVideoMode = true),
+                  ),
+                  const SizedBox(height: 8),
+                  _glassIconButton(
+                    icon: Icons.bar_chart_rounded,
+                    tooltip: 'Thống kê 7/30 ngày',
+                    onTap: () => TripStatsInsightsSheet.show(context, _allTrips),
+                  ),
+                  const SizedBox(height: 8),
+                  _glassIconButton(
+                    icon: Icons.download_for_offline_outlined,
+                    tooltip: 'Bản đồ offline',
+                    onTap: () => OfflineMapSheet.show(context),
+                  ),
                 ],
-                _glassIconButton(
-                  icon: Icons.my_location_rounded,
-                  iconColor: _isLocating ? AppColors.primary : AppColors.textDim,
-                  tooltip: 'Vị trí của tôi',
-                  onTap: _locateMe,
-                ),
-                const SizedBox(height: 8),
-                _glassIconButton(
-                  icon: Icons.layers_outlined,
-                  tooltip: 'Đổi kiểu bản đồ',
-                  onTap: _cycleTileStyle,
-                ),
-                const SizedBox(height: 8),
-                _glassIconButton(
-                  icon: Icons.download_for_offline_outlined,
-                  tooltip: 'Bản đồ offline',
-                  onTap: () => OfflineMapSheet.show(context),
-                ),
-              ],
+              ),
             ),
-          ),
+
+          // 4B. COMPACT VIDEO OVERLAY PILL (Khi bật _isCleanVideoMode)
+          if (_isCleanVideoMode)
+            Positioned(
+              left: 14,
+              bottom: MediaQuery.of(context).padding.bottom + 20,
+              child: GestureDetector(
+                onDoubleTap: () => setState(() => _isCleanVideoMode = false),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: MediaQuery.of(context).size.width - 28,
+                      ),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xE60F172A),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: const Color(0x4D38BDF8)),
+                          boxShadow: AppColors.modalShadow,
+                        ),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                '${currentPoint?.speedKmh.toStringAsFixed(0) ?? '0'} km/h',
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800,
+                                  color: const Color(0xFF38BDF8),
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(width: 1, height: 14, color: Colors.white24),
+                              const SizedBox(width: 8),
+                              Text(
+                                '${_cumulativeDistanceKmAt(safeIndex, curLiveDistance).toStringAsFixed(1)} km',
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Container(width: 1, height: 14, color: Colors.white24),
+                              const SizedBox(width: 8),
+                              Text(
+                                _formatHms(currentPoint?.timestamp ?? DateTime.now()),
+                                style: GoogleFonts.spaceGrotesk(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white70,
+                                  fontFeatures: const [FontFeature.tabularFigures()],
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              InkWell(
+                                onTap: () => setState(() => _isCleanVideoMode = false),
+                                borderRadius: BorderRadius.circular(10),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.14),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    'Thoát',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // 5. BẢNG ĐIỀU KHIỂN & PHÁT LẠI VẬN TỐC Ở ĐÁY MÀN HÌNH
           // CHỈ HIỆN KHI NGƯỜI DÙNG CHỌN 1 HÀNH TRÌNH, PHIÊN GHÉP HOẶC BẬT XEM LIVE
-          if (_selectedTrip != null || _isViewingLive || _isViewingMerged)
+          if (!_isCleanVideoMode && (_selectedTrip != null || _isViewingLive || _isViewingMerged))
             Positioned(
               left: 14,
               right: 14,
@@ -2692,6 +3182,18 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                           ],
                                         ),
                                       ),
+                                      if (_selectedTrip != null ||
+                                          _isViewingMerged ||
+                                          (_isViewingLive && _routePoints.length >= 2))
+                                        IconButton(
+                                          icon: const Icon(
+                                            Icons.ios_share_rounded,
+                                            size: 19,
+                                            color: AppColors.primary,
+                                          ),
+                                          tooltip: 'Xuất GPX / CSV / KML ghép Video',
+                                          onPressed: _showExportShareSheet,
+                                        ),
                                       IconButton(
                                         icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.textDim),
                                         tooltip: 'Đóng chi tiết',
@@ -2746,10 +3248,10 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                                 child: Container(
                                                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                                                   decoration: BoxDecoration(
-                                                    color: _getContinuousSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.15),
+                                                    color: MapTileService.getHighContrastSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.15),
                                                     borderRadius: BorderRadius.circular(8),
                                                     border: Border.all(
-                                                      color: _getContinuousSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.4),
+                                                      color: MapTileService.getHighContrastSpeedColor(currentPoint.speedKmh).withValues(alpha: 0.4),
                                                     ),
                                                   ),
                                                   child: Text(
@@ -2757,7 +3259,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                                     style: GoogleFonts.plusJakartaSans(
                                                       fontSize: 9.5,
                                                       fontWeight: FontWeight.w800,
-                                                      color: _getContinuousSpeedColor(currentPoint.speedKmh),
+                                                      color: MapTileService.getHighContrastSpeedColor(currentPoint.speedKmh),
                                                     ),
                                                     maxLines: 1,
                                                     overflow: TextOverflow.ellipsis,
@@ -2846,6 +3348,39 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                     ),
                                     const SizedBox(height: 2),
                                   ],
+
+                                  // Mini Speed Sparkline Scrubber phía trên Slider
+                                  if (_routePoints.length >= 2)
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          void seekFromDx(double dx) {
+                                            final w = constraints.maxWidth;
+                                            if (w <= 0) return;
+                                            final t = (dx / w).clamp(0.0, 1.0);
+                                            _seekTo((t * (_routePoints.length - 1)).round());
+                                          }
+
+                                          return GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTapDown: (d) => seekFromDx(d.localPosition.dx),
+                                            onHorizontalDragUpdate: (d) => seekFromDx(d.localPosition.dx),
+                                            child: SizedBox(
+                                              height: 28,
+                                              width: double.infinity,
+                                              child: CustomPaint(
+                                                painter: _SpeedSparklinePainter(
+                                                  points: _routePoints,
+                                                  currentIndex: safeIndex,
+                                                  useMonoHighlight: _useHighlightMonoRoute,
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
 
                                   // Slider tua lại hành trình
                                   SliderTheme(
@@ -3403,4 +3938,120 @@ class _HeadlightBeamPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _SpeedSparklinePainter extends CustomPainter {
+  final List<TripGpsPoint> points;
+  final int currentIndex;
+  final bool useMonoHighlight;
+
+  const _SpeedSparklinePainter({
+    required this.points,
+    required this.currentIndex,
+    this.useMonoHighlight = false,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final n = points.length;
+    if (n < 2 || size.width <= 0 || size.height <= 0) return;
+
+    double maxSpeed = 20.0;
+    for (final p in points) {
+      if (p.speedKmh > maxSpeed) maxSpeed = p.speedKmh;
+    }
+
+    final sampleCount = math.min(n, 160);
+    final offsets = <Offset>[];
+    final speeds = <double>[];
+    for (int i = 0; i < sampleCount; i++) {
+      final pointIdx = sampleCount == n
+          ? i
+          : ((i / (sampleCount - 1)) * (n - 1)).round().clamp(0, n - 1);
+      final x = (i / (sampleCount - 1)) * size.width;
+      final spd = points[pointIdx].speedKmh.clamp(0.0, maxSpeed);
+      final normalized = spd / maxSpeed;
+      final y = size.height - 2.0 - normalized * (size.height - 5.0);
+      offsets.add(Offset(x, y));
+      speeds.add(spd);
+    }
+
+    final fullLinePath = Path()..moveTo(offsets.first.dx, offsets.first.dy);
+    for (int i = 1; i < offsets.length; i++) {
+      fullLinePath.lineTo(offsets[i].dx, offsets[i].dy);
+    }
+
+    final unplayedStroke = Paint()
+      ..color = AppColors.textMuted.withValues(alpha: 0.40)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(fullLinePath, unplayedStroke);
+
+    final progressRatio = (currentIndex / (n - 1)).clamp(0.0, 1.0);
+    final cursorX = progressRatio * size.width;
+    final cursorSpd = points[currentIndex.clamp(0, n - 1)].speedKmh.clamp(0.0, maxSpeed);
+    final cursorY = size.height - 2.0 - (cursorSpd / maxSpeed) * (size.height - 5.0);
+
+    final playedColor = useMonoHighlight
+        ? const Color(0xFF2563EB)
+        : MapTileService.getHighContrastSpeedColor(cursorSpd);
+
+    if (cursorX > 0.5) {
+      canvas.save();
+      canvas.clipRect(Rect.fromLTWH(0, 0, cursorX, size.height));
+
+      final fillPath = Path.from(fullLinePath)
+        ..lineTo(size.width, size.height)
+        ..lineTo(0, size.height)
+        ..close();
+
+      final fillPaint = Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            playedColor.withValues(alpha: 0.28),
+            playedColor.withValues(alpha: 0.03),
+          ],
+        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+      canvas.drawPath(fillPath, fillPaint);
+
+      final playedStroke = Paint()
+        ..color = playedColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawPath(fullLinePath, playedStroke);
+
+      canvas.restore();
+    }
+
+    final cursorLinePaint = Paint()
+      ..color = AppColors.primary.withValues(alpha: 0.85)
+      ..strokeWidth = 1.5;
+    canvas.drawLine(
+      Offset(cursorX, 0),
+      Offset(cursorX, size.height),
+      cursorLinePaint,
+    );
+
+    final dotPaint = Paint()..color = AppColors.primary;
+    final dotBorderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    canvas.drawCircle(Offset(cursorX, cursorY), 3.2, dotPaint);
+    canvas.drawCircle(Offset(cursorX, cursorY), 3.2, dotBorderPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SpeedSparklinePainter oldDelegate) {
+    return currentIndex != oldDelegate.currentIndex ||
+        useMonoHighlight != oldDelegate.useMonoHighlight ||
+        points != oldDelegate.points ||
+        points.length != oldDelegate.points.length;
+  }
 }

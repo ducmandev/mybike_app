@@ -778,117 +778,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                   const SizedBox(height: 24),
 
                   // ══════════════════════════════════════════════════════════
-                  // 2. VẬN HÀNH & TỐC ĐỘ
-                  // ══════════════════════════════════════════════════════════
-                  Text(
-                    'VẬN HÀNH & TỐC ĐỘ',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFF94A3B8),
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: const Color(0xFFF1F5F9)),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x040F172A),
-                          blurRadius: 10,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Giới hạn tốc độ ECE 60
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Giới hạn tốc độ 60 km/h',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: const Color(0xFF0F172A),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    'An toàn & tiết kiệm thêm 15% pin',
-                                    style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF64748B)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Switch.adaptive(
-                              value: ble.speedLimitMode == 1,
-                              activeTrackColor: const Color(0xFF2563EB),
-                              onChanged: (v) async {
-                                final res = await ref.read(bleProvider.notifier).setSafeSpeedLimit60(v);
-                                _heroSnack(res);
-                                setSheetState(() {});
-                              },
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        const Divider(color: Color(0xFFF8FAFC), height: 1, thickness: 1),
-                        const SizedBox(height: 10),
-
-                        // Chế độ Grab
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Chế độ Grab (Ga êm)',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: const Color(0xFF0F172A),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    'Ga mượt mà, không giật khi chở tải',
-                                    style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: const Color(0xFF64748B)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Switch.adaptive(
-                              value: ble.grabMode == 1,
-                              activeTrackColor: const Color(0xFF10B981),
-                              onChanged: (v) async {
-                                ref.read(bleProvider.notifier).setGrabMode(v ? 1 : 0);
-                                final res = await ref.read(bleProvider.notifier).setFwGrabMode(v);
-                                _heroSnack(res);
-                                setSheetState(() {});
-                              },
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  const SizedBox(height: 24),
-
-                  // ══════════════════════════════════════════════════════════
-                  // 3. TỰ ĐỘNG KẾT NỐI & QUÉT XE
+                  // 2. TỰ ĐỘNG KẾT NỐI & QUÉT XE
                   // ══════════════════════════════════════════════════════════
                   Text(
                     'TỰ ĐỘNG KẾT NỐI & QUÉT XE',
@@ -952,14 +842,17 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text(
-                                        'Số lần quét thử lại tối đa:',
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.w600,
-                                          color: const Color(0xFF64748B),
+                                      Expanded(
+                                        child: Text(
+                                          'Số lần quét thử lại tối đa:',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 11.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: const Color(0xFF64748B),
+                                          ),
                                         ),
                                       ),
+                                      const SizedBox(width: 8),
                                       Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                         decoration: BoxDecoration(
@@ -1037,14 +930,17 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Text(
-                                      'Chu kỳ quét / Sau bao lâu thử lại:',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: const Color(0xFF64748B),
+                                    Expanded(
+                                      child: Text(
+                                        'Chu kỳ quét / Sau bao lâu thử lại:',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w600,
+                                          color: const Color(0xFF64748B),
+                                        ),
                                       ),
                                     ),
+                                    const SizedBox(width: 8),
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                                       decoration: BoxDecoration(
@@ -1713,9 +1609,15 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ble = ref.watch(bleProvider);
-    final connected = ble.phase == BlePhase.connected;
-    final telemetry = ble.lastTelemetry;
+    final phase = ref.watch(bleProvider.select((s) => s.phase));
+    final telemetry = ref.watch(bleProvider.select((s) => s.lastTelemetry));
+    final isLocked = ref.watch(bleProvider.select((s) => s.isLocked));
+    final bikeName = ref.watch(bleProvider.select((s) => s.bikeName));
+    final hasDevice = ref.watch(bleProvider.select((s) => s.device != null));
+    final savedBikesCount = ref.watch(bleProvider.select((s) => s.savedBikes.length));
+    final isFindingBike = ref.watch(bleProvider.select((s) => s.isFindingBike));
+
+    final connected = phase == BlePhase.connected;
     final hasTelemetry = connected && telemetry != null;
     final percent = telemetry?.percent ?? 0;
     final kmLeftVal = (telemetry != null && telemetry.kmLeft > 0)
@@ -1725,9 +1627,8 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
     final kmLeftDisplay = hasTelemetry ? '$kmLeftVal' : '--';
     final speed = telemetry?.speed ?? 0.0;
     final isBikeOn = telemetry?.isBikeOn == true;
-    final isLocked = ble.isLocked;
-    final isConnecting = ble.phase == BlePhase.connecting || ble.phase == BlePhase.reconnecting;
-    final hasBike = ble.bikeName != null || ble.device != null;
+    final isConnecting = phase == BlePhase.connecting || phase == BlePhase.reconnecting;
+    final hasBike = bikeName != null || hasDevice;
 
     // Trạng thái vận hành thực tế của xe máy điện
     final statusText = !connected
@@ -1782,7 +1683,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             ),
                             Flexible(
                               child: Text(
-                                ble.bikeName ?? (ble.device != null ? 'Xe Dat Bike' : 'Chưa ghép đôi xe'),
+                                bikeName ?? (hasDevice ? 'Xe Dat Bike' : 'Chưa ghép đôi xe'),
                                 style: GoogleFonts.plusJakartaSans(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w700,
@@ -1792,7 +1693,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            if (ble.savedBikes.length > 1) ...[
+                            if (savedBikesCount > 1) ...[
                               const SizedBox(width: 6),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -1802,7 +1703,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                   border: Border.all(color: const Color(0xFFBFDBFE)),
                                 ),
                                 child: Text(
-                                  '${ble.savedBikes.length} xe',
+                                  '$savedBikesCount xe',
                                   style: GoogleFonts.plusJakartaSans(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w700,
@@ -2146,7 +2047,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                         ),
                       ),
                     // Badge Đang hú còi tìm xe (kèm nút 1 chạm để Tắt ngay)
-                    if (ble.isFindingBike)
+                    if (isFindingBike)
                       Positioned(
                         top: 14,
                         right: 14,
@@ -2250,7 +2151,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
 
                           // 3. Tìm Xe Trong Bãi (Còi & Đèn Định Vị - Mở Precision Radar)
                           _quickActionButton(
-                            icon: ble.isFindingBike
+                            icon: isFindingBike
                                 ? const Icon(
                                     Icons.volume_off_rounded,
                                     color: Color(0xFFEF4444),
@@ -2260,9 +2161,9 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                     color: const Color(0xFF2563EB),
                                     size: 24,
                                   ),
-                            label: ble.isFindingBike ? 'Tắt Còi' : 'Tìm Xe',
+                            label: isFindingBike ? 'Tắt Còi' : 'Tìm Xe',
                             onTap: () {
-                              if (ble.isFindingBike) {
+                              if (isFindingBike) {
                                 _quickFindBike();
                               } else {
                                 Navigator.of(context).push(
@@ -2270,7 +2171,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                                 );
                               }
                             },
-                            active: ble.isFindingBike,
+                            active: isFindingBike,
                             activeColor: const Color(0xFFFEF2F2),
                             activeBorderColor: const Color(0xFFFECACA),
                           ),
@@ -2328,7 +2229,12 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
               // ══════════════════════════════════════════════════════════════
               // 5. CARD CHUYẾN ĐI (Trip Computer & Thống kê hành trình)
               // ══════════════════════════════════════════════════════════════
-              _buildTripCard(ble.trip),
+              Consumer(
+                builder: (context, tripRef, _) {
+                  final trip = tripRef.watch(bleProvider.select((s) => s.trip));
+                  return _buildTripCard(trip);
+                },
+              ),
 
               const SizedBox(height: 24),
             ],
@@ -2343,10 +2249,10 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
   // ══════════════════════════════════════════════════════════════════════════
 
   Widget _buildSmartParkingCard() {
-    final ble = ref.watch(bleProvider);
+    final deviceId = ref.watch(bleProvider.select((s) => s.device?.remoteId.str));
     return FutureBuilder<ParkedLocation?>(
       future: ParkingStorageService.instance.loadParkedLocation(
-        bikeId: ble.device?.remoteId.str,
+        bikeId: deviceId,
       ),
       builder: (context, snapshot) {
         final loc = snapshot.data;
