@@ -1,39 +1,33 @@
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/parked_location.dart';
+import 'json_prefs_store.dart';
 import 'trip_gps_tracker.dart';
 
 /// Dịch vụ quản lý ghi nhớ và truy xuất vị trí đỗ xe thông minh (Smart Parking Service)
-class ParkingStorageService {
+class ParkingStorageService extends JsonPrefsStore<ParkedLocation> {
   ParkingStorageService._();
   static final ParkingStorageService instance = ParkingStorageService._();
 
   static const String _kParkingPrefix = 'smart_parking_bike_';
   static const String _kDefaultParkingKey = 'smart_parking_last_default_v1';
 
-  Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
+  static String _sanitizedBikeKey(String bikeId) =>
+      '$_kParkingPrefix${JsonPrefsStore.sanitizeKeyPart(bikeId)}';
+
+  static String _legacyBikeKey(String bikeId) => '$_kParkingPrefix$bikeId';
 
   /// Tải vị trí đỗ xe gần nhất
   Future<ParkedLocation?> loadParkedLocation({String? bikeId}) async {
     try {
-      final prefs = await _prefs;
-      final key = (bikeId != null && bikeId.isNotEmpty)
-          ? '$_kParkingPrefix$bikeId'
-          : _kDefaultParkingKey;
-
-      final raw = prefs.getString(key);
-      if (raw != null) {
-        return ParkedLocation.decode(raw);
+      if (bikeId != null && bikeId.isNotEmpty) {
+        return await readObject(
+          _sanitizedBikeKey(bikeId),
+          ParkedLocation.fromJson,
+          fallbackKeys: [_legacyBikeKey(bikeId), _kDefaultParkingKey],
+        );
       }
-
-      // Fallback về default key nếu tìm theo bikeId chưa có
-      if (bikeId != null) {
-        final defRaw = prefs.getString(_kDefaultParkingKey);
-        if (defRaw != null) {
-          return ParkedLocation.decode(defRaw);
-        }
-      }
+      return await readObject(_kDefaultParkingKey, ParkedLocation.fromJson);
     } catch (e) {
       debugPrint('[ParkingStorageService] Lỗi khi load vị trí đỗ: $e');
     }
@@ -43,13 +37,18 @@ class ParkingStorageService {
   /// Lưu vị trí đỗ xe
   Future<void> saveParkedLocation(ParkedLocation location) async {
     try {
-      final prefs = await _prefs;
-      final encoded = location.encode();
-
       if (location.bikeId.isNotEmpty) {
-        await prefs.setString('$_kParkingPrefix${location.bikeId}', encoded);
+        await writeObject(
+          _sanitizedBikeKey(location.bikeId),
+          location,
+          (loc) => loc.toJson(),
+        );
       }
-      await prefs.setString(_kDefaultParkingKey, encoded);
+      await writeObject(
+        _kDefaultParkingKey,
+        location,
+        (loc) => loc.toJson(),
+      );
       debugPrint('[ParkingStorageService] Đã lưu vị trí đỗ: ${location.latitude}, ${location.longitude} lúc ${location.timestamp}');
     } catch (e) {
       debugPrint('[ParkingStorageService] Lỗi khi lưu vị trí đỗ: $e');
@@ -157,18 +156,19 @@ class ParkingStorageService {
   /// Xóa vị trí đỗ khi người dùng đã lấy xe khởi hành hoặc xóa xe khỏi nhà xe
   Future<void> clearParkedLocation({String? bikeId}) async {
     try {
-      final prefs = await _prefs;
       if (bikeId != null && bikeId.isNotEmpty) {
-        await prefs.remove('$_kParkingPrefix$bikeId');
+        await removeKeys([
+          _sanitizedBikeKey(bikeId),
+          _legacyBikeKey(bikeId),
+          _kDefaultParkingKey,
+        ]);
       } else {
-        final keys = prefs.getKeys();
-        for (final k in keys) {
-          if (k.startsWith(_kParkingPrefix)) {
-            await prefs.remove(k);
-          }
-        }
+        final store = await prefs;
+        final bikeKeys = store.getKeys().where(
+          (k) => k.startsWith(_kParkingPrefix),
+        );
+        await removeKeys([...bikeKeys, _kDefaultParkingKey]);
       }
-      await prefs.remove(_kDefaultParkingKey);
     } catch (_) {}
   }
 }

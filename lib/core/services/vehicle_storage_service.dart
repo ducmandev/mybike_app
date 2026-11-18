@@ -1,9 +1,8 @@
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/saved_bike.dart';
+import 'json_prefs_store.dart';
 
 /// Dịch vụ quản lý lưu trữ danh sách xe (Garage) và mật khẩu từng xe.
-class VehicleStorageService {
+class VehicleStorageService extends JsonPrefsStore<SavedBike> {
   VehicleStorageService._();
   static final VehicleStorageService instance = VehicleStorageService._();
 
@@ -13,30 +12,26 @@ class VehicleStorageService {
   static const String _kLegacyPassword = 'bike_password';
   static const String _kPerBikePasswordPrefix = 'bike_pwd_';
 
-  Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
-
   /// Tải danh sách tất cả các xe trong nhà xe (Garage)
   Future<List<SavedBike>> loadSavedBikes() async {
     try {
-      final prefs = await _prefs;
-      final raw = prefs.getString(_kSavedBikesKey);
-      if (raw != null) {
-        if (raw.trim().isEmpty) return <SavedBike>[];
-        final decoded = jsonDecode(raw) as List<dynamic>;
-        final bikes = decoded
-            .map((e) => SavedBike.fromJson(e as Map<String, dynamic>))
-            .where((b) => b.id.trim().isNotEmpty)
-            .toList();
+      final bikes = await readList(
+        _kSavedBikesKey,
+        SavedBike.fromJson,
+        where: (b) => b.id.trim().isNotEmpty,
+      );
+      if (bikes != null) {
         // Trả về ngay lập tức kể cả khi danh sách rỗng (người dùng đã xóa hết xe)
         // Tuyệt đối không chạy xuống nhánh legacy migration bên dưới!
         return bikes;
       }
 
       // Tự động chuyển đổi từ dữ liệu cũ NẾU VÀ CHỈ NẾU chưa từng có key _kSavedBikesKey (lần đầu nâng cấp)
-      final legacyId = prefs.getString(_kLegacyLastBikeId);
+      final store = await prefs;
+      final legacyId = store.getString(_kLegacyLastBikeId);
       if (legacyId != null && legacyId.trim().isNotEmpty) {
-        final legacyName = prefs.getString(_kLegacyLastBikeName) ?? 'Xe Dat Bike';
-        final legacyPw = prefs.getString(_kLegacyPassword);
+        final legacyName = store.getString(_kLegacyLastBikeName) ?? 'Xe Dat Bike';
+        final legacyPw = store.getString(_kLegacyPassword);
         final initialBike = SavedBike(
           id: legacyId.trim(),
           name: legacyName.trim(),
@@ -59,21 +54,22 @@ class VehicleStorageService {
   /// Lưu toàn bộ danh sách xe
   Future<void> saveBikes(List<SavedBike> bikes) async {
     try {
-      final prefs = await _prefs;
-      final jsonList = bikes.map((b) => b.toJson()).toList();
-      await prefs.setString(_kSavedBikesKey, jsonEncode(jsonList));
+      await writeList(_kSavedBikesKey, bikes, (b) => b.toJson());
 
       if (bikes.isEmpty) {
         // Khi xóa hết xe, xóa sạch legacy keys để tránh xe cũ tự hồi sinh
-        await prefs.remove(_kLegacyLastBikeId);
-        await prefs.remove(_kLegacyLastBikeName);
-        await prefs.remove(_kLegacyPassword);
+        await removeKeys(const [
+          _kLegacyLastBikeId,
+          _kLegacyLastBikeName,
+          _kLegacyPassword,
+        ]);
       } else {
         // Đồng bộ xe mặc định / đầu tiên sang legacy key để tương thích ngược
         final defaultBike = bikes.firstWhere((b) => b.isDefault, orElse: () => bikes.first);
         if (defaultBike.id.isNotEmpty) {
-          await prefs.setString(_kLegacyLastBikeId, defaultBike.id);
-          await prefs.setString(_kLegacyLastBikeName, defaultBike.name);
+          final store = await prefs;
+          await store.setString(_kLegacyLastBikeId, defaultBike.id);
+          await store.setString(_kLegacyLastBikeName, defaultBike.name);
         }
       }
     } catch (_) {}
@@ -82,17 +78,18 @@ class VehicleStorageService {
   /// Xóa toàn bộ dữ liệu xe và mật khẩu trong storage (về trạng thái ban đầu)
   Future<void> clearAllBikes() async {
     try {
-      final prefs = await _prefs;
-      await prefs.remove(_kLegacyLastBikeId);
-      await prefs.remove(_kLegacyLastBikeName);
-      await prefs.remove(_kLegacyPassword);
-      final allKeys = prefs.getKeys();
-      for (final key in allKeys) {
-        if (key.startsWith(_kPerBikePasswordPrefix)) {
-          await prefs.remove(key);
-        }
-      }
-      await prefs.setString(_kSavedBikesKey, '[]');
+      final store = await prefs;
+      final passwordKeys = store
+          .getKeys()
+          .where((key) => key.startsWith(_kPerBikePasswordPrefix))
+          .toList();
+      await removeKeys([
+        _kLegacyLastBikeId,
+        _kLegacyLastBikeName,
+        _kLegacyPassword,
+        ...passwordKeys,
+      ]);
+      await writeList(_kSavedBikesKey, const [], (b) => b.toJson());
     } catch (_) {}
   }
 
@@ -173,13 +170,13 @@ class VehicleStorageService {
   /// Lấy mật khẩu Bluetooth của từng xe cụ thể
   Future<String?> getBikePassword(String bikeId) async {
     try {
-      final prefs = await _prefs;
+      final store = await prefs;
       final key = '$_kPerBikePasswordPrefix${bikeId.replaceAll(":", "_")}';
-      final pwd = prefs.getString(key);
+      final pwd = store.getString(key);
       if (pwd != null && pwd.isNotEmpty) return pwd;
 
       // Fallback về legacy password chung nếu chưa có per-bike
-      return prefs.getString(_kLegacyPassword);
+      return store.getString(_kLegacyPassword);
     } catch (_) {
       return null;
     }
@@ -188,19 +185,19 @@ class VehicleStorageService {
   /// Lưu mật khẩu Bluetooth cho từng xe cụ thể
   Future<void> setBikePassword(String bikeId, String password) async {
     try {
-      final prefs = await _prefs;
+      final store = await prefs;
       final key = '$_kPerBikePasswordPrefix${bikeId.replaceAll(":", "_")}';
-      await prefs.setString(key, password);
-      await prefs.setString(_kLegacyPassword, password); // Cập nhật cả legacy
+      await store.setString(key, password);
+      await store.setString(_kLegacyPassword, password); // Cập nhật cả legacy
     } catch (_) {}
   }
 
   /// Xóa mật khẩu của xe
   Future<void> removeBikePassword(String bikeId) async {
     try {
-      final prefs = await _prefs;
-      final key = '$_kPerBikePasswordPrefix${bikeId.replaceAll(":", "_")}';
-      await prefs.remove(key);
+      await removeKeys([
+        '$_kPerBikePasswordPrefix${bikeId.replaceAll(":", "_")}',
+      ]);
     } catch (_) {}
   }
 }

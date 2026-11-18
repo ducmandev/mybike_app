@@ -13,8 +13,13 @@ import '../../core/services/map_tile_service.dart';
 import '../../core/services/trip_export_service.dart';
 import '../../core/services/trip_gps_tracker.dart';
 import '../../core/services/trip_storage_service.dart';
+import '../../core/utils/app_formatters.dart';
 import '../../ui/app_theme.dart';
+import '../../ui/widgets.dart';
 import '../dashboard/widgets/offline_map_sheet.dart';
+import 'widgets/trip_clean_video_overlay.dart';
+import 'widgets/trip_export_sheet.dart';
+import 'widgets/trip_speed_sparkline.dart';
 import 'widgets/trip_stats_insights_sheet.dart';
 
 /// Màn hình Bản Đồ Lộ Trình & Phát Lại Vận Tốc Từng Thời Điểm
@@ -571,262 +576,11 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
       return;
     }
 
-    TripExportFormat? exportingFormat;
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (sheetCtx, setSheetState) {
-            Future<void> handleExport(TripExportFormat format) async {
-              if (exportingFormat != null) return;
-              setSheetState(() => exportingFormat = format);
-              try {
-                await TripExportService.instance.shareSessionExport(session, format);
-                if (sheetCtx.mounted) Navigator.pop(sheetCtx);
-              } catch (e) {
-                if (sheetCtx.mounted) {
-                  setSheetState(() => exportingFormat = null);
-                }
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Không thể xuất file: $e'),
-                      backgroundColor: AppColors.red,
-                    ),
-                  );
-                }
-              }
-            }
-
-            return Container(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.80,
-              ),
-              decoration: const BoxDecoration(
-                color: AppColors.panel,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                border: Border(top: BorderSide(color: AppColors.panelBorderBright)),
-                boxShadow: AppColors.modalShadow,
-              ),
-              child: SafeArea(
-                top: false,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.only(top: 10, bottom: 6),
-                      width: 44,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(18, 6, 12, 10),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary.withValues(alpha: 0.10),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(
-                              Icons.ios_share_rounded,
-                              color: AppColors.primary,
-                              size: 20,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'XUẤT LỘ TRÌNH & TELEMETRY',
-                                  style: GoogleFonts.spaceGrotesk(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w800,
-                                    letterSpacing: 0.5,
-                                    color: AppColors.textPrimary,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                Text(
-                                  '${session.title} · ${session.totalDistanceKm.toStringAsFixed(1)} km · ${session.allPoints.length} điểm GPS',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 11,
-                                    color: AppColors.textDim,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close_rounded, color: AppColors.textDim),
-                            onPressed: () => Navigator.pop(sheetCtx),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const Divider(color: AppColors.panelBorder, height: 1),
-                    Flexible(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _buildExportOptionCard(
-                              badge: 'GPX',
-                              badgeColor: AppColors.primary,
-                              title: 'GPX 1.1 (Relive / Strava / Telemetry Overlay)',
-                              subtitle:
-                                  'Chuẩn GPS đa chặng (<trkseg>) giữ nguyên điểm nghỉ và tốc độ từng giây, tương thích Relive, Strava & video map overlay.',
-                              isLoading: exportingFormat == TripExportFormat.gpx,
-                              isDisabled: exportingFormat != null,
-                              onTap: () => handleExport(TripExportFormat.gpx),
-                            ),
-                            const SizedBox(height: 10),
-                            _buildExportOptionCard(
-                              badge: 'CSV',
-                              badgeColor: AppColors.tertiary,
-                              title: 'CSV Telemetry (GoPro / Insta360 / DashWare HUD)',
-                              subtitle:
-                                  'Dữ liệu timestamp, vận tốc, góc hướng & quãng đường tích lũy từng điểm để ghép đồng hồ HUD lên video.',
-                              isLoading: exportingFormat == TripExportFormat.csv,
-                              isDisabled: exportingFormat != null,
-                              onTap: () => handleExport(TripExportFormat.csv),
-                            ),
-                            const SizedBox(height: 10),
-                            _buildExportOptionCard(
-                              badge: 'KML',
-                              badgeColor: AppColors.amber,
-                              title: 'KML 3D (Google Earth)',
-                              subtitle:
-                                  'Tuyến đường 3D trực quan kèm ghim điểm đầu/cuối và các điểm dừng nghỉ P1..Pn.',
-                              isLoading: exportingFormat == TripExportFormat.kml,
-                              isDisabled: exportingFormat != null,
-                              onTap: () => handleExport(TripExportFormat.kml),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+    await TripExportSheet.show(
+      context,
+      session: session,
+      singleTrip: _selectedTrip,
     );
-  }
-
-  Widget _buildExportOptionCard({
-    required String badge,
-    required Color badgeColor,
-    required String title,
-    required String subtitle,
-    required bool isLoading,
-    required bool isDisabled,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: isDisabled ? null : onTap,
-      child: Container(
-        padding: const EdgeInsets.all(13),
-        decoration: BoxDecoration(
-          color: AppColors.panelSecondary,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.panelBorderBright),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: badgeColor.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: badgeColor.withValues(alpha: 0.3)),
-              ),
-              child: Center(
-                child: Text(
-                  badge,
-                  style: GoogleFonts.spaceGrotesk(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: badgeColor,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: GoogleFonts.spaceGrotesk(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    subtitle,
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 11,
-                      height: 1.35,
-                      color: AppColors.textDim,
-                    ),
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            isLoading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Icon(
-                    Icons.share_rounded,
-                    size: 18,
-                    color: isDisabled ? AppColors.textMuted : badgeColor,
-                  ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _formatDurationSec(int totalSec) {
-    if (totalSec <= 0) return '0 giây';
-    final hours = totalSec ~/ 3600;
-    final mins = (totalSec % 3600) ~/ 60;
-    final secs = totalSec % 60;
-    if (hours > 0) {
-      return mins > 0 ? '$hours giờ $mins phút' : '$hours giờ';
-    }
-    if (mins > 0) {
-      return secs > 0 ? '$mins phút $secs giây' : '$mins phút';
-    }
-    return '$secs giây';
   }
 
   void _scheduleFitRouteBounds([Duration delay = const Duration(milliseconds: 250)]) {
@@ -953,14 +707,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Container(
-                      margin: const EdgeInsets.only(top: 10, bottom: 6),
+                    const SheetDragHandle(
                       width: 44,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
+                      margin: EdgeInsets.only(top: 10, bottom: 6),
                     ),
 
                     // Header Modal
@@ -1306,7 +1055,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       child: Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: highlight ? const Color(0xFFEFF6FF) : AppColors.panelSecondary,
+                          color: highlight ? AppColors.primary.withValues(alpha: 0.08) : AppColors.panelSecondary,
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(
                             color: highlight ? AppColors.primary : AppColors.panelBorderBright,
@@ -2028,14 +1777,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                margin: const EdgeInsets.only(top: 10, bottom: 6),
+              const SheetDragHandle(
                 width: 44,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(2),
-                ),
+                margin: EdgeInsets.only(top: 10, bottom: 6),
               ),
 
               Padding(
@@ -2152,9 +1896,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                           children: [
                             _tripDetailRow('Tổng quãng đường', '${merged.totalDistanceKm.toStringAsFixed(1)} km'),
                             const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Thời gian di chuyển', _formatDurationSec(merged.totalMovingDurationSec)),
+                            _tripDetailRow('Thời gian di chuyển', AppFormatters.formatDurationVerboseSec(merged.totalMovingDurationSec)),
                             const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Thời gian dừng nghỉ', _formatDurationSec(merged.totalStopDurationSec)),
+                            _tripDetailRow('Thời gian dừng nghỉ', AppFormatters.formatDurationVerboseSec(merged.totalStopDurationSec)),
                             const Divider(color: AppColors.panelBorder, height: 14),
                             _tripDetailRow('Vận tốc TB di chuyển', '${merged.avgMovingSpeedKmh.toStringAsFixed(0)} km/h'),
                             const Divider(color: AppColors.panelBorder, height: 14),
@@ -2336,7 +2080,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '${seg.trip.distanceKm.toStringAsFixed(1)} km · ${_formatDurationSec(seg.trip.durationSec)} · Max ${seg.trip.maxSpeedKmh.toStringAsFixed(0)} km/h${seg.trip.usedPercent > 0 ? ' · -${seg.trip.usedPercent}%' : ''}',
+                        '${seg.trip.distanceKm.toStringAsFixed(1)} km · ${AppFormatters.formatDurationVerboseSec(seg.trip.durationSec)} · Max ${seg.trip.maxSpeedKmh.toStringAsFixed(0)} km/h${seg.trip.usedPercent > 0 ? ' · -${seg.trip.usedPercent}%' : ''}',
                         style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
@@ -2571,10 +2315,10 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
       final isPlayed = (segStartGlobalIndex + b) <= _currentIndex;
 
       var c1 = _useHighlightMonoRoute
-          ? const Color(0xFF2563EB)
+          ? AppColors.primary
           : MapTileService.getHighContrastSpeedColor(segPoints[a].speedKmh);
       var c2 = _useHighlightMonoRoute
-          ? const Color(0xFF2563EB)
+          ? AppColors.primary
           : MapTileService.getHighContrastSpeedColor(segPoints[b].speedKmh);
       if (!isPlayed) {
         c1 = c1.withValues(alpha: 0.35);
@@ -2824,7 +2568,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: _isViewingLive ? const Color(0xFF0F172A) : AppColors.panel.withValues(alpha: 0.92),
+                        color: _isViewingLive ? AppColors.textPrimary : AppColors.panel.withValues(alpha: 0.92),
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
                           color: _isViewingLive ? AppColors.tertiary : AppColors.panelBorderBright,
@@ -2963,89 +2707,12 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
             Positioned(
               left: 14,
               bottom: MediaQuery.of(context).padding.bottom + 20,
-              child: GestureDetector(
-                onDoubleTap: () => setState(() => _isCleanVideoMode = false),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxWidth: MediaQuery.of(context).size.width - 28,
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xE60F172A),
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: const Color(0x4D38BDF8)),
-                          boxShadow: AppColors.modalShadow,
-                        ),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                '${currentPoint?.speedKmh.toStringAsFixed(0) ?? '0'} km/h',
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w800,
-                                  color: const Color(0xFF38BDF8),
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Container(width: 1, height: 14, color: Colors.white24),
-                              const SizedBox(width: 8),
-                              Text(
-                                '${_cumulativeDistanceKmAt(safeIndex, curLiveDistance).toStringAsFixed(1)} km',
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Container(width: 1, height: 14, color: Colors.white24),
-                              const SizedBox(width: 8),
-                              Text(
-                                _formatHms(currentPoint?.timestamp ?? DateTime.now()),
-                                style: GoogleFonts.spaceGrotesk(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white70,
-                                  fontFeatures: const [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              InkWell(
-                                onTap: () => setState(() => _isCleanVideoMode = false),
-                                borderRadius: BorderRadius.circular(10),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.14),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Text(
-                                    'Thoát',
-                                    style: GoogleFonts.spaceGrotesk(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
+              child: TripCleanVideoOverlay(
+                speedKmh: currentPoint?.speedKmh ?? 0.0,
+                distanceKm: _cumulativeDistanceKmAt(safeIndex, curLiveDistance),
+                durationText: _formatHms(currentPoint?.timestamp ?? DateTime.now()),
+                isLive: _isViewingLive,
+                onExit: () => setState(() => _isCleanVideoMode = false),
               ),
             ),
 
@@ -3066,7 +2733,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
-                          color: const Color(0xF50F172A),
+                          color: AppColors.textPrimary.withValues(alpha: 0.96),
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(color: AppColors.amber.withValues(alpha: 0.7)),
                           boxShadow: AppColors.cardShadow,
@@ -3353,31 +3020,12 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                   if (_routePoints.length >= 2)
                                     Padding(
                                       padding: const EdgeInsets.symmetric(horizontal: 10),
-                                      child: LayoutBuilder(
-                                        builder: (context, constraints) {
-                                          void seekFromDx(double dx) {
-                                            final w = constraints.maxWidth;
-                                            if (w <= 0) return;
-                                            final t = (dx / w).clamp(0.0, 1.0);
-                                            _seekTo((t * (_routePoints.length - 1)).round());
-                                          }
-
-                                          return GestureDetector(
-                                            behavior: HitTestBehavior.opaque,
-                                            onTapDown: (d) => seekFromDx(d.localPosition.dx),
-                                            onHorizontalDragUpdate: (d) => seekFromDx(d.localPosition.dx),
-                                            child: SizedBox(
-                                              height: 28,
-                                              width: double.infinity,
-                                              child: CustomPaint(
-                                                painter: _SpeedSparklinePainter(
-                                                  points: _routePoints,
-                                                  currentIndex: safeIndex,
-                                                  useMonoHighlight: _useHighlightMonoRoute,
-                                                ),
-                                              ),
-                                            ),
-                                          );
+                                      child: TripSpeedSparkline(
+                                        speeds: _routePoints.map((p) => p.speedKmh).toList(growable: false),
+                                        progress: (safeIndex / (_routePoints.length - 1)).clamp(0.0, 1.0),
+                                        useMonoHighlight: _useHighlightMonoRoute,
+                                        onSeekProgress: (t) {
+                                          _seekTo((t * (_routePoints.length - 1)).round());
                                         },
                                       ),
                                     ),
@@ -3416,7 +3064,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                           child: Container(
                                             padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
                                             decoration: BoxDecoration(
-                                              color: _followBike ? const Color(0xFFEFF6FF) : AppColors.panelSecondary,
+                                              color: _followBike ? AppColors.primary.withValues(alpha: 0.08) : AppColors.panelSecondary,
                                               borderRadius: BorderRadius.circular(10),
                                               border: Border.all(
                                                 color: _followBike ? AppColors.primary : AppColors.panelBorderBright,
@@ -3602,7 +3250,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
         decoration: BoxDecoration(
-          color: isActive ? const Color(0xFF0F172A) : AppColors.amber,
+          color: isActive ? AppColors.textPrimary : AppColors.amber,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.white, width: 2),
           boxShadow: [
@@ -3743,7 +3391,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: isMoving ? const Color(0x600284C7) : const Color(0x352563EB),
+                            color: isMoving
+                                ? AppColors.accent.withValues(alpha: 0.38)
+                                : AppColors.primary.withValues(alpha: 0.21),
                             blurRadius: isMoving ? 14 : 8,
                             spreadRadius: isMoving ? 3 : 1,
                           ),
@@ -3755,13 +3405,13 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       height: 36,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        gradient: const LinearGradient(
+                        gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [Color(0xFF1E293B), Color(0xFF0F172A)],
+                          colors: [AppColors.onSurface, AppColors.textPrimary],
                         ),
                         border: Border.all(
-                          color: const Color(0xFF38BDF8),
+                          color: AppColors.secondaryContainer,
                           width: 2.2,
                         ),
                         boxShadow: const [
@@ -3775,7 +3425,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       child: const Center(
                         child: Icon(
                           Icons.navigation_rounded,
-                          color: Color(0xFF38BDF8),
+                          color: AppColors.secondaryContainer,
                           size: 20,
                         ),
                       ),
@@ -3794,14 +3444,14 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                 gradient: const LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Color(0xFF38BDF8), Color(0xFF2563EB)],
+                  colors: [AppColors.secondaryContainer, AppColors.primary],
                 ),
-                boxShadow: const [
+                boxShadow: [
                   BoxShadow(
-                    color: Color(0x502563EB),
+                    color: AppColors.primary.withValues(alpha: 0.31),
                     blurRadius: 10,
                     spreadRadius: 2,
-                    offset: Offset(0, 2),
+                    offset: const Offset(0, 2),
                   ),
                 ],
               ),
@@ -3826,10 +3476,12 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
               decoration: BoxDecoration(
-                color: const Color(0xF20F172A),
+                color: AppColors.textPrimary.withValues(alpha: 0.95),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                  color: isMoving ? const Color(0x6638BDF8) : const Color(0x3394A3B8),
+                  color: isMoving
+                      ? AppColors.secondaryContainer.withValues(alpha: 0.40)
+                      : AppColors.textMuted.withValues(alpha: 0.20),
                   width: 1,
                 ),
                 boxShadow: const [
@@ -3846,7 +3498,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                   Icon(
                     Icons.bolt_rounded,
                     size: 11,
-                    color: isMoving ? const Color(0xFF10B981) : const Color(0xFF38BDF8),
+                    color: isMoving ? AppColors.tertiary : AppColors.secondaryContainer,
                   ),
                   const SizedBox(width: 2),
                   Text(
@@ -3883,7 +3535,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-            color: isActive ? const Color(0xFFEFF6FF) : AppColors.panel.withValues(alpha: 0.94),
+            color: isActive ? AppColors.primary.withValues(alpha: 0.08) : AppColors.panel.withValues(alpha: 0.94),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color: isActive ? AppColors.primary : AppColors.panelBorderBright,
@@ -3925,10 +3577,10 @@ class _HeadlightBeamPainter extends CustomPainter {
       ..shader = RadialGradient(
         center: const Alignment(0, 0.1),
         radius: 0.85,
-        colors: const [
-          Color(0x6638BDF8),
-          Color(0x2638BDF8),
-          Color(0x0038BDF8),
+        colors: [
+          AppColors.secondaryContainer.withValues(alpha: 0.40),
+          AppColors.secondaryContainer.withValues(alpha: 0.15),
+          AppColors.secondaryContainer.withValues(alpha: 0.0),
         ],
         stops: const [0.0, 0.5, 1.0],
       ).createShader(Rect.fromCircle(center: center, radius: 46));
@@ -3938,120 +3590,4 @@ class _HeadlightBeamPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _SpeedSparklinePainter extends CustomPainter {
-  final List<TripGpsPoint> points;
-  final int currentIndex;
-  final bool useMonoHighlight;
-
-  const _SpeedSparklinePainter({
-    required this.points,
-    required this.currentIndex,
-    this.useMonoHighlight = false,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final n = points.length;
-    if (n < 2 || size.width <= 0 || size.height <= 0) return;
-
-    double maxSpeed = 20.0;
-    for (final p in points) {
-      if (p.speedKmh > maxSpeed) maxSpeed = p.speedKmh;
-    }
-
-    final sampleCount = math.min(n, 160);
-    final offsets = <Offset>[];
-    final speeds = <double>[];
-    for (int i = 0; i < sampleCount; i++) {
-      final pointIdx = sampleCount == n
-          ? i
-          : ((i / (sampleCount - 1)) * (n - 1)).round().clamp(0, n - 1);
-      final x = (i / (sampleCount - 1)) * size.width;
-      final spd = points[pointIdx].speedKmh.clamp(0.0, maxSpeed);
-      final normalized = spd / maxSpeed;
-      final y = size.height - 2.0 - normalized * (size.height - 5.0);
-      offsets.add(Offset(x, y));
-      speeds.add(spd);
-    }
-
-    final fullLinePath = Path()..moveTo(offsets.first.dx, offsets.first.dy);
-    for (int i = 1; i < offsets.length; i++) {
-      fullLinePath.lineTo(offsets[i].dx, offsets[i].dy);
-    }
-
-    final unplayedStroke = Paint()
-      ..color = AppColors.textMuted.withValues(alpha: 0.40)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-    canvas.drawPath(fullLinePath, unplayedStroke);
-
-    final progressRatio = (currentIndex / (n - 1)).clamp(0.0, 1.0);
-    final cursorX = progressRatio * size.width;
-    final cursorSpd = points[currentIndex.clamp(0, n - 1)].speedKmh.clamp(0.0, maxSpeed);
-    final cursorY = size.height - 2.0 - (cursorSpd / maxSpeed) * (size.height - 5.0);
-
-    final playedColor = useMonoHighlight
-        ? const Color(0xFF2563EB)
-        : MapTileService.getHighContrastSpeedColor(cursorSpd);
-
-    if (cursorX > 0.5) {
-      canvas.save();
-      canvas.clipRect(Rect.fromLTWH(0, 0, cursorX, size.height));
-
-      final fillPath = Path.from(fullLinePath)
-        ..lineTo(size.width, size.height)
-        ..lineTo(0, size.height)
-        ..close();
-
-      final fillPaint = Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            playedColor.withValues(alpha: 0.28),
-            playedColor.withValues(alpha: 0.03),
-          ],
-        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-      canvas.drawPath(fillPath, fillPaint);
-
-      final playedStroke = Paint()
-        ..color = playedColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.0
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round;
-      canvas.drawPath(fullLinePath, playedStroke);
-
-      canvas.restore();
-    }
-
-    final cursorLinePaint = Paint()
-      ..color = AppColors.primary.withValues(alpha: 0.85)
-      ..strokeWidth = 1.5;
-    canvas.drawLine(
-      Offset(cursorX, 0),
-      Offset(cursorX, size.height),
-      cursorLinePaint,
-    );
-
-    final dotPaint = Paint()..color = AppColors.primary;
-    final dotBorderPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawCircle(Offset(cursorX, cursorY), 3.2, dotPaint);
-    canvas.drawCircle(Offset(cursorX, cursorY), 3.2, dotBorderPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _SpeedSparklinePainter oldDelegate) {
-    return currentIndex != oldDelegate.currentIndex ||
-        useMonoHighlight != oldDelegate.useMonoHighlight ||
-        points != oldDelegate.points ||
-        points.length != oldDelegate.points.length;
-  }
 }

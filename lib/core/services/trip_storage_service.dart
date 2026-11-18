@@ -3,16 +3,26 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../ble/ble_controller.dart' show TripRecord, TripGpsPoint;
 import '../models/merged_trip_session.dart';
+import 'json_prefs_store.dart';
+
+class _MergedChainPrefsStore extends JsonPrefsStore<SavedMergedTripChain> {
+  Future<List<SavedMergedTripChain>> loadAll(String key) async {
+    final chains = await readList(key, SavedMergedTripChain.fromJson);
+    return chains ?? <SavedMergedTripChain>[];
+  }
+
+  Future<void> saveAll(String key, List<SavedMergedTripChain> chains) =>
+      writeList(key, chains, (c) => c.toJson());
+}
 
 /// Dịch vụ quản lý lưu trữ hành trình chuẩn 2 tầng (Two-Tier Storage):
 /// - Tầng 1: Metadata tóm tắt (id, thời gian, km, vận tốc, pin) lưu trong SharedPreferences (siêu nhẹ < 30KB).
 /// - Tầng 2: File tọa độ GPS chi tiết (.json) lưu riêng từng file theo trip_id trong thư mục documents.
 /// Cơ chế này ngăn chặn tuyệt đối lỗi tràn bộ nhớ, đơ UI thread, và chống corrupt dữ liệu khi ngắt app đột ngột.
-class TripStorageService {
+class TripStorageService extends JsonPrefsStore<TripRecord> {
   TripStorageService._();
   static final TripStorageService instance = TripStorageService._();
 
@@ -22,6 +32,7 @@ class TripStorageService {
   static const int _kMaxTrips = 250;
   static const double kMinTripDistanceKm = 1.0;
 
+  final _MergedChainPrefsStore _mergedChainStore = _MergedChainPrefsStore();
   Directory? _tripsDir;
   Future<Directory>? _initFuture;
   Future<void> _opLock = Future.value();
@@ -103,27 +114,23 @@ class TripStorageService {
   /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi (không khóa)
   Future<List<TripRecord>> _loadAllTripsUnsafe() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-
       // 1. Kiểm tra lưu trữ Metadata v2 (Tầng 1)
-      final metaJson = prefs.getString(_kTripMetadataKey);
-      if (metaJson != null && metaJson.isNotEmpty) {
-        final decoded = jsonDecode(metaJson) as List<dynamic>;
-        return decoded
-            .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= kMinTripDistanceKm)
-            .toList();
+      final metaTrips = await readList(
+        _kTripMetadataKey,
+        TripRecord.fromJson,
+        where: (e) => e.distanceKm >= kMinTripDistanceKm,
+      );
+      if (metaTrips != null) {
+        return metaTrips;
       }
 
       // 2. Tự động di chuyển từ lưu trữ legacy v1 nếu có
-      final legacyJson = prefs.getString(_kLegacyTripKey);
-      if (legacyJson != null && legacyJson.isNotEmpty) {
-        final decoded = jsonDecode(legacyJson) as List<dynamic>;
-        final legacyTrips = decoded
-            .map((e) => TripRecord.fromJson(e as Map<String, dynamic>))
-            .where((e) => e.distanceKm >= kMinTripDistanceKm)
-            .toList();
-
+      final legacyTrips = await readList(
+        _kLegacyTripKey,
+        TripRecord.fromJson,
+        where: (e) => e.distanceKm >= kMinTripDistanceKm,
+      );
+      if (legacyTrips != null) {
         if (legacyTrips.isEmpty) {
           return [];
         }
@@ -151,8 +158,11 @@ class TripStorageService {
         }
 
         // Lưu Metadata v2
-        final newMetaStr = jsonEncode(metadataList.map((e) => e.toMetadataJson()).toList());
-        await prefs.setString(_kTripMetadataKey, newMetaStr);
+        await writeList(
+          _kTripMetadataKey,
+          metadataList,
+          (e) => e.toMetadataJson(),
+        );
         return metadataList;
       }
     } catch (e) {
@@ -164,23 +174,9 @@ class TripStorageService {
   /// Tải toàn bộ danh sách tóm tắt (Metadata) của các chuyến đi
   Future<List<TripRecord>> loadAllTrips() {
     return _synchronized(() async {
-      final rawIds = <String>{};
-      int rawMetaCount = 0;
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final metaJson = prefs.getString(_kTripMetadataKey);
-        if (metaJson != null && metaJson.isNotEmpty) {
-          final decoded = jsonDecode(metaJson) as List<dynamic>;
-          rawMetaCount = decoded.length;
-          for (final item in decoded) {
-            if (item is Map<String, dynamic>) {
-              rawIds.add(TripRecord.fromJson(item).id);
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint('[TripStorageService] Lỗi kiểm tra metadata thô: $e');
-      }
+      final rawMeta = await readList(_kTripMetadataKey, TripRecord.fromJson);
+      final rawMetaCount = rawMeta?.length ?? 0;
+      final rawIds = rawMeta?.map((e) => e.id).toSet() ?? <String>{};
 
       final loaded = await _loadAllTripsUnsafe();
       final deduped = _deduplicateTrips(loaded);
@@ -191,9 +187,11 @@ class TripStorageService {
           (rawMetaCount > 0 && deduped.length < rawMetaCount) ||
           removedIds.isNotEmpty) {
         try {
-          final prefs = await SharedPreferences.getInstance();
-          final metaStr = jsonEncode(deduped.map((e) => e.toMetadataJson()).toList());
-          await prefs.setString(_kTripMetadataKey, metaStr);
+          await writeList(
+            _kTripMetadataKey,
+            deduped,
+            (e) => e.toMetadataJson(),
+          );
         } catch (e) {
           debugPrint('[TripStorageService] Lỗi dọn dẹp chuyến đi trùng lặp/ngắn: $e');
         }
@@ -271,14 +269,7 @@ class TripStorageService {
 
   Future<List<SavedMergedTripChain>> _loadSavedMergedChainsUnsafe() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_kMergedChainsKey);
-      if (raw != null && raw.isNotEmpty) {
-        final decoded = jsonDecode(raw) as List<dynamic>;
-        return decoded
-            .map((e) => SavedMergedTripChain.fromJson(e as Map<String, dynamic>))
-            .toList();
-      }
+      return await _mergedChainStore.loadAll(_kMergedChainsKey);
     } catch (e) {
       debugPrint('[TripStorageService] Lỗi nạp chuỗi hành trình đã lưu: $e');
     }
@@ -287,11 +278,8 @@ class TripStorageService {
 
   Future<void> _persistMergedChainsUnsafe(
     List<SavedMergedTripChain> chains,
-  ) async {
-    final prefs = await SharedPreferences.getInstance();
-    final encoded = jsonEncode(chains.map((c) => c.toJson()).toList());
-    await prefs.setString(_kMergedChainsKey, encoded);
-  }
+  ) =>
+      _mergedChainStore.saveAll(_kMergedChainsKey, chains);
 
   /// Tải danh sách các chuỗi hành trình đã lưu.
   Future<List<SavedMergedTripChain>> loadSavedMergedChains() {
@@ -376,10 +364,12 @@ class TripStorageService {
         final metaRecord = trip.copyWith(route: const []);
         final updated = [metaRecord, ...filteredExisting].take(_kMaxTrips).toList();
 
-        final prefs = await SharedPreferences.getInstance();
-        final metaStr = jsonEncode(updated.map((e) => e.toMetadataJson()).toList());
-        await prefs.setString(_kTripMetadataKey, metaStr);
-        await prefs.remove(_kLegacyTripKey);
+        await writeList(
+          _kTripMetadataKey,
+          updated,
+          (e) => e.toMetadataJson(),
+        );
+        await removeKeys(const [_kLegacyTripKey]);
       } catch (e) {
         debugPrint('[TripStorageService] Lỗi lưu chuyến đi: $e');
       }
@@ -408,10 +398,12 @@ class TripStorageService {
         // 2. Cập nhật metadata
         final updated = existing.where((t) => !isDuplicateTrip(t, trip)).toList();
 
-        final prefs = await SharedPreferences.getInstance();
-        final metaStr = jsonEncode(updated.map((e) => e.toMetadataJson()).toList());
-        await prefs.setString(_kTripMetadataKey, metaStr);
-        await prefs.remove(_kLegacyTripKey);
+        await writeList(
+          _kTripMetadataKey,
+          updated,
+          (e) => e.toMetadataJson(),
+        );
+        await removeKeys(const [_kLegacyTripKey]);
       } catch (e) {
         debugPrint('[TripStorageService] Lỗi xóa chuyến đi: $e');
       }
@@ -433,10 +425,11 @@ class TripStorageService {
             }
           }
         }
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove(_kTripMetadataKey);
-        await prefs.remove(_kLegacyTripKey);
-        await prefs.remove(_kMergedChainsKey);
+        await removeKeys(const [
+          _kTripMetadataKey,
+          _kLegacyTripKey,
+          _kMergedChainsKey,
+        ]);
       } catch (e) {
         debugPrint('[TripStorageService] Lỗi xóa toàn bộ lịch sử: $e');
       }

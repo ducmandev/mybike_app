@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../core/ble/ble_controller.dart';
 import '../../core/models/maintenance_item.dart';
 import '../../core/services/maintenance_storage_service.dart';
+import '../../core/utils/app_formatters.dart';
 import '../../ui/app_theme.dart';
 import '../../ui/widgets.dart';
 
@@ -87,21 +88,6 @@ class _MaintenanceLogScreenState extends ConsumerState<MaintenanceLogScreen> {
     });
   }
 
-  String _formatKm(double value) {
-    if (!value.isFinite) return '0';
-    final normalized = value.abs() < 0.05 ? 0.0 : value;
-    if ((normalized - normalized.roundToDouble()).abs() < 0.05) {
-      return normalized.round().toString();
-    }
-    return normalized.toStringAsFixed(1);
-  }
-
-  String _formatDate(DateTime date) {
-    final d = date.day.toString().padLeft(2, '0');
-    final m = date.month.toString().padLeft(2, '0');
-    return '$d/$m/${date.year}';
-  }
-
   Future<void> _markServiced(
     String bikeId,
     MaintenanceItem item,
@@ -117,7 +103,7 @@ class _MaintenanceLogScreenState extends ConsumerState<MaintenanceLogScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          'Đã cập nhật bảo dưỡng "${item.title}" tại ${_formatKm(effectiveOdo)} km',
+          'Đã cập nhật bảo dưỡng "${item.title}" tại ${AppFormatters.formatKm(effectiveOdo)} km',
           style: GoogleFonts.plusJakartaSans(
             fontSize: 13,
             fontWeight: FontWeight.w600,
@@ -164,7 +150,7 @@ class _MaintenanceLogScreenState extends ConsumerState<MaintenanceLogScreen> {
 
   Future<void> _showEditOdoDialog(double syncedOdo, double effectiveOdo) async {
     final controller = TextEditingController(
-      text: _formatKm(effectiveOdo),
+      text: AppFormatters.formatKm(effectiveOdo),
     );
     final formKey = GlobalKey<FormState>();
 
@@ -260,7 +246,7 @@ class _MaintenanceLogScreenState extends ConsumerState<MaintenanceLogScreen> {
     final categoryController = TextEditingController(text: 'Tùy chỉnh');
     final intervalController = TextEditingController(text: '2000');
     final lastOdoController = TextEditingController(
-      text: _formatKm(effectiveOdo),
+      text: AppFormatters.formatKm(effectiveOdo),
     );
     final notesController = TextEditingController();
     final formKey = GlobalKey<FormState>();
@@ -507,7 +493,7 @@ class _MaintenanceLogScreenState extends ConsumerState<MaintenanceLogScreen> {
               children: [
                 _SummaryCard(
                   effectiveOdo: effectiveOdo,
-                  formattedOdo: _formatKm(effectiveOdo),
+                  formattedOdo: AppFormatters.formatKm(effectiveOdo),
                   dueCount: dueCount,
                   totalCount: _items.length,
                   isLiveOdo: isLiveOdo,
@@ -562,8 +548,6 @@ class _MaintenanceLogScreenState extends ConsumerState<MaintenanceLogScreen> {
                       child: _MaintenanceItemCard(
                         item: item,
                         currentOdo: effectiveOdo,
-                        formatKm: _formatKm,
-                        formatDate: _formatDate,
                         onMarkServiced: () =>
                             _markServiced(slice.bikeId, item, effectiveOdo),
                         onDelete: item.isDefault
@@ -739,16 +723,12 @@ class _SummaryCard extends StatelessWidget {
 class _MaintenanceItemCard extends StatelessWidget {
   final MaintenanceItem item;
   final double currentOdo;
-  final String Function(double) formatKm;
-  final String Function(DateTime) formatDate;
   final VoidCallback onMarkServiced;
   final VoidCallback? onDelete;
 
   const _MaintenanceItemCard({
     required this.item,
     required this.currentOdo,
-    required this.formatKm,
-    required this.formatDate,
     required this.onMarkServiced,
     this.onDelete,
   });
@@ -765,13 +745,13 @@ class _MaintenanceItemCard extends StatelessWidget {
     if (overdue) {
       badgeColor = AppColors.red;
       final overdueKm = rem <= 0 ? -rem : 0.0;
-      badgeText = 'Quá hạn ${formatKm(overdueKm)} km';
+      badgeText = 'Quá hạn ${AppFormatters.formatKm(overdueKm)} km';
     } else if (dueSoon) {
       badgeColor = AppColors.amber;
-      badgeText = 'Còn ${formatKm(rem)} km';
+      badgeText = 'Còn ${AppFormatters.formatKm(rem)} km';
     } else {
       badgeColor = AppColors.tertiary;
-      badgeText = 'Còn ${formatKm(rem)} km';
+      badgeText = 'Còn ${AppFormatters.formatKm(rem)} km';
     }
 
     return Panel(
@@ -854,7 +834,7 @@ class _MaintenanceItemCard extends StatelessWidget {
             runSpacing: 4,
             children: [
               Text(
-                'Bảo dưỡng gần nhất: ${formatKm(item.lastServiceOdo)} km',
+                'Bảo dưỡng gần nhất: ${AppFormatters.formatKm(item.lastServiceOdo)} km',
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
@@ -863,7 +843,7 @@ class _MaintenanceItemCard extends StatelessWidget {
                 ),
               ),
               Text(
-                'Mốc kế tiếp: ${formatKm(item.nextDueOdo)} km',
+                'Mốc kế tiếp: ${AppFormatters.formatKm(item.nextDueOdo)} km',
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -876,7 +856,7 @@ class _MaintenanceItemCard extends StatelessWidget {
           if (item.lastServiceAt != null) ...[
             const SizedBox(height: 4),
             Text(
-              'Ngày thực hiện: ${formatDate(item.lastServiceAt!)}',
+              'Ngày thực hiện: ${AppFormatters.formatDateDmY(item.lastServiceAt!)}',
               style: AppTypography.bodySm(color: AppColors.textMuted),
             ),
           ],

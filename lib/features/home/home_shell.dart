@@ -2,11 +2,11 @@
 // [ Xe ] · [ Năng Lượng ] · [ Chủ Xe ]
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
+import '../../ui/app_theme.dart';
+import '../../ui/geely_icons.dart';
 import '../charging/charging_screen.dart';
 import '../profile/profile_screen.dart';
-import '../../ui/geely_icons.dart';
 import 'my_bike_screen.dart';
 
 class HomeShell extends StatefulWidget {
@@ -22,7 +22,7 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
+      backgroundColor: AppColors.bg,
       body: IndexedStack(
         index: _tab.clamp(0, 2),
         children: const [
@@ -32,11 +32,15 @@ class _HomeShellState extends State<HomeShell> {
         ],
       ),
       bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: Color(0xFFF1F5F9), width: 1)),
+        decoration: BoxDecoration(
+          color: AppColors.panel,
+          border: const Border(top: BorderSide(color: AppColors.panelBorder, width: 1)),
           boxShadow: [
-            BoxShadow(color: Color(0x060F172A), blurRadius: 12, offset: Offset(0, -4)),
+            BoxShadow(
+              color: AppColors.textPrimary.withValues(alpha: 0.025),
+              blurRadius: 12,
+              offset: const Offset(0, -4),
+            ),
           ],
         ),
         child: NavigationBar(
@@ -44,29 +48,28 @@ class _HomeShellState extends State<HomeShell> {
           onDestinationSelected: (i) => setState(() => _tab = i),
           height: 64,
           backgroundColor: Colors.transparent,
-          indicatorColor: const Color(0xFFEFF6FF),
+          indicatorColor: AppColors.primary.withValues(alpha: 0.08),
           indicatorShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           labelTextStyle: WidgetStateProperty.resolveWith(
-            (s) => GoogleFonts.plusJakartaSans(
-              fontSize: 11,
+            (s) => AppTypography.labelSm(
+              color: s.contains(WidgetState.selected) ? AppColors.primary : AppColors.textDim,
               fontWeight: s.contains(WidgetState.selected) ? FontWeight.w700 : FontWeight.w500,
-              color: s.contains(WidgetState.selected) ? const Color(0xFF2563EB) : const Color(0xFF64748B),
-            ),
+            ).copyWith(letterSpacing: 0.1),
           ),
           destinations: [
             NavigationDestination(
-              icon: GeelyIcons.bike(size: 22, color: const Color(0xFF64748B)),
-              selectedIcon: GeelyIcons.bike(size: 22, color: const Color(0xFF2563EB)),
+              icon: GeelyIcons.bike(size: 22, color: AppColors.textDim),
+              selectedIcon: GeelyIcons.bike(size: 22, color: AppColors.primary),
               label: 'Xe',
             ),
             NavigationDestination(
-              icon: GeelyIcons.charging(size: 22, color: const Color(0xFF64748B)),
-              selectedIcon: GeelyIcons.charging(size: 22, color: const Color(0xFF2563EB)),
+              icon: GeelyIcons.charging(size: 22, color: AppColors.textDim),
+              selectedIcon: GeelyIcons.charging(size: 22, color: AppColors.primary),
               label: 'Năng Lượng',
             ),
             NavigationDestination(
-              icon: GeelyIcons.profile(size: 22, color: const Color(0xFF64748B)),
-              selectedIcon: GeelyIcons.profile(size: 22, color: const Color(0xFF2563EB)),
+              icon: GeelyIcons.profile(size: 22, color: AppColors.textDim),
+              selectedIcon: GeelyIcons.profile(size: 22, color: AppColors.primary),
               label: 'Chủ Xe',
             ),
           ],

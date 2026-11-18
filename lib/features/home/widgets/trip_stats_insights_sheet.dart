@@ -5,7 +5,9 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../../core/ble/ble_controller.dart' show TripRecord;
 import '../../../core/services/trip_analytics_service.dart';
+import '../../../core/utils/app_formatters.dart';
 import '../../../ui/app_theme.dart';
+import '../../../ui/widgets.dart';
 
 /// Bottom sheet thống kê hành trình 7 ngày / 30 ngày theo phong cách Kinetic Stitch EV.
 class TripStatsInsightsSheet extends StatefulWidget {
@@ -32,35 +34,6 @@ class TripStatsInsightsSheet extends StatefulWidget {
 class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
   int _selectedDays = 7;
   int? _selectedBucketIndex;
-
-  String _formatDuration(int totalSec) {
-    if (totalSec <= 0) return '0 phút';
-    final hours = totalSec ~/ 3600;
-    final mins = (totalSec % 3600) ~/ 60;
-    if (hours > 0) {
-      return mins > 0 ? '${hours}g ${mins}p' : '${hours}g';
-    }
-    if (mins > 0) return '$mins phút';
-    return '$totalSec giây';
-  }
-
-  String _formatVnd(double amount) {
-    final rounded = amount.round();
-    if (rounded >= 1000000) {
-      final millions = rounded / 1000000.0;
-      return '${millions.toStringAsFixed(2)} tr đ';
-    }
-    final s = rounded.toString();
-    final buf = StringBuffer();
-    for (int i = 0; i < s.length; i++) {
-      final posFromEnd = s.length - i;
-      if (i > 0 && posFromEnd % 3 == 0) {
-        buf.write('.');
-      }
-      buf.write(s[i]);
-    }
-    return '${buf.toString()} đ';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -89,14 +62,9 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            margin: const EdgeInsets.only(top: 10, bottom: 6),
+          const SheetDragHandle(
             width: 44,
-            height: 4,
-            decoration: BoxDecoration(
-              color: AppColors.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(2),
-            ),
+            margin: EdgeInsets.only(top: 10, bottom: 6),
           ),
 
           // Header
@@ -104,17 +72,13 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
             padding: const EdgeInsets.fromLTRB(18, 6, 12, 8),
             child: Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(
-                    Icons.bar_chart_rounded,
-                    color: AppColors.primary,
-                    size: 20,
-                  ),
+                const TemplateBadgeIcon(
+                  icon: Icons.bar_chart_rounded,
+                  color: AppColors.primary,
+                  size: 36,
+                  iconSize: 20,
+                  borderRadius: 10,
+                  bordered: false,
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -212,7 +176,9 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
                           icon: Icons.timer_outlined,
                           iconColor: AppColors.amber,
                           label: 'Thời gian chạy',
-                          value: _formatDuration(summary.totalMovingDurationSec),
+                          value: AppFormatters.formatDurationReadable(
+                            summary.totalMovingDurationSec,
+                          ),
                           subValue: 'TB ${summary.avgSpeedKmh.toStringAsFixed(0)} km/h',
                         ),
                       ),
@@ -222,7 +188,9 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
                           icon: Icons.local_gas_station_outlined,
                           iconColor: AppColors.tertiary,
                           label: 'Tiết kiệm xăng',
-                          value: _formatVnd(summary.estimatedFuelSavedVnd),
+                          value: AppFormatters.formatVndCompact(
+                            summary.estimatedFuelSavedVnd,
+                          ),
                           subValue: 'Giảm ${summary.co2SavedKg.toStringAsFixed(2)} kg CO₂',
                         ),
                       ),
@@ -251,7 +219,7 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'CO₂ giảm thải: ${summary.co2SavedKg.toStringAsFixed(2)} kg · Tiết kiệm xăng ước tính ${_formatVnd(summary.estimatedFuelSavedVnd)}',
+                            'CO₂ giảm thải: ${summary.co2SavedKg.toStringAsFixed(2)} kg · Tiết kiệm xăng ước tính ${AppFormatters.formatVndCompact(summary.estimatedFuelSavedVnd)}',
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 11.5,
                               fontWeight: FontWeight.w600,
@@ -403,13 +371,13 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
         children: [
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: iconColor.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(icon, size: 15, color: iconColor),
+              TemplateBadgeIcon(
+                icon: icon,
+                color: iconColor,
+                size: 27,
+                iconSize: 15,
+                borderRadius: 8,
+                bordered: false,
               ),
               const SizedBox(width: 6),
               Expanded(

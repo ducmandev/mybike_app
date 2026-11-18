@@ -1058,5 +1058,202 @@ void main() {
       expect(container.read(bleProvider).rssi, isNull);
       expect(container.read(bleProvider).filteredRssi, isNull);
     });
+
+    test('Time-gap > 4s in _ingestRssiSample resets stale far RSSI immediately and unlocks walk-up', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final tele = BikeLogMsg()
+        ..state = BikeState.lock
+        ..parking = true
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: false,
+        sessionKey: Uint8List(16),
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      int unlockCount = 0;
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        if (uuid == Gatt.powerProtectedChar && data.first == 0x30) {
+          unlockCount++;
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+
+      final t0 = DateTime(2026, 1, 1, 10, 0, 0);
+      controller.ingestRssiForTest(-92, now: t0);
+      expect(controller.smoothedRssiForTest, -92.0);
+
+      // Giả lập OS throttle / mất sóng 6 giây (> 4s), user đã đứng sát xe (-60 dBm)
+      controller.ingestRssiForTest(-60, now: t0.add(const Duration(seconds: 6)));
+      expect(controller.smoothedRssiForTest, -60.0);
+      expect(container.read(bleProvider).filteredRssi, -60);
+
+      await waitUntil(() => unlockCount == 1 && !container.read(bleProvider).isLocked);
+      expect(unlockCount, 1);
+      expect(container.read(bleProvider).isLocked, isFalse);
+    });
+
+    test('Approach fast-track converges -92 -> -82 -> -74 -> -66 -> -60 quickly while rejecting single spike', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final tele = BikeLogMsg()
+        ..state = BikeState.lock
+        ..parking = true
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: false,
+        sessionKey: Uint8List(16),
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      int unlockCount = 0;
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        if (uuid == Gatt.powerProtectedChar && data.first == 0x30) {
+          unlockCount++;
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+
+      final t0 = DateTime(2026, 1, 1, 10, 0, 0);
+      controller.ingestRssiForTest(-92, now: t0);
+      controller.ingestRssiForTest(-82, now: t0.add(const Duration(seconds: 1)));
+      controller.ingestRssiForTest(-74, now: t0.add(const Duration(seconds: 2)));
+      // Sau 2 mẫu đi bộ tăng mạnh liên tiếp, bộ lọc không bị kéo tụt dưới -75 dBm
+      expect(controller.smoothedRssiForTest!, greaterThanOrEqualTo(-75.0));
+
+      controller.ingestRssiForTest(-66, now: t0.add(const Duration(seconds: 3)));
+      expect(controller.smoothedRssiForTest!, greaterThan(-70.0));
+
+      controller.ingestRssiForTest(-60, now: t0.add(const Duration(seconds: 4)));
+      expect(controller.smoothedRssiForTest, -60.0);
+      await waitUntil(() => unlockCount == 1 && !container.read(bleProvider).isLocked);
+      expect(unlockCount, 1);
+
+      // Kiểm chứng nhiễu 1 nhịp đơn lẻ (-90 -> -72 -> -90) không snap vĩnh viễn lên trên
+      final spikeController = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        lastTelemetry: tele,
+      ));
+      final spikeContainer = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => spikeController)],
+      );
+      addTearDown(spikeContainer.dispose);
+      spikeContainer.read(bleProvider);
+
+      spikeController.ingestRssiForTest(-90, now: t0);
+      spikeController.ingestRssiForTest(-72, now: t0.add(const Duration(seconds: 1)));
+      expect(spikeController.smoothedRssiForTest!, lessThan(-80.0));
+      spikeController.ingestRssiForTest(-90, now: t0.add(const Duration(seconds: 2)));
+      expect(spikeController.smoothedRssiForTest!, lessThan(-83.0));
+    });
+
+    test('BleController.estimateDistanceMetersFromRssi calibrates iOS vs Android', () {
+      final iosClose = BleController.estimateDistanceMetersFromRssi(-62, isIos: true);
+      final androidClose = BleController.estimateDistanceMetersFromRssi(-62, isIos: false);
+      expect(iosClose, lessThanOrEqualTo(1.5));
+      expect(iosClose, lessThan(androidClose));
+
+      // Kiểm tra clamp [0.5, 25.0]
+      expect(BleController.estimateDistanceMetersFromRssi(-35, isIos: true), 0.5);
+      expect(BleController.estimateDistanceMetersFromRssi(-110, isIos: false), 25.0);
+    });
+
+    test('setAutoLockDistance uses platform-specific thresholds ([-72, -80, -88] on iOS)', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final iosController = TestBleControllerHarness(const BleState(phase: BlePhase.idle));
+      final iosContainer = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => iosController)],
+      );
+      addTearDown(iosContainer.dispose);
+      iosContainer.read(bleProvider);
+
+      await iosController.setAutoLockDistance(0);
+      expect(iosContainer.read(bleProvider).autoLockRssiThreshold, -72.0);
+      await iosController.setAutoLockDistance(1);
+      expect(iosContainer.read(bleProvider).autoLockRssiThreshold, -80.0);
+      await iosController.setAutoLockDistance(2);
+      expect(iosContainer.read(bleProvider).autoLockRssiThreshold, -88.0);
+
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      await iosController.setAutoLockDistance(0);
+      expect(iosContainer.read(bleProvider).autoLockRssiThreshold, -75.0);
+      await iosController.setAutoLockDistance(1);
+      expect(iosContainer.read(bleProvider).autoLockRssiThreshold, -83.0);
+      await iosController.setAutoLockDistance(2);
+      expect(iosContainer.read(bleProvider).autoLockRssiThreshold, -90.0);
+    });
+
+    test('Telemetry arriving after an early close RSSI triggers walk-up, and setRadarScreenActive toggles safely', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      // Chưa có telemetry lúc mới kết nối
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: true,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: false,
+        sessionKey: Uint8List(16),
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      int unlockCount = 0;
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        if (uuid == Gatt.powerProtectedChar && data.first == 0x30) {
+          unlockCount++;
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+
+      // setRadarScreenActive toggle an toàn khi chưa có _dashChar
+      expect(controller.radarScreenActiveForTest, isFalse);
+      controller.setRadarScreenActive(true);
+      expect(controller.radarScreenActiveForTest, isTrue);
+      controller.setRadarScreenActive(false);
+      expect(controller.radarScreenActiveForTest, isFalse);
+
+      // RSSI gần tới trước khi telemetry hợp lệ tới
+      controller.ingestRssiForTest(-58, now: DateTime.now());
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(unlockCount, 0);
+
+      // Telemetry BikeState.lock hợp lệ tới sau -> tự kích hoạt walk-up ngay lập tức
+      final raw = Uint8List(41);
+      final bd = ByteData.sublistView(raw);
+      bd.setFloat32(0, 120.5, Endian.little); // odo
+      bd.setFloat32(4, 0.0, Endian.little); // speed
+      raw[14] = 1; // parking
+      bd.setFloat32(15, 72.0, Endian.little); // voltage
+      raw[19] = 85; // percent
+      raw[32] = BikeState.lock.index; // lock state
+
+      controller.handleDashboardPayloadForTest(raw);
+      await waitUntil(() => unlockCount == 1 && !container.read(bleProvider).isLocked);
+      expect(unlockCount, 1);
+      expect(container.read(bleProvider).isLocked, isFalse);
+    });
   });
 }

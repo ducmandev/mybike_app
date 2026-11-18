@@ -11,31 +11,45 @@ import '../models/trip_gps_point.dart';
 /// Các định dạng tệp hỗ trợ khi xuất dữ liệu hành trình.
 enum TripExportFormat { gpx, csv, kml }
 
-/// Dịch vụ xuất và chia sẻ hành trình (đơn lẻ hoặc đã ghép đa chặng) sang GPX, CSV, KML.
-class TripExportService {
-  TripExportService._();
-
-  static final TripExportService instance = TripExportService._();
-
-  /// Tạo [MergedTripSession] từ một chuyến đi đơn lẻ để dùng chung luồng xuất/chia sẻ.
-  MergedTripSession sessionFromSingleTrip(
-    TripRecord trip,
-    List<TripGpsPoint> route, {
-    int? tripNumber,
-  }) {
-    final effectiveRoute = route.isNotEmpty ? route : trip.route;
-    return MergedTripSession.fromTrips(
-      trips: [trip],
-      routesByTripId: {trip.id: effectiveRoute},
-      mode: TripMergeMode.single,
-      customTitle: tripNumber != null ? 'Hành trình #$tripNumber' : null,
-    );
+/// Tiện ích escape ký tự đặc biệt XML dùng chung cho GPX và KML.
+abstract final class XmlEscape {
+  static String escape(String input) {
+    return input
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
   }
+}
 
-  /// Tạo nội dung GPX 1.1 hợp lệ, tách riêng từng `<trkseg>` cho mỗi chặng có điểm GPS.
-  String buildGpx(MergedTripSession session) {
+/// Giao diện chiến lược (Strategy) chuyển đổi [MergedTripSession] sang từng định dạng tệp xuất.
+abstract class TripFormatSerializer {
+  const TripFormatSerializer();
+
+  TripExportFormat get format;
+  String get extension;
+  String get mimeType;
+  String serialize(MergedTripSession session);
+}
+
+/// Bộ tuần tự hóa GPX 1.1 cho [MergedTripSession].
+class GpxTripSerializer extends TripFormatSerializer {
+  const GpxTripSerializer();
+
+  @override
+  TripExportFormat get format => TripExportFormat.gpx;
+
+  @override
+  String get extension => 'gpx';
+
+  @override
+  String get mimeType => 'application/gpx+xml';
+
+  @override
+  String serialize(MergedTripSession session) {
     final buf = StringBuffer();
-    final escapedTitle = _escapeXml(session.title);
+    final escapedTitle = XmlEscape.escape(session.title);
     final metadataTime = session.startTime.toUtc().toIso8601String();
 
     buf.writeln('<?xml version="1.0" encoding="UTF-8"?>');
@@ -79,9 +93,23 @@ class TripExportService {
     buf.write('</gpx>');
     return buf.toString();
   }
+}
 
-  /// Tạo nội dung CSV theo thứ tự thời gian của toàn bộ điểm GPS qua các chặng.
-  String buildCsv(MergedTripSession session) {
+/// Bộ tuần tự hóa CSV theo thứ tự thời gian cho [MergedTripSession].
+class CsvTripSerializer extends TripFormatSerializer {
+  const CsvTripSerializer();
+
+  @override
+  TripExportFormat get format => TripExportFormat.csv;
+
+  @override
+  String get extension => 'csv';
+
+  @override
+  String get mimeType => 'text/csv';
+
+  @override
+  String serialize(MergedTripSession session) {
     final lines = <String>[
       'timestamp_iso,elapsed_sec,segment,lat,lng,speed_kmh,heading,altitude,cumulative_km',
     ];
@@ -125,12 +153,26 @@ class TripExportService {
 
     return lines.join('\n');
   }
+}
 
-  /// Tạo nội dung KML 2.2 gồm từng chặng `<LineString>`, điểm đầu/cuối và điểm dừng `P1..Pn`.
-  String buildKml(MergedTripSession session) {
+/// Bộ tuần tự hóa KML 2.2 cho [MergedTripSession].
+class KmlTripSerializer extends TripFormatSerializer {
+  const KmlTripSerializer();
+
+  @override
+  TripExportFormat get format => TripExportFormat.kml;
+
+  @override
+  String get extension => 'kml';
+
+  @override
+  String get mimeType => 'application/vnd.google-earth.kml+xml';
+
+  @override
+  String serialize(MergedTripSession session) {
     final buf = StringBuffer();
-    final escapedTitle = _escapeXml(session.title);
-    final summaryDesc = _escapeXml(
+    final escapedTitle = XmlEscape.escape(session.title);
+    final summaryDesc = XmlEscape.escape(
       '${session.segmentCount} chặng · '
       '${session.totalDistanceKm.toStringAsFixed(2)} km · '
       'CO2 tiết kiệm ${session.totalCo2SavedKg.toStringAsFixed(2)} kg',
@@ -172,8 +214,8 @@ class TripExportService {
 
     for (final segment in session.segments) {
       if (segment.points.isEmpty) continue;
-      final segName = _escapeXml('Chặng ${segment.displayOrder}');
-      final segDesc = _escapeXml(
+      final segName = XmlEscape.escape('Chặng ${segment.displayOrder}');
+      final segDesc = XmlEscape.escape(
         '${segment.trip.distanceKm.toStringAsFixed(2)} km · '
         'Tốc độ tối đa ${segment.trip.maxSpeedKmh.toStringAsFixed(1)} km/h',
       );
@@ -197,7 +239,7 @@ class TripExportService {
       buf.writeln('    <Placemark>');
       buf.writeln('      <name>Điểm xuất phát</name>');
       buf.writeln(
-        '      <description>${_escapeXml(first.timestamp.toUtc().toIso8601String())}</description>',
+        '      <description>${XmlEscape.escape(first.timestamp.toUtc().toIso8601String())}</description>',
       );
       buf.writeln('      <styleUrl>#startPinStyle</styleUrl>');
       buf.writeln('      <Point>');
@@ -208,7 +250,7 @@ class TripExportService {
       buf.writeln('    <Placemark>');
       buf.writeln('      <name>Điểm kết thúc</name>');
       buf.writeln(
-        '      <description>${_escapeXml(last.timestamp.toUtc().toIso8601String())}</description>',
+        '      <description>${XmlEscape.escape(last.timestamp.toUtc().toIso8601String())}</description>',
       );
       buf.writeln('      <styleUrl>#endPinStyle</styleUrl>');
       buf.writeln('      <Point>');
@@ -218,8 +260,8 @@ class TripExportService {
     }
 
     for (final stop in session.stopovers) {
-      final stopName = _escapeXml(stop.label);
-      final stopDesc = _escapeXml(
+      final stopName = XmlEscape.escape(stop.label);
+      final stopDesc = XmlEscape.escape(
         'Điểm dừng ${stop.label} · ${stop.formattedDuration}',
       );
       buf.writeln('    <Placemark>');
@@ -237,29 +279,65 @@ class TripExportService {
     return buf.toString();
   }
 
-  /// Tạo chuỗi nội dung tương ứng với [format].
-  String buildContent(MergedTripSession session, TripExportFormat format) {
-    switch (format) {
-      case TripExportFormat.gpx:
-        return buildGpx(session);
-      case TripExportFormat.csv:
-        return buildCsv(session);
-      case TripExportFormat.kml:
-        return buildKml(session);
+  static String _kmlCoord(TripGpsPoint pt) {
+    final lng = pt.lng.toStringAsFixed(6);
+    final lat = pt.lat.toStringAsFixed(6);
+    if (pt.altitude != null) {
+      return '$lng,$lat,${pt.altitude!.toStringAsFixed(1)}';
     }
+    return '$lng,$lat';
+  }
+}
+
+/// Dịch vụ xuất và chia sẻ hành trình (đơn lẻ hoặc đã ghép đa chặng) sang GPX, CSV, KML.
+class TripExportService {
+  TripExportService._();
+
+  static final TripExportService instance = TripExportService._();
+
+  static final Map<TripExportFormat, TripFormatSerializer> _serializers = {
+    TripExportFormat.gpx: const GpxTripSerializer(),
+    TripExportFormat.csv: const CsvTripSerializer(),
+    TripExportFormat.kml: const KmlTripSerializer(),
+  };
+
+  TripFormatSerializer _serializerFor(TripExportFormat format) =>
+      _serializers[format]!;
+
+  /// Tạo [MergedTripSession] từ một chuyến đi đơn lẻ để dùng chung luồng xuất/chia sẻ.
+  MergedTripSession sessionFromSingleTrip(
+    TripRecord trip,
+    List<TripGpsPoint> route, {
+    int? tripNumber,
+  }) {
+    final effectiveRoute = route.isNotEmpty ? route : trip.route;
+    return MergedTripSession.fromTrips(
+      trips: [trip],
+      routesByTripId: {trip.id: effectiveRoute},
+      mode: TripMergeMode.single,
+      customTitle: tripNumber != null ? 'Hành trình #$tripNumber' : null,
+    );
   }
 
+  /// Tạo nội dung GPX 1.1 hợp lệ, tách riêng từng `<trkseg>` cho mỗi chặng có điểm GPS.
+  String buildGpx(MergedTripSession session) =>
+      _serializerFor(TripExportFormat.gpx).serialize(session);
+
+  /// Tạo nội dung CSV theo thứ tự thời gian của toàn bộ điểm GPS qua các chặng.
+  String buildCsv(MergedTripSession session) =>
+      _serializerFor(TripExportFormat.csv).serialize(session);
+
+  /// Tạo nội dung KML 2.2 gồm từng chặng `<LineString>`, điểm đầu/cuối và điểm dừng `P1..Pn`.
+  String buildKml(MergedTripSession session) =>
+      _serializerFor(TripExportFormat.kml).serialize(session);
+
+  /// Tạo chuỗi nội dung tương ứng với [format].
+  String buildContent(MergedTripSession session, TripExportFormat format) =>
+      _serializerFor(format).serialize(session);
+
   /// Phần mở rộng tệp chuẩn cho từng [TripExportFormat].
-  String fileExtension(TripExportFormat format) {
-    switch (format) {
-      case TripExportFormat.gpx:
-        return 'gpx';
-      case TripExportFormat.csv:
-        return 'csv';
-      case TripExportFormat.kml:
-        return 'kml';
-    }
-  }
+  String fileExtension(TripExportFormat format) =>
+      _serializerFor(format).extension;
 
   /// Ghi nội dung xuất hành trình ra tệp tạm trong thư mục cache của hệ thống.
   Future<File> writeTempExportFile(
@@ -284,42 +362,13 @@ class TripExportService {
     final file = await writeTempExportFile(session, format);
     await SharePlus.instance.share(
       ShareParams(
-        files: [XFile(file.path, mimeType: _mimeType(format))],
+        files: [XFile(file.path, mimeType: _serializerFor(format).mimeType)],
         subject: session.title,
         text:
             'Hành trình Dat Bike: ${session.title} '
             '(${session.totalDistanceKm.toStringAsFixed(1)} km)',
       ),
     );
-  }
-
-  String _kmlCoord(TripGpsPoint pt) {
-    final lng = pt.lng.toStringAsFixed(6);
-    final lat = pt.lat.toStringAsFixed(6);
-    if (pt.altitude != null) {
-      return '$lng,$lat,${pt.altitude!.toStringAsFixed(1)}';
-    }
-    return '$lng,$lat';
-  }
-
-  String _mimeType(TripExportFormat format) {
-    switch (format) {
-      case TripExportFormat.gpx:
-        return 'application/gpx+xml';
-      case TripExportFormat.csv:
-        return 'text/csv';
-      case TripExportFormat.kml:
-        return 'application/vnd.google-earth.kml+xml';
-    }
-  }
-
-  static String _escapeXml(String input) {
-    return input
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&apos;');
   }
 
   static String _sanitizeFileName(String raw) {

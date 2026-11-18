@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../../../core/utils/rssi_distance_helper.dart';
 import '../../../ui/app_theme.dart';
 
 /// Đồng hồ định vị la bàn quang học & đo khoảng cách tiệm cận (Precision Radar Gauge)
@@ -85,8 +86,6 @@ class _PrecisionRadarGaugeState extends State<PrecisionRadarGauge>
     return '${d.toStringAsFixed(0).padLeft(3, '0')}° $dir';
   }
 
-  @override
-  @override
   @override
   Widget build(BuildContext context) {
     final (statusTitle, statusColor) = _getStatusInfo();
@@ -320,10 +319,11 @@ class _PrecisionRadarGaugeState extends State<PrecisionRadarGauge>
 
   int _calculateBars(int? rssi) {
     if (!widget.isBleConnected || rssi == null) return 1;
-    if (rssi >= -50) return 5;
-    if (rssi >= -65) return 4;
-    if (rssi >= -75) return 3;
-    if (rssi >= -85) return 2;
+    final normalized = RssiDistanceHelper.normalizeRssiForBars(rssi);
+    if (normalized >= -50) return 5;
+    if (normalized >= -65) return 4;
+    if (normalized >= -75) return 3;
+    if (normalized >= -85) return 2;
     return 1;
   }
 }

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,6 +12,7 @@ import '../scan/scan_screen.dart';
 import '../../core/ble/ble_controller.dart';
 import '../../core/services/map_tile_service.dart';
 import '../../core/services/trip_gps_tracker.dart';
+import '../../core/utils/rssi_distance_helper.dart';
 import '../../ui/app_theme.dart';
 import '../dashboard/widgets/optical_signal_bloom.dart';
 import 'widgets/precision_radar_gauge.dart';
@@ -28,6 +28,7 @@ class FindMyBikeScreen extends ConsumerStatefulWidget {
 
 class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   static const String _kHapticEnabledKey = 'find_bike_haptic_enabled_v1';
+  static const Color _kAlertOrange = Color(0xFFEA580C);
   bool _isHapticEnabled = true;
 
   SavedBike? _selectedSavedBike;
@@ -42,6 +43,8 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   bool _showSignalBloom = false;
   Timer? _bloomTimer;
 
+  late final BleController _bleController;
+  late final AppLifecycleListener _lifecycleListener;
   late final MapController _mapController;
   bool _hasInitialCentered = false;
 
@@ -71,6 +74,19 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   void initState() {
     super.initState();
     _mapController = MapController();
+    _bleController = ref.read(bleProvider.notifier);
+    _lifecycleListener = AppLifecycleListener(
+      onResume: () {
+        if (!mounted) return;
+        try {
+          unawaited(_bleController.onAppResumed());
+        } catch (_) {}
+      },
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _bleController.setRadarScreenActive(true);
+    });
+    _updateCalculatedMetrics();
     _loadHapticSetting();
     _loadInitialParkingLocation();
     _startPositionListening();
@@ -79,6 +95,10 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
 
   @override
   void dispose() {
+    _lifecycleListener.dispose();
+    try {
+      _bleController.setRadarScreenActive(false);
+    } catch (_) {}
     _positionSub?.cancel();
     _hapticTimer?.cancel();
     _bloomTimer?.cancel();
@@ -230,16 +250,16 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
     } catch (_) {}
   }
 
-  void _updateCalculatedMetrics() {
-    final ble = ref.read(bleProvider);
+  double _computeDistanceMeters(BleState ble) {
+    final activeRssi = ble.filteredRssi ?? ble.rssi;
+    if (ble.phase == BlePhase.connected &&
+        activeRssi != null &&
+        activeRssi < 0) {
+      // 1. Nếu đang kết nối BLE: Quy đổi từ RSSI đã lọc sang khoảng cách mét
+      return RssiDistanceHelper.estimateDistanceMeters(activeRssi);
+    }
     final parked = _parkedLocation;
-
-    if (ble.phase == BlePhase.connected && ble.rssi != null && ble.rssi! < 0) {
-      // 1. Nếu đang kết nối BLE: Quy đổi từ RSSI sang khoảng cách mét
-      // TxPower ~ -59 dBm, hệ số suy hao n ~ 2.4
-      final rawDist = math.pow(10, (-59 - ble.rssi!) / (10 * 2.4)).toDouble();
-      _estimatedDistance = rawDist.clamp(0.5, 25.0);
-    } else if (_userPosition != null && parked != null) {
+    if (_userPosition != null && parked != null) {
       // 2. Nếu ở xa: Tính khoảng cách GPS thực tế
       final gpsDist = Geolocator.distanceBetween(
         _userPosition!.latitude,
@@ -247,8 +267,16 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
         parked.latitude,
         parked.longitude,
       );
-      _estimatedDistance = gpsDist.clamp(0.5, 9999.0);
+      return gpsDist.clamp(0.5, 9999.0);
     }
+    return _estimatedDistance;
+  }
+
+  void _updateCalculatedMetrics() {
+    final ble = ref.read(bleProvider);
+    final parked = _parkedLocation;
+
+    _estimatedDistance = _computeDistanceMeters(ble);
 
     // 3. Tính góc phương vị la bàn dẫn đường (Relative Heading)
     if (_userPosition != null && parked != null) {
@@ -528,7 +556,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
             ),
             child: const Icon(
               Icons.two_wheeler_rounded,
-              color: Color(0xFFEA580C),
+              color: _kAlertOrange,
               size: 20,
             ),
           ),
@@ -829,8 +857,16 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(
+      bleProvider.select((s) => (s.phase, s.filteredRssi, s.rssi)),
+      (_, next) {
+        if (!mounted) return;
+        _updateCalculatedMetrics();
+      },
+    );
     final ble = ref.watch(bleProvider);
     final isConnected = ble.phase == BlePhase.connected;
+    final liveDistance = _computeDistanceMeters(ble);
 
     return Scaffold(
       backgroundColor: AppColors.surface,
@@ -879,7 +915,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                   style: GoogleFonts.spaceGrotesk(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
-                    color: _isNoBike(ble) ? const Color(0xFFEA580C) : AppColors.textDim,
+                    color: _isNoBike(ble) ? _kAlertOrange : AppColors.textDim,
                   ),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -952,7 +988,12 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                   // 70% BÊN TRÁI: PRECISION RADAR GAUGE + OPTICAL BLOOM
                   Expanded(
                     flex: 7,
-                    child: _buildRadarCard(ble, isConnected, isLandscape: true),
+                    child: _buildRadarCard(
+                      ble,
+                      isConnected,
+                      liveDistance,
+                      isLandscape: true,
+                    ),
                   ),
                   const SizedBox(width: 16),
 
@@ -961,7 +1002,12 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                     flex: 3,
                     child: Column(
                       children: [
-                        Expanded(child: _buildMiniMapCard(isLandscape: true)),
+                        Expanded(
+                          child: _buildMiniMapCard(
+                            distanceMeters: liveDistance,
+                            isLandscape: true,
+                          ),
+                        ),
                         const SizedBox(height: 12),
                         _buildControlButtonsCard(isLandscape: true),
                       ],
@@ -978,9 +1024,9 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
             child: Column(
               children: [
                 if (_isNoBike(ble)) _buildNoBikeBanner(context, ble),
-                _buildRadarCard(ble, isConnected),
+                _buildRadarCard(ble, isConnected, liveDistance),
                 const SizedBox(height: 16),
-                _buildMiniMapCard(height: 240),
+                _buildMiniMapCard(distanceMeters: liveDistance, height: 240),
                 const SizedBox(height: 16),
                 _buildControlButtonsCard(),
                 const SizedBox(height: 20),
@@ -993,7 +1039,12 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   }
 
   /// Card 70% chứa Đồng hồ Precision Radar + Hiệu ứng vệt sáng xi-nhan cam đỏ
-  Widget _buildRadarCard(BleState ble, bool isConnected, {bool isLandscape = false}) {
+  Widget _buildRadarCard(
+    BleState ble,
+    bool isConnected,
+    double distanceMeters, {
+    bool isLandscape = false,
+  }) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1029,7 +1080,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                               shape: BoxShape.circle,
                               color: isConnected
                                   ? AppColors.tertiary
-                                  : (_isNoBike(ble) ? const Color(0xFFEA580C) : AppColors.primary),
+                                  : (_isNoBike(ble) ? _kAlertOrange : AppColors.primary),
                             ),
                           ),
                           const SizedBox(width: 6),
@@ -1040,7 +1091,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                                 fontSize: 12,
                                 fontWeight: FontWeight.w700,
                                 letterSpacing: 0.6,
-                                color: _isNoBike(ble) ? const Color(0xFFEA580C) : AppColors.textPrimary,
+                                color: _isNoBike(ble) ? _kAlertOrange : AppColors.textPrimary,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -1076,17 +1127,17 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                   ? Expanded(
                       child: Center(
                         child: PrecisionRadarGauge(
-                          distanceMeters: _estimatedDistance,
+                          distanceMeters: distanceMeters,
                           headingDegrees: _relativeHeading,
-                          rssi: ble.rssi,
+                          rssi: ble.filteredRssi ?? ble.rssi,
                           isBleConnected: isConnected,
                         ),
                       ),
                     )
                   : PrecisionRadarGauge(
-                      distanceMeters: _estimatedDistance,
+                      distanceMeters: distanceMeters,
                       headingDegrees: _relativeHeading,
-                      rssi: ble.rssi,
+                      rssi: ble.filteredRssi ?? ble.rssi,
                       isBleConnected: isConnected,
                     ),
               if (!isLandscape) const SizedBox(height: 12),
@@ -1147,7 +1198,11 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
   }
 
   /// Khối Bản đồ GPS dẫn đường từ xa
-  Widget _buildMiniMapCard({double? height, bool isLandscape = false}) {
+  Widget _buildMiniMapCard({
+    required double distanceMeters,
+    double? height,
+    bool isLandscape = false,
+  }) {
     final bikeLat = _parkedLocation?.latitude ?? 10.7769;
     final bikeLng = _parkedLocation?.longitude ?? 106.7009;
     final bikePoint = LatLng(bikeLat, bikeLng);
@@ -1185,7 +1240,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
               const SizedBox(width: 4),
               Text(
                 _parkedLocation != null
-                    ? '${_estimatedDistance.toStringAsFixed(0)}m đi bộ'
+                    ? '${distanceMeters.toStringAsFixed(0)}m đi bộ'
                     : 'Chưa lưu điểm đỗ',
                 style: GoogleFonts.spaceGrotesk(
                   fontSize: isLandscape ? 10 : 11,
@@ -1236,7 +1291,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                             child: Container(
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: const Color(0xFFEA580C),
+                                color: _kAlertOrange,
                                 border: Border.all(color: Colors.white, width: 2),
                                 boxShadow: const [
                                   BoxShadow(color: Color(0x33EA580C), blurRadius: 6),
@@ -1331,7 +1386,7 @@ class _FindMyBikeScreenState extends ConsumerState<FindMyBikeScreen> {
                 child: _buildActionButton(
                   icon: Icons.volume_up_rounded,
                   label: 'Kêu Còi (Tìm Xe)',
-                  color: const Color(0xFFEA580C),
+                  color: _kAlertOrange,
                   isFilled: true,
                   onTap: _triggerChirp,
                   isLandscape: isLandscape,

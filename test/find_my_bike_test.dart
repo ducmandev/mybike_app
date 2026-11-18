@@ -1,12 +1,28 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:mybike_app/core/models/parked_location.dart';
-import 'package:mybike_app/core/services/parking_storage_service.dart';
+import 'package:mybike_app/core/ble/ble_controller.dart';
 import 'package:mybike_app/features/parking/widgets/precision_radar_gauge.dart';
 import 'package:mybike_app/features/parking/find_my_bike_screen.dart';
+
+class _FakeRadarBleController extends BleController {
+  final BleState initialState;
+  _FakeRadarBleController(this.initialState);
+
+  @override
+  BleState build() => initialState;
+
+  void updateRssi({int? rssi, int? filteredRssi, BlePhase? phase}) {
+    state = state.copyWith(
+      phase: phase,
+      rssi: rssi,
+      filteredRssi: filteredRssi,
+    );
+  }
+}
 
 void main() {
   group('Smart Parking & Find My Bike Models & Service', () {
@@ -143,6 +159,67 @@ void main() {
       expect(find.text('110.0'), findsOneWidget);
       expect(find.text('DẪN ĐƯỜNG ĐI BỘ (GPS)'), findsOneWidget);
     });
+
+    testWidgets('Calibrates iOS signal bars (+5 dB) compared to Android at -68 dBm', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 320,
+                  height: 400,
+                  child: PrecisionRadarGauge(
+                    distanceMeters: 1.5,
+                    headingDegrees: 0.0,
+                    rssi: -68,
+                    isBleConnected: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        const immediateColor = Color(0xFFEA580C);
+        final iosFilledBars = tester.widgetList<Container>(find.byType(Container)).where((c) {
+          final dec = c.decoration;
+          return dec is BoxDecoration && dec.color == immediateColor && dec.shape != BoxShape.circle;
+        }).length;
+        expect(iosFilledBars, 4);
+
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        await tester.pumpWidget(
+          const MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: SizedBox(
+                  width: 320,
+                  height: 400,
+                  child: PrecisionRadarGauge(
+                    distanceMeters: 1.5,
+                    headingDegrees: 0.0,
+                    rssi: -68,
+                    isBleConnected: true,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        final androidFilledBars = tester.widgetList<Container>(find.byType(Container)).where((c) {
+          final dec = c.decoration;
+          return dec is BoxDecoration && dec.color == immediateColor && dec.shape != BoxShape.circle;
+        }).length;
+        expect(androidFilledBars, 3);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
   });
 
   group('FindMyBikeScreen Responsiveness & Layout', () {
@@ -248,6 +325,106 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('RUNG: TẮT'), findsOneWidget);
+    });
+
+    testWidgets('Dynamically updates gauge and minimap distance when BLE RSSI changes while open', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        SharedPreferences.setMockInitialValues({});
+        tester.view.physicalSize = const Size(360, 780);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+
+        await ParkingStorageService.instance.saveParkedLocation(
+          ParkedLocation(
+            latitude: 10.7769,
+            longitude: 106.7009,
+            timestamp: DateTime(2026, 11, 18, 10, 0),
+            bikeId: 'bike_radar_01',
+            bikeName: 'Dat Bike Quantum S1',
+          ),
+        );
+
+        final controller = _FakeRadarBleController(
+          const BleState(
+            phase: BlePhase.connected,
+            bikeName: 'Dat Bike Quantum S1',
+            activeBikeId: 'bike_radar_01',
+            rssi: -88,
+            filteredRssi: -88,
+          ),
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [bleProvider.overrideWith(() => controller)],
+            child: const MaterialApp(
+              home: FindMyBikeScreen(),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.text('16.2'), findsOneWidget);
+        expect(find.text('MÉT'), findsOneWidget);
+        expect(find.text('16m đi bộ'), findsOneWidget);
+        expect(find.text('RSSI: -88 dBm'), findsOneWidget);
+
+        // Update RSSI while screen stays open (without recreating widget)
+        controller.updateRssi(rssi: -56, filteredRssi: -56);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+
+        expect(find.text('75'), findsOneWidget);
+        expect(find.text('CM'), findsOneWidget);
+        expect(find.text('1m đi bộ'), findsOneWidget);
+        expect(find.text('XE Ở NGAY BÊN CẠNH BẠN!'), findsOneWidget);
+        expect(find.text('RSSI: -56 dBm'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('iOS with -62 dBm renders < 1.5m immediate vicinity status', (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        SharedPreferences.setMockInitialValues({});
+        tester.view.physicalSize = const Size(360, 780);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+
+        final controller = _FakeRadarBleController(
+          const BleState(
+            phase: BlePhase.connected,
+            bikeName: 'Dat Bike Quantum S1',
+            rssi: -62,
+            filteredRssi: -62,
+          ),
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [bleProvider.overrideWith(() => controller)],
+            child: const MaterialApp(
+              home: FindMyBikeScreen(),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.text('83'), findsOneWidget);
+        expect(find.text('CM'), findsOneWidget);
+        expect(find.text('XE Ở NGAY BÊN CẠNH BẠN!'), findsOneWidget);
+        expect(find.text('RSSI: -62 dBm'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
   });
 }

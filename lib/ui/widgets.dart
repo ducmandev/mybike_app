@@ -651,3 +651,303 @@ class SectionTitle extends StatelessWidget {
     );
   }
 }
+
+/// Thanh kéo chuẩn cho Modal Bottom Sheet của Kinetic Stitch EV.
+class SheetDragHandle extends StatelessWidget {
+  final double width;
+  final double height;
+  final Color? color;
+  final EdgeInsetsGeometry? margin;
+
+  const SheetDragHandle({
+    super.key,
+    this.width = 38,
+    this.height = 4,
+    this.color,
+    this.margin,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: width,
+        height: height,
+        margin: margin,
+        decoration: BoxDecoration(
+          color: color ?? AppColors.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(height / 2),
+        ),
+      ),
+    );
+  }
+}
+
+/// Huy hiệu icon bo góc nền nhạt chuẩn Kinetic Stitch EV.
+class TemplateBadgeIcon extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final double size;
+  final double? iconSize;
+  final double? borderRadius;
+  final bool bordered;
+
+  const TemplateBadgeIcon({
+    super.key,
+    required this.icon,
+    this.color = AppColors.primary,
+    this.size = 38,
+    this.iconSize,
+    this.borderRadius,
+    this.bordered = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final radius = borderRadius ?? (size * 0.28).clamp(8.0, 14.0);
+    final resolvedIconSize = iconSize ?? (size * 0.52).roundToDouble();
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(radius),
+        border: bordered
+            ? Border.all(color: color.withValues(alpha: 0.24), width: 1)
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, size: resolvedIconSize, color: color),
+    );
+  }
+}
+
+/// Hàng thao tác chuẩn bên trong Panel hoặc KineticBottomSheet.
+class PanelActionRow extends StatelessWidget {
+  final Widget? leading;
+  final IconData? icon;
+  final Color? iconColor;
+  final String title;
+  final String? subtitle;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+  final Color? titleColor;
+  final EdgeInsetsGeometry padding;
+  final double borderRadius;
+
+  const PanelActionRow({
+    super.key,
+    this.leading,
+    this.icon,
+    this.iconColor,
+    required this.title,
+    this.subtitle,
+    this.trailing,
+    this.onTap,
+    this.titleColor,
+    this.padding = const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+    this.borderRadius = 20,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedTitleColor = titleColor ?? AppColors.textPrimary;
+    final Widget? leadingWidget = leading ??
+        (icon != null
+            ? TemplateBadgeIcon(
+                icon: icon!,
+                color: iconColor ?? resolvedTitleColor,
+              )
+            : null);
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(borderRadius),
+        child: Padding(
+          padding: padding,
+          child: Row(
+            children: [
+              if (leadingWidget != null) ...[
+                leadingWidget,
+                const SizedBox(width: 14),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: AppTypography.bodyMd(color: resolvedTitleColor).copyWith(
+                        fontSize: 14.5,
+                        fontWeight: titleColor != null ? FontWeight.w600 : FontWeight.w500,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        style: AppTypography.bodySm(color: AppColors.textDim)
+                            .copyWith(fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              trailing ??
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 22,
+                    color: titleColor?.withValues(alpha: 0.6) ?? AppColors.textMuted,
+                  ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Đường phân cách mảnh chuẩn giữa các hàng trong Panel.
+class PanelDivider extends StatelessWidget {
+  final double indent;
+  final double endIndent;
+  final Color color;
+
+  const PanelDivider({
+    super.key,
+    this.indent = 56,
+    this.endIndent = 20,
+    this.color = AppColors.panelBorder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Divider(
+      color: color,
+      height: 1,
+      thickness: 1,
+      indent: indent,
+      endIndent: endIndent,
+    );
+  }
+}
+
+/// Container chuẩn cho Modal Bottom Sheet của Kinetic Stitch EV.
+class KineticBottomSheet extends StatelessWidget {
+  final Widget child;
+  final String? title;
+  final String? subtitle;
+  final Widget? headerTrailing;
+  final EdgeInsetsGeometry padding;
+  final double topRadius;
+  final double? maxHeightFactor;
+  final bool showDragHandle;
+
+  const KineticBottomSheet({
+    super.key,
+    required this.child,
+    this.title,
+    this.subtitle,
+    this.headerTrailing,
+    this.padding = const EdgeInsets.fromLTRB(20, 12, 20, 28),
+    this.topRadius = 24,
+    this.maxHeightFactor,
+    this.showDragHandle = true,
+  });
+
+  static Future<T?> show<T>({
+    required BuildContext context,
+    required WidgetBuilder builder,
+    bool isScrollControlled = true,
+    bool useSafeArea = true,
+  }) {
+    return showModalBottomSheet<T>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: isScrollControlled,
+      useSafeArea: useSafeArea,
+      builder: builder,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final content = Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(topRadius)),
+        boxShadow: AppColors.modalShadow,
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: padding,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (showDragHandle) ...[
+                const SheetDragHandle(),
+                const SizedBox(height: 16),
+              ],
+              if (title != null || headerTrailing != null) ...[
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (title != null)
+                            Text(
+                              title!,
+                              style: AppTypography.headlineSm(color: AppColors.textPrimary)
+                                  .copyWith(fontSize: 18, fontWeight: FontWeight.w700),
+                            ),
+                          if (subtitle != null) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              subtitle!,
+                              style: AppTypography.bodySm(color: AppColors.textDim)
+                                  .copyWith(fontSize: 12.5),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (headerTrailing != null) ...[
+                      const SizedBox(width: 12),
+                      headerTrailing!,
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 16),
+              ],
+              Flexible(child: child),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (maxHeightFactor != null) {
+      return ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: screenHeight * maxHeightFactor!.clamp(0.2, 1.0),
+        ),
+        child: content,
+      );
+    }
+    return content;
+  }
+}

@@ -1,27 +1,17 @@
-import 'dart:convert';
-
-import 'package:shared_preferences/shared_preferences.dart';
-
 import '../models/maintenance_item.dart';
+import 'json_prefs_store.dart';
 
 /// Dịch vụ lưu trữ lịch bảo dưỡng định kỳ theo từng xe trong SharedPreferences.
-class MaintenanceStorageService {
+class MaintenanceStorageService extends JsonPrefsStore<MaintenanceItem> {
   MaintenanceStorageService._();
   static final MaintenanceStorageService instance = MaintenanceStorageService._();
 
   static const String defaultBikeId = 'default_bike';
   static const String _keyPrefix = 'maintenance_items_v1_';
 
-  Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
-
   /// Chuẩn hóa bikeId để làm khóa SharedPreferences an toàn.
-  static String sanitizeBikeId(String bikeId) {
-    final trimmed = bikeId.trim();
-    if (trimmed.isEmpty) return defaultBikeId;
-    final sanitized = trimmed.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-    if (sanitized.replaceAll('_', '').isEmpty) return defaultBikeId;
-    return sanitized;
-  }
+  static String sanitizeBikeId(String bikeId) =>
+      JsonPrefsStore.sanitizeKeyPart(bikeId, fallback: defaultBikeId);
 
   /// Khóa lưu trữ SharedPreferences cho một xe cụ thể.
   static String storageKeyForBike(String bikeId) =>
@@ -72,11 +62,8 @@ class MaintenanceStorageService {
     ];
   }
 
-  Future<void> _saveItems(String bikeId, List<MaintenanceItem> items) async {
-    final prefs = await _prefs;
-    final encoded = jsonEncode(items.map((e) => e.toJson()).toList());
-    await prefs.setString(storageKeyForBike(bikeId), encoded);
-  }
+  Future<void> _saveItems(String bikeId, List<MaintenanceItem> items) =>
+      writeList(storageKeyForBike(bikeId), items, (e) => e.toJson());
 
   /// Tải danh sách hạng mục bảo dưỡng của xe.
   /// Nếu là lần đầu tải (chưa có dữ liệu), tự động khởi tạo 4 lịch mặc định Dat Bike EV.
@@ -86,18 +73,14 @@ class MaintenanceStorageService {
   }) async {
     final resolvedBikeId = sanitizeBikeId(bikeId);
     final key = storageKeyForBike(bikeId);
-    try {
-      final prefs = await _prefs;
-      final raw = prefs.getString(key);
-      if (raw != null) {
-        if (raw.trim().isEmpty) return <MaintenanceItem>[];
-        final decoded = jsonDecode(raw) as List<dynamic>;
-        return decoded
-            .map((e) => MaintenanceItem.fromJson(e as Map<String, dynamic>))
-            .where((item) => item.id.trim().isNotEmpty)
-            .toList();
-      }
-    } catch (_) {}
+    final existing = await readList(
+      key,
+      MaintenanceItem.fromJson,
+      where: (item) => item.id.trim().isNotEmpty,
+    );
+    if (existing != null) {
+      return existing;
+    }
 
     final seeded = _buildDefaultItems(resolvedBikeId, initialOdo);
     try {

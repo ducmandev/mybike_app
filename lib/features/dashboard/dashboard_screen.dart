@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/ble/ble_controller.dart';
 import '../../core/proto/bike_log.dart';
+import '../../core/utils/app_formatters.dart';
 import '../home/trip_route_screen.dart';
 import '../../ui/app_theme.dart';
 import '../../ui/gauge.dart';
@@ -328,14 +329,6 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     } finally {
       if (mounted) setState(() => _powerBusy = false);
     }
-  }
-
-  String _formatDuration(Duration d) {
-    final h = d.inHours;
-    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    if (h > 0) return '$h:$m:$s';
-    return '$m:$s';
   }
 
   List<String> _decodeErrors(int errorCode) {
@@ -938,7 +931,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
-                                    'TRIP A: ${trip.distanceKm.toStringAsFixed(1)} km (${_formatDuration(trip.duration)})',
+                                    'TRIP A: ${trip.distanceKm.toStringAsFixed(1)} km (${AppFormatters.formatDurationClock(trip.duration)})',
                                     style: GoogleFonts.spaceGrotesk(
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.w700,
@@ -1415,7 +1408,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          'TRIP A: ${trip.distanceKm.toStringAsFixed(1)} km (${_formatDuration(trip.duration)})',
+                          'TRIP A: ${trip.distanceKm.toStringAsFixed(1)} km (${AppFormatters.formatDurationClock(trip.duration)})',
                           style: GoogleFonts.spaceGrotesk(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
@@ -1794,7 +1787,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   const SizedBox(width: 6),
                   const SizedBox(width: 6),
                   Text(
-                    _formatDuration(trip.duration),
+                    AppFormatters.formatDurationClock(trip.duration),
                     style: GoogleFonts.spaceGrotesk(
                       fontWeight: FontWeight.w700,
                       fontSize: 15,

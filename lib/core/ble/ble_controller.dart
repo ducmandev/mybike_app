@@ -27,10 +27,12 @@ import '../services/trip_storage_service.dart';
 import '../services/vehicle_storage_service.dart';
 import '../services/parking_storage_service.dart';
 import '../session/bike_session_crypto.dart';
-import '../utils/kalman_filter.dart';
+import '../utils/rssi_distance_helper.dart';
+import 'ble_command_queue.dart';
 import 'ble_logger.dart';
 import 'ble_permissions.dart';
 import 'gatt.dart';
+import 'proximity_rssi_tracker.dart';
 import '../models/bike_model_profile.dart';
 export '../models/bike_model_profile.dart';
 
@@ -493,6 +495,9 @@ class BleController extends Notifier<BleState> {
   StreamSubscription? _notifySub;
   Timer? _reconnectTimer;
   Timer? _pollTimer;
+  bool _pollBusy = false;
+  bool _pendingForceRssiRead = false;
+  bool _radarScreenActive = false;
   BluetoothCharacteristic? _dashChar;
   BluetoothCharacteristic? _batteryChar;
   int _batteryPollCounter = 0;
@@ -516,15 +521,13 @@ class BleController extends Notifier<BleState> {
   bool _keepaliveBusy = false;
   bool _establishBusy = false; // mutex: 1 handshake/lúc — chống double-flow
   bool _restoreBusy = false; // mutex: 1 restore/lúc — chống khởi động song song
+  final BleCommandQueue _commandQueue = BleCommandQueue(
+    onBackgroundError: (tag, error) =>
+        BleLogger.instance.event('bg_read_err', {'tag': tag, 'error': '$error'}),
+  );
   bool _isCommandBusy = false; // mutex: chống gửi dồn dập nhiều lệnh tới BMS
-  int _pendingUserCommands = 0; // số lượng lệnh điều khiển của user đang chờ hoặc đang chạy
-  bool _lastCommandWasManual = false;
   bool get _hasPendingUserCommand =>
-      _pendingUserCommands > 0 ||
-      _isCommandBusy ||
-      (_lastUserCommandAt != null &&
-          DateTime.now().difference(_lastUserCommandAt!) <
-              Duration(milliseconds: _lastCommandWasManual ? 600 : 250));
+      _isCommandBusy || _commandQueue.hasPendingUserCommand;
   DateTime? _lastCommandCompletedAt; // mốc hoàn tất lệnh trước (cooldown bus CAN/BMS)
 
   /// KEEPALIVE TẮT MẶC ĐỊNH (2026-10-20): bản log 13h49 giữ được session
@@ -564,20 +567,15 @@ class BleController extends Notifier<BleState> {
   static const _kChargingProfile = 'fw_charging_profile';
   static const _kUserName = 'user_profile_name';
 
-  final _rssiKalman = KalmanFilter1D(processNoise: 0.05, measurementNoise: 3.0);
-  double? _smoothedRssi;
+  final _rssiTracker = ProximityRssiTracker();
   int _autoLockCounter = 0;
   int _theftCounter = 0;
   int _unlockNearCounter = 0;
-  int _nearRawStreak = 0;
-  int _farRawStreak = 0;
   int _nearMarginCounter = 0;
   bool _autoSecureBusy = false; // đang chạy chuỗi tắt→ARM (chống chạy chồng)
   bool _walkUpBusy = false; // đang chạy chuỗi walk-up unlock→turnOn
-  DateTime? _lastUserCommandAt; // chặn poll nền nhường băng thông cho lệnh vừa gửi
   DateTime? _lastManualCommandAt; // user-intent-first: ngừng automation 10s CHỈ sau thao tác thủ công của user
   DateTime? _walkUpRetryAfter; // cooldown thử lại nếu walk-up trước thất bại hoặc vừa auto-lock
-  DateTime? _lastRssiAt;
   int _antiForgetCounter = 0;
   bool _walkUpTriggered = false;
   bool _walkUpConsumed = false;
@@ -589,17 +587,15 @@ class BleController extends Notifier<BleState> {
   DateTime? _connectedAt;
   bool _hasBeenNearBike = false;
 
-  static bool get isIosPlatform => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+  static bool get isIosPlatform => RssiDistanceHelper.isIosPlatform();
 
   /// Ngưỡng RSSI rời xa mặc định theo nền tảng (iOS CoreBluetooth thường yếu hơn Android ~3-5 dB).
   static List<double> defaultAutoLockThresholds({bool? isIos}) =>
-      (isIos ?? isIosPlatform)
-          ? const [-72.0, -80.0, -88.0]
-          : const [-75.0, -83.0, -90.0];
+      RssiDistanceHelper.defaultAutoLockThresholds(isIos: isIos);
 
   /// Ngưỡng RSSI lại gần mặc định theo nền tảng (iOS để trong túi quần thường đo ~ -58..-65 dBm ngay cạnh xe).
   static double defaultWalkUpThreshold({bool? isIos}) =>
-      (isIos ?? isIosPlatform) ? -62.0 : -55.0;
+      RssiDistanceHelper.defaultWalkUpThreshold(isIos: isIos);
 
   double get effectiveWalkUpRssiThreshold =>
       state.walkUpRssiThreshold ?? defaultWalkUpThreshold();
@@ -609,12 +605,27 @@ class BleController extends Notifier<BleState> {
       defaultAutoLockThresholds()[state.autoLockDistance.clamp(0, 2)];
 
   /// Kiểm tra mẫu RSSI hợp lệ (loại bỏ sentinel `127`, `0`, giá trị dương hoặc cực nhiễu `< -115`).
-  static bool isValidRssi(int rssi) => rssi < 0 && rssi >= -115;
+  static bool isValidRssi(int rssi) => RssiDistanceHelper.isValidRssi(rssi);
+
+  /// Bật/tắt chế độ ưu tiên đọc RSSI mỗi chu kỳ khi màn hình Radar (Tìm xe) đang mở.
+  void setRadarScreenActive(bool active) {
+    _radarScreenActive = active;
+    if (active &&
+        state.phase == BlePhase.connected &&
+        state.isAuthorized &&
+        !_hasPendingUserCommand) {
+      unawaited(_pollDashboard(forceRssiRead: true));
+    }
+  }
+
+  /// Ước tính khoảng cách (mét) từ RSSI bằng mô hình Path-Loss (TxPower -59 dBm @ 1m, n=2.4).
+  /// Cộng bù +5 dB trên iOS để cân bằng mức đọc CoreBluetooth với Android.
+  static double estimateDistanceMetersFromRssi(int rssi, {bool? isIos}) =>
+      RssiDistanceHelper.estimateDistanceMeters(rssi, isIos: isIos);
 
   void _markCommandTimestamp({required bool isAutomation}) {
     final now = DateTime.now();
-    _lastUserCommandAt = now;
-    _lastCommandWasManual = !isAutomation;
+    _commandQueue.markCommandTimestamp(isAutomation: isAutomation, now: now);
     if (!isAutomation) {
       _lastManualCommandAt = now;
     }
@@ -958,45 +969,32 @@ class BleController extends Notifier<BleState> {
   // GATT Command Queue & Expected Length Table (Phase 1 normalization)
   // ------------------------------------------------------------------
 
-  Future<void>? _gattChain;
-
   /// Hàng đợi tuần tự các thao tác GATT read/write chống đụng độ lỗi 129 / 133 trên Android & CoreBluetooth iOS.
   /// Bổ sung explicit timeout (mặc định 3500ms) để không bao giờ bị nghẽn chuỗi Future vô hạn khi thiết bị ngắt kết nối/bận.
-  Future<T> _enqueueGatt<T>(Future<T> Function() action, {Duration timeout = const Duration(milliseconds: 3500)}) {
-    final prev = _gattChain ?? Future.value();
-    final completer = Completer<T>();
-    _gattChain = prev.catchError((_) {}).then((_) async {
-      try {
-        final res = await action().timeout(
-          timeout,
-          onTimeout: () => throw TimeoutException('GATT operation timed out after ${timeout.inMilliseconds}ms'),
-        );
-        completer.complete(res);
-      } catch (e, st) {
-        completer.completeError(e, st);
-      }
-    });
-    return completer.future;
-  }
+  Future<T> _enqueueGatt<T>(
+    Future<T> Function() action, {
+    Duration timeout = const Duration(milliseconds: 3500),
+  }) =>
+      _commandQueue.enqueueGatt(action, timeout: timeout);
 
   /// Hàng đợi ưu tiên tuyệt đối cho lệnh điều khiển của người dùng (Bật/Tắt xe, Khóa/Mở xe, Tìm xe, Ghi cài đặt).
-  /// Ngay khi gọi, tăng _pendingUserCommands để mọi tác vụ nền (polling, RSSI, telemetry, fw settings)
-  /// phát hiện và tự động nhường quyền ngay lập tức trong 0ms.
+  /// Ngay khi gọi, tăng pending counter trong [_commandQueue] để mọi tác vụ nền
+  /// (polling, RSSI, telemetry, fw settings) phát hiện và tự động nhường quyền ngay lập tức trong 0ms.
   Future<T> _enqueueUserCommand<T>(
     Future<T> Function() action, {
     String tag = 'UserCmd',
     Duration timeout = const Duration(milliseconds: 2500),
     bool isAutomation = false,
-  }) async {
-    _pendingUserCommands++;
-    _markCommandTimestamp(isAutomation: isAutomation);
-    try {
-      return await _enqueueGatt(action, timeout: timeout);
-    } finally {
-      if (_pendingUserCommands > 0) {
-        _pendingUserCommands--;
-      }
+  }) {
+    if (!isAutomation) {
+      _lastManualCommandAt = DateTime.now();
     }
+    return _commandQueue.enqueueUserCommand(
+      action,
+      tag: tag,
+      timeout: timeout,
+      isAutomation: isAutomation,
+    );
   }
 
   /// Hàng đợi các tác vụ đọc nền định kỳ (Dashboard telemetry, RSSI, Battery details, FW settings).
@@ -1005,22 +1003,13 @@ class BleController extends Notifier<BleState> {
     Future<T> Function() action, {
     String tag = 'BgRead',
     Duration timeout = const Duration(milliseconds: 1500),
-  }) async {
-    if (_hasPendingUserCommand || state.phase != BlePhase.connected) {
-      return null;
-    }
-    return _enqueueGatt<T?>(() async {
-      if (_hasPendingUserCommand || state.phase != BlePhase.connected) {
-        throw StateError('Preempted by user command');
-      }
-      return await action();
-    }, timeout: timeout).catchError((e) {
-      if (e is! StateError) {
-        BleLogger.instance.event('bg_read_err', {'tag': tag, 'error': '$e'});
-      }
-      return null;
-    });
-  }
+  }) =>
+      _commandQueue.enqueueBackgroundRead(
+        action,
+        tag: tag,
+        timeout: timeout,
+        shouldProceed: () => !_isCommandBusy && state.phase == BlePhase.connected,
+      );
 
   /// Ghi characteristic thông minh — tự động nhận diện withoutResponse dựa theo thuộc tính characteristic
   /// và bọc timeout (mặc định 2000ms) để không bao giờ bị treo vĩnh viễn trên iOS CoreBluetooth.
@@ -1075,13 +1064,19 @@ class BleController extends Notifier<BleState> {
       _ingestRssiSample(curRssi, now: now);
 
   @visibleForTesting
-  double? get smoothedRssiForTest => _smoothedRssi;
+  double? get smoothedRssiForTest => _rssiTracker.smoothedRssi;
 
   @visibleForTesting
   bool get walkUpConsumedForTest => _walkUpConsumed;
 
   @visibleForTesting
   bool get hasBeenNearBikeForTest => _hasBeenNearBike;
+
+  @visibleForTesting
+  bool get radarScreenActiveForTest => _radarScreenActive;
+
+  @visibleForTesting
+  void handleDashboardPayloadForTest(List<int> raw) => _handleDashboardPayload(raw);
 
   @visibleForTesting
   void setProximityTestTimestamps({DateTime? connectedAt, DateTime? lastManualCommandAt}) {
@@ -2200,7 +2195,7 @@ class BleController extends Notifier<BleState> {
   Future<void> setAutoLockDistance(int val) async {
     final prefs = await _prefs;
     await prefs.setInt(_kAutoLockDistance, val);
-    const lockThresholds = [-75.0, -83.0, -90.0];
+    final lockThresholds = defaultAutoLockThresholds();
     final rssi = lockThresholds[val.clamp(0, 2)];
     await prefs.setDouble(_kAutoLockRssiThreshold, rssi);
     state = state.copyWith(
@@ -2642,7 +2637,7 @@ class BleController extends Notifier<BleState> {
       unawaited(TripGpsTracker.instance.startTracking());
 
       // Đọc RSSI & Kiểm tra Walk-Up tức thì ở giây thứ 0 (Fast Walk-Up Check on Connect)
-      await _readAndIngestRssi(device, timeoutMs: 600);
+      await _readAndIngestRssi(device, timeoutMs: 900);
 
       // Giãn cách các tác vụ đọc thông số xe: refreshFwSettings ở 1500ms, fetchVehicleDiagnostics ở 4000ms
       // để chống nghẽn hàng đợi GATT trên CoreBluetooth iOS (vốn chạy ở MTU = 23).
@@ -2660,92 +2655,113 @@ class BleController extends Notifier<BleState> {
     return state.isAuthorized;
   }
 
-  Future<void> _pollDashboard() async {
+  Future<void> _pollDashboard({bool forceRssiRead = false}) async {
     final c = _dashChar;
     if (c == null || state.phase != BlePhase.connected) return;
-    // Watchdog: nếu đã xác thực mà keepalive chưa chạy (bất kỳ path nào làm
-    // nó tắt/lỡ start) → tự khởi động lại. Đây là linh kiện giữ kết nối
-    // không thẻ — phải luôn sống khi session sống.
-    if (enableKeepalive &&
-        state.isAuthorized &&
-        _keepaliveTimer == null &&
-        _activePassword.isNotEmpty &&
-        _lastAuthNonce15 != null) {
-      BleLogger.instance.event('keepalive_watchdog_restart', {});
-      _startKeepalive();
+    if (_pollBusy) {
+      if (forceRssiRead) _pendingForceRssiRead = true;
+      return;
     }
-    // ƯU TIÊN KÊNH BLUETOOTH CHO LỆNH NGƯỜI DÙNG:
-    // Nếu có lệnh người dùng đang chờ hoặc đang bận, bỏ qua lượt poll này để giải phóng hoàn toàn băng thông GATT
-    if (_hasPendingUserCommand) return;
-
-    final pollTimeoutMs = _dashboardFailStreak >= 2 ? 800 : 1500;
+    _pollBusy = true;
     try {
-      final raw = await _enqueueBackgroundRead(
-        () => c.read().timeout(Duration(milliseconds: pollTimeoutMs)),
-        tag: 'DashboardRead',
-        timeout: Duration(milliseconds: pollTimeoutMs + 300),
-      );
-      if (raw != null && raw.isNotEmpty) {
-        _dashboardFailStreak = 0;
-        _handleDashboardPayload(raw);
-      } else {
+      final shouldForceRssi = forceRssiRead || _pendingForceRssiRead;
+      _pendingForceRssiRead = false;
+
+      // Watchdog: nếu đã xác thực mà keepalive chưa chạy (bất kỳ path nào làm
+      // nó tắt/lỡ start) → tự khởi động lại. Đây là linh kiện giữ kết nối
+      // không thẻ — phải luôn sống khi session sống.
+      if (enableKeepalive &&
+          state.isAuthorized &&
+          _keepaliveTimer == null &&
+          _activePassword.isNotEmpty &&
+          _lastAuthNonce15 != null) {
+        BleLogger.instance.event('keepalive_watchdog_restart', {});
+        _startKeepalive();
+      }
+      // ƯU TIÊN KÊNH BLUETOOTH CHO LỆNH NGƯỜI DÙNG:
+      // Nếu có lệnh người dùng đang chờ hoặc đang bận, bỏ qua lượt poll này để giải phóng hoàn toàn băng thông GATT
+      if (_hasPendingUserCommand) return;
+
+      final pollTimeoutMs = _dashboardFailStreak >= 2 ? 800 : 1500;
+      try {
+        final raw = await _enqueueBackgroundRead(
+          () => c.read().timeout(Duration(milliseconds: pollTimeoutMs)),
+          tag: 'DashboardRead',
+          timeout: Duration(milliseconds: pollTimeoutMs + 300),
+        );
+        if (raw != null && raw.isNotEmpty) {
+          _dashboardFailStreak = 0;
+          _handleDashboardPayload(raw);
+        } else {
+          _dashboardFailStreak++;
+        }
+      } catch (e) {
         _dashboardFailStreak++;
+        BleLogger.instance.event('poll_error', {'error': '$e', 'streak': _dashboardFailStreak});
       }
-    } catch (e) {
-      _dashboardFailStreak++;
-      BleLogger.instance.event('poll_error', {'error': '$e', 'streak': _dashboardFailStreak});
-    }
 
-    // Cơ chế phát hiện mất kết nối nhanh: Nếu thất bại 2 chu kỳ và thiết bị đã ngắt kết nối thực tế ở tầng OS, ngừng poll ngay
-    if (_dashboardFailStreak >= 2) {
-      final dev = _device;
-      if (dev != null && !dev.isConnected) {
-        BleLogger.instance.event('poll_detected_disconnect', {'device': dev.remoteId.str});
-        return;
+      // Cơ chế phát hiện mất kết nối nhanh: Nếu thất bại 2 chu kỳ và thiết bị đã ngắt kết nối thực tế ở tầng OS, ngừng poll ngay
+      if (_dashboardFailStreak >= 2) {
+        final dev = _device;
+        if (dev != null && !dev.isConnected) {
+          BleLogger.instance.event('poll_detected_disconnect', {'device': dev.remoteId.str});
+          return;
+        }
       }
-    }
 
-    // Định kỳ đọc Battery Log (207 byte) mỗi 10 chu kỳ đo (giảm tải kênh BLE & CoreBluetooth iOS)
-    _batteryPollCounter++;
-    if (_batteryPollCounter >= 10) {
-      _batteryPollCounter = 0;
-      unawaited(fetchBatteryDetails());
-    }
-
-    // Tần suất đọc RSSI: Khi xe đứng yên/đỗ/khóa/tắt và có bật tính năng theo cự ly,
-    // đọc mỗi chu kỳ đo để nhận diện walk-up & rời xa nhanh chóng; khi xe đang chạy > 1 km/h, đọc mỗi 2 chu kỳ để giảm tải CoreBluetooth trên iOS.
-    final tele = state.lastTelemetry;
-    final proximityActive = state.walkUpUnlock ||
-        state.autoLockWalkAway ||
-        state.antiTheft5m ||
-        state.antiForgetAlert;
-    final isStandstillOrLocked = state.isLocked ||
-        (tele?.state == BikeState.lock) ||
-        (tele?.isBikeOn != true) ||
-        (tele?.speed ?? 0.0) <= 1.0 ||
-        (tele?.parking == true);
-    final rssiThresholdCycles = (proximityActive && isStandstillOrLocked) ? 1 : 2;
-    _rssiPollCounter++;
-    if (_rssiPollCounter >= rssiThresholdCycles) {
-      _rssiPollCounter = 0;
-      final dev = _device;
-      if (dev != null && !_hasPendingUserCommand) {
-        await _readAndIngestRssi(dev);
+      // Tần suất đọc RSSI: Khi màn hình Radar đang mở, hoặc xe đứng yên/đỗ/khóa/tắt và có bật tính năng theo cự ly,
+      // đọc mỗi chu kỳ đo để nhận diện walk-up & rời xa nhanh chóng; khi xe đang chạy > 1 km/h, đọc mỗi 2 chu kỳ để giảm tải CoreBluetooth trên iOS.
+      final tele = state.lastTelemetry;
+      final proximityActive = state.walkUpUnlock ||
+          state.autoLockWalkAway ||
+          state.antiTheft5m ||
+          state.antiForgetAlert;
+      final isStandstillOrLocked = state.isLocked ||
+          (tele?.state == BikeState.lock) ||
+          (tele?.isBikeOn != true) ||
+          (tele?.speed ?? 0.0) <= 1.0 ||
+          (tele?.parking == true);
+      final rssiThresholdCycles =
+          ((proximityActive || _radarScreenActive) && isStandstillOrLocked) ? 1 : 2;
+      _rssiPollCounter++;
+      if (shouldForceRssi || _rssiPollCounter >= rssiThresholdCycles) {
+        _rssiPollCounter = 0;
+        final dev = _device;
+        if (dev != null && !_hasPendingUserCommand) {
+          await _readAndIngestRssi(dev);
+        }
       }
+
+      // Xóa RSSI cũ nếu bị kẹt > 6s không có mẫu hợp lệ mới (tránh giữ giá trị đóng băng ở cự ly xa)
+      if (_rssiTracker.lastRssiAt != null &&
+          _rssiTracker.isStaleAt(DateTime.now(), threshold: const Duration(seconds: 6)) &&
+          (state.rssi != null || state.filteredRssi != null)) {
+        _resetStaleRssiFilter();
+        state = state.copyWith(clearRssi: true);
+      }
+
+      // Định kỳ đọc Battery Log (207 byte) mỗi 10 chu kỳ đo — chạy SAU RSSI để không chặn slot RSSI trên MTU=23
+      _batteryPollCounter++;
+      if (_batteryPollCounter >= 10) {
+        _batteryPollCounter = 0;
+        if (!shouldForceRssi) {
+          unawaited(fetchBatteryDetails());
+        } else {
+          _batteryPollCounter = 9;
+        }
+      }
+    } finally {
+      _pollBusy = false;
     }
   }
 
   void _resetStaleRssiFilter() {
-    _smoothedRssi = null;
-    _rssiKalman.reset();
-    _lastRssiAt = null;
+    _rssiTracker.reset();
     _rssiPollCounter = 0;
     _autoLockCounter = 0;
     _theftCounter = 0;
     _unlockNearCounter = 0;
     _antiForgetCounter = 0;
-    _nearRawStreak = 0;
-    _farRawStreak = 0;
     _nearMarginCounter = 0;
     _rearmFarCounter = 0;
   }
@@ -2761,74 +2777,46 @@ class BleController extends Notifier<BleState> {
     _hasBeenNearBike = false;
   }
 
-  Future<void> _readAndIngestRssi(BluetoothDevice dev, {int timeoutMs = 700}) async {
+  Future<void> _readAndIngestRssi(BluetoothDevice dev, {int timeoutMs = 1200}) async {
     try {
-      final curRssi = await dev.readRssi().timeout(
-        Duration(milliseconds: timeoutMs),
-        onTimeout: () => throw TimeoutException('readRssi timeout'),
+      final curRssi = await _enqueueBackgroundRead(
+        () => dev.readRssi(timeout: 1),
+        tag: 'RssiRead',
+        timeout: Duration(milliseconds: timeoutMs),
       );
-      _ingestRssiSample(curRssi);
-    } catch (_) {}
+      if (curRssi != null) {
+        _ingestRssiSample(curRssi);
+      }
+    } catch (e) {
+      BleLogger.instance.event('rssi_read_skip', {'error': '$e'});
+    }
   }
 
   void _ingestRssiSample(int curRssi, {DateTime? now}) {
-    if (!isValidRssi(curRssi)) return;
-    _lastRssiAt = now ?? DateTime.now();
-
-    final nearThreshold = effectiveWalkUpRssiThreshold;
-    final farThreshold = effectiveAutoLockRssiThreshold;
-
-    if (curRssi >= nearThreshold) {
-      _nearRawStreak++;
-    } else {
-      _nearRawStreak = 0;
-    }
-
-    if (curRssi <= farThreshold) {
-      _farRawStreak++;
-    } else {
-      _farRawStreak = 0;
-    }
-
-    final prev = _smoothedRssi;
-    if (prev == null) {
-      _rssiKalman.reset(curRssi.toDouble());
-      _smoothedRssi = curRssi.toDouble();
-    } else if (curRssi >= nearThreshold &&
-        ((curRssi - prev) >= 5.0 || _nearRawStreak >= 2)) {
-      // Fast-Track lại gần: nhảy >= 5 dB hoặc 2 mẫu liên tiếp >= ngưỡng gần
-      _rssiKalman.reset(curRssi.toDouble());
-      _smoothedRssi = curRssi.toDouble();
-    } else if (_farRawStreak >= 3) {
-      // Fast-Track rời xa: sau 3 mẫu liên tiếp <= ngưỡng xa (tránh nhiễu che thân 1-2 nhịp)
-      _rssiKalman.reset(curRssi.toDouble());
-      _smoothedRssi = curRssi.toDouble();
-    } else if (_farRawStreak == 2 && (prev - curRssi) >= 6.0) {
-      // Bám sát tín hiệu ở nhịp thứ 2 khi rời xa rõ rệt trước khi xác nhận khóa ở nhịp kế tiếp
-      final blended = (prev + curRssi) / 2.0;
-      _rssiKalman.reset(blended);
-      _smoothedRssi = blended;
-    } else {
-      _smoothedRssi = _rssiKalman.filter(curRssi.toDouble());
-    }
+    final sampleTime = now ?? DateTime.now();
+    final smoothed = _rssiTracker.ingest(
+      curRssi,
+      nearThreshold: effectiveWalkUpRssiThreshold,
+      farThreshold: effectiveAutoLockRssiThreshold,
+      now: sampleTime,
+    );
+    if (smoothed == null) return;
 
     state = state.copyWith(
       rssi: curRssi,
-      filteredRssi: _smoothedRssi!.round(),
+      filteredRssi: smoothed.round(),
     );
-    _checkAutoLockAndAlert(now: now);
+    _checkAutoLockAndAlert(now: sampleTime);
   }
 
   /// Đồng bộ lại RSSI & kết nối khi user đưa app quay lại foreground (đặc biệt trên iOS).
   Future<void> onAppResumed() async {
     if (state.phase == BlePhase.connected && state.isAuthorized) {
-      final stale = _lastRssiAt == null ||
-          DateTime.now().difference(_lastRssiAt!) > const Duration(seconds: 4);
-      if (stale) {
+      if (_rssiTracker.isStaleAt(DateTime.now())) {
         _resetStaleRssiFilter();
         state = state.copyWith(clearRssi: true);
       }
-      unawaited(_pollDashboard());
+      unawaited(_pollDashboard(forceRssiRead: true));
       return;
     }
     if (!_manualDisconnect &&
@@ -2845,13 +2833,13 @@ class BleController extends Notifier<BleState> {
     // (log 17:45 23/10: auto-lock gửi power '0' xen giữa find-bike → dữ liệu
     // test bị nhiễm).
     if (_labModeActive) return;
-    if (_smoothedRssi == null) return;
+    final rssi = _rssiTracker.smoothedRssi;
+    if (rssi == null) return;
     // BẮT BUỘC có ít nhất 1 gói telemetry hợp lệ từ xe trước khi tính toán cự ly / tự động hóa
     final tele = state.lastTelemetry;
     if (tele == null) return;
 
     final currentTime = now ?? DateTime.now();
-    final rssi = _smoothedRssi!;
     final isBikeOn = tele.isBikeOn;
     final isLocked = state.isLocked || tele.state == BikeState.lock;
     final speed = tele.speed;
@@ -3362,6 +3350,9 @@ class BleController extends Notifier<BleState> {
         isLocked: updatedIsLocked,
       );
       _telemetry.add(BikeTelemetry(msg, DateTime.now()));
+      if (_rssiTracker.smoothedRssi != null) {
+        _checkAutoLockAndAlert();
+      }
     } catch (e) {
       _decodeFailStreak++;
       dk = 'parse_fail: $e';
@@ -3694,6 +3685,7 @@ class BleController extends Notifier<BleState> {
     _findBikeTimeoutTimer = null;
     _findBikePeriodicTimer?.cancel();
     _findBikePeriodicTimer = null;
+    _commandQueue.reset();
     _sessionKey = null;
     _lastRawStatusSig = null;
     _walkUpConsumed = false;
@@ -3876,7 +3868,7 @@ class BleController extends Notifier<BleState> {
   /// nguồn, bấm lần 2 xe mới bật → gói đơn = còi kêu, rơ-le không khép.
   /// Chỉ cho phép khi xe ĐANG TẮT (tránh đụng nguồn khi xe đang chạy).
   Future<String> findBike({Duration timeout = const Duration(seconds: 10)}) async {
-    _lastUserCommandAt = DateTime.now();
+    _commandQueue.markCommandTimestamp(isAutomation: false);
     final device = _device;
     if (device == null || state.phase != BlePhase.connected || !state.isAuthorized) {
       return 'Xe chưa được kết nối Bluetooth hoặc chưa xác thực!';
@@ -3932,7 +3924,7 @@ class BleController extends Notifier<BleState> {
   /// Dừng phát tín hiệu tìm xe. KHÔNG gửi lệnh '0' nào — chuỗi '0' chính là
   /// lệnh TẮT nguồn, gửi khi dừng tìm xe có thể tắt xe ngoài ý muốn!
   Future<String> stopFindBike() async {
-    _lastUserCommandAt = DateTime.now();
+    _commandQueue.markCommandTimestamp(isAutomation: false);
     _findBikeTimeoutTimer?.cancel();
     _findBikeTimeoutTimer = null;
     _findBikePeriodicTimer?.cancel();
@@ -4663,6 +4655,7 @@ class BleController extends Notifier<BleState> {
     _findBikeTimeoutTimer = null;
     _findBikePeriodicTimer?.cancel();
     _findBikePeriodicTimer = null;
+    _commandQueue.reset();
     _sessionKey = null;
 
     final prefs = await _prefs;
@@ -4738,6 +4731,7 @@ class BleController extends Notifier<BleState> {
         _connSub = null;
 
         _pollTimer?.cancel(); // hết poll spam 'device is not connected'
+        _pendingForceRssiRead = false;
         _stopKeepalive();
         _notifySub?.cancel();
         _notifySub = null;
@@ -4845,8 +4839,8 @@ class BleController extends Notifier<BleState> {
           _reconnectAttempts = 0;
           _connectedAt = DateTime.now();
           if (!_openedByWalkUp &&
-              (_smoothedRssi == null ||
-                  _smoothedRssi! < effectiveWalkUpRssiThreshold)) {
+              (_rssiTracker.smoothedRssi == null ||
+                  _rssiTracker.smoothedRssi! < effectiveWalkUpRssiThreshold)) {
             _hasBeenNearBike = false;
           }
           state = state.copyWith(phase: BlePhase.connected, reconnectAttempt: 0, message: null);
@@ -4899,6 +4893,9 @@ class BleController extends Notifier<BleState> {
     _findBikeTimeoutTimer?.cancel();
     _findBikePeriodicTimer?.cancel();
     _pollTimer?.cancel();
+    _pollBusy = false;
+    _pendingForceRssiRead = false;
+    _commandQueue.reset();
     _connSub?.cancel();
     _notifySub?.cancel();
     _telemetry.close();
@@ -5073,6 +5070,7 @@ class BleController extends Notifier<BleState> {
     _findBikeTimeoutTimer = null;
     _findBikePeriodicTimer?.cancel();
     _findBikePeriodicTimer = null;
+    _commandQueue.reset();
     _sessionKey = null;
 
     final prefs = await _prefs;
