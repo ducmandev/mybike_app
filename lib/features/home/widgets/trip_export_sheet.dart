@@ -130,7 +130,9 @@ class _TripExportSheetState extends State<TripExportSheet> {
                           overflow: TextOverflow.ellipsis,
                         ),
                         Text(
-                          '${session.title} · ${session.totalDistanceKm.toStringAsFixed(1)} km · ${session.allPoints.length} điểm GPS',
+                          session.hasGpsDistance
+                              ? '${session.title} · ${session.totalDistanceKm.toStringAsFixed(1)} km ODO · ${session.totalGpsDistanceKm.toStringAsFixed(1)} km GPS · ${session.allPoints.length} điểm'
+                              : '${session.title} · ${session.totalDistanceKm.toStringAsFixed(1)} km · ${session.allPoints.length} điểm GPS',
                           style: AppTypography.labelSm(color: AppColors.textDim).copyWith(
                             letterSpacing: 0,
                           ),

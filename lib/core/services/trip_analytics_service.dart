@@ -6,12 +6,16 @@ import '../ble/ble_controller.dart' show TripRecord;
 class DailyTripBucket {
   final DateTime day;
   final double distanceKm;
+  final double gpsDistanceKm;
+  final bool hasGpsDistance;
   final int tripCount;
   final int movingDurationSec;
 
   const DailyTripBucket({
     required this.day,
     required this.distanceKm,
+    this.gpsDistanceKm = 0.0,
+    this.hasGpsDistance = false,
     required this.tripCount,
     required this.movingDurationSec,
   });
@@ -29,6 +33,8 @@ class TripPeriodSummary {
   final int days;
   final int tripCount;
   final double totalDistanceKm;
+  final double totalGpsDistanceKm;
+  final bool hasGpsDistance;
   final int totalMovingDurationSec;
   final int totalUsedPercent;
   final double maxSpeedKmh;
@@ -40,6 +46,8 @@ class TripPeriodSummary {
     required this.days,
     required this.tripCount,
     required this.totalDistanceKm,
+    this.totalGpsDistanceKm = 0.0,
+    this.hasGpsDistance = false,
     required this.totalMovingDurationSec,
     required this.totalUsedPercent,
     required this.maxSpeedKmh,
@@ -54,10 +62,16 @@ class TripPeriodSummary {
     return totalDistanceKm / (totalMovingDurationSec / 3600.0);
   }
 
-  /// Quãng đường trung bình mỗi chuyến đi (km).
+  /// Quãng đường ODO trung bình mỗi chuyến đi (km).
   double get avgDistancePerTripKm {
     if (tripCount <= 0) return 0.0;
     return totalDistanceKm / tripCount;
+  }
+
+  /// Quãng đường GPS trung bình mỗi chuyến đi (km).
+  double get avgGpsDistancePerTripKm {
+    if (tripCount <= 0) return 0.0;
+    return totalGpsDistanceKm / tripCount;
   }
 }
 
@@ -81,11 +95,15 @@ class TripAnalyticsService {
     final startDay = DateTime(today.year, today.month, today.day - (safeDays - 1));
 
     final dayDistances = <DateTime, double>{};
+    final dayGpsDistances = <DateTime, double>{};
+    final dayHasGps = <DateTime, bool>{};
     final dayCounts = <DateTime, int>{};
     final dayDurations = <DateTime, int>{};
 
     var tripCount = 0;
     var totalDistanceKm = 0.0;
+    var totalGpsDistanceKm = 0.0;
+    var anyGpsDistance = false;
     var totalMovingDurationSec = 0;
     var totalUsedPercent = 0;
     var maxSpeedKmh = 0.0;
@@ -98,11 +116,18 @@ class TripAnalyticsService {
       }
 
       final distance = trip.distanceKm > 0 ? trip.distanceKm : 0.0;
+      final gpsDist = trip.effectiveGpsDistanceKm();
       final duration = trip.durationSec > 0 ? trip.durationSec : 0;
       final usedPct = trip.usedPercent > 0 ? trip.usedPercent : 0;
 
       tripCount += 1;
       totalDistanceKm += distance;
+      if (gpsDist != null && gpsDist >= 0) {
+        totalGpsDistanceKm += gpsDist;
+        anyGpsDistance = true;
+        dayGpsDistances[tripDay] = (dayGpsDistances[tripDay] ?? 0.0) + gpsDist;
+        dayHasGps[tripDay] = true;
+      }
       totalMovingDurationSec += duration;
       totalUsedPercent += usedPct;
       maxSpeedKmh = max(maxSpeedKmh, trip.maxSpeedKmh);
@@ -119,6 +144,8 @@ class TripAnalyticsService {
         DailyTripBucket(
           day: day,
           distanceKm: dayDistances[day] ?? 0.0,
+          gpsDistanceKm: dayGpsDistances[day] ?? 0.0,
+          hasGpsDistance: dayHasGps[day] ?? false,
           tripCount: dayCounts[day] ?? 0,
           movingDurationSec: dayDurations[day] ?? 0,
         ),
@@ -133,6 +160,8 @@ class TripAnalyticsService {
       days: safeDays,
       tripCount: tripCount,
       totalDistanceKm: totalDistanceKm,
+      totalGpsDistanceKm: totalGpsDistanceKm,
+      hasGpsDistance: anyGpsDistance,
       totalMovingDurationSec: totalMovingDurationSec,
       totalUsedPercent: totalUsedPercent,
       maxSpeedKmh: maxSpeedKmh,

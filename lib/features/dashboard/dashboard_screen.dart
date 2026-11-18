@@ -1803,7 +1803,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   Expanded(
                     child: _cockpitMetricTile(
                       icon: Icons.navigation_rounded,
-                      label: 'QUÃNG ĐƯỜNG',
+                      label: 'KM XE (ODO)',
                       value: trip.distanceKm.toStringAsFixed(2),
                       unit: 'km',
                       valueColor: _accent,
@@ -1813,9 +1813,34 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: _cockpitMetricTile(
+                      icon: Icons.gps_fixed_rounded,
+                      label: 'KM THEO GPS',
+                      value: trip.gpsDistanceKm.toStringAsFixed(2),
+                      unit: 'km',
+                      valueColor: AppColors.tertiary,
+                      accentColor: _accent,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: _cockpitMetricTile(
                       icon: Icons.speed_rounded,
                       label: 'VẬN TỐC MAX',
                       value: trip.maxSpeedKmh.toStringAsFixed(1),
+                      unit: 'km/h',
+                      accentColor: _accent,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: _cockpitMetricTile(
+                      icon: Icons.timeline_rounded,
+                      label: 'VẬN TỐC TB',
+                      value: trip.avgSpeedKmh.toStringAsFixed(1),
                       unit: 'km/h',
                       accentColor: _accent,
                     ),
@@ -1827,21 +1852,22 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 children: [
                   Expanded(
                     child: _cockpitMetricTile(
-                      icon: Icons.timeline_rounded,
-                      label: 'VẬN TỐC TB',
-                      value: trip.avgSpeedKmh.toStringAsFixed(1),
-                      unit: 'km/h',
+                      icon: Icons.battery_alert_rounded,
+                      label: 'TIÊU HAO PIN',
+                      value: '-${trip.usedPercent}',
+                      unit: '% pin',
+                      valueColor: AppColors.amber,
                       accentColor: _accent,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
                     child: _cockpitMetricTile(
-                      icon: Icons.battery_alert_rounded,
-                      label: 'TIÊU HAO PIN',
-                      value: '-${trip.usedPercent}',
-                      unit: '% pin',
-                      valueColor: AppColors.amber,
+                      icon: Icons.satellite_alt_rounded,
+                      label: 'TÍN HIỆU GPS',
+                      value: trip.gpsSignalLossCount > 0 ? '-${trip.gpsSignalLossCount}' : 'Ổn định',
+                      unit: trip.gpsSignalLossCount > 0 ? 'đoạn mất sóng' : '',
+                      valueColor: trip.gpsSignalLossCount > 0 ? AppColors.amber : AppColors.tertiary,
                       accentColor: _accent,
                     ),
                   ),

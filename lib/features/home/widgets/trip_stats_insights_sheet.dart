@@ -151,9 +151,11 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
                         child: _buildKpiCard(
                           icon: Icons.route_rounded,
                           iconColor: AppColors.primary,
-                          label: 'Tổng km',
+                          label: 'Tổng km xe (ODO)',
                           value: '${summary.totalDistanceKm.toStringAsFixed(1)} km',
-                          subValue: 'TB ${summary.avgDistancePerTripKm.toStringAsFixed(1)} km/chuyến',
+                          subValue: summary.hasGpsDistance
+                              ? 'GPS ${summary.totalGpsDistanceKm.toStringAsFixed(1)} km · TB ${summary.avgDistancePerTripKm.toStringAsFixed(1)} km'
+                              : 'TB ${summary.avgDistancePerTripKm.toStringAsFixed(1)} km/chuyến',
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -273,7 +275,9 @@ class _TripStatsInsightsSheetState extends State<TripStatsInsightsSheet> {
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Text(
-                                  '${activeBucket.shortDayLabel} · ${activeBucket.distanceKm.toStringAsFixed(1)} km',
+                                  activeBucket.hasGpsDistance
+                                      ? '${activeBucket.shortDayLabel} · ${activeBucket.distanceKm.toStringAsFixed(1)} km · GPS ${activeBucket.gpsDistanceKm.toStringAsFixed(1)} km'
+                                      : '${activeBucket.shortDayLabel} · ${activeBucket.distanceKm.toStringAsFixed(1)} km',
                                   style: GoogleFonts.spaceGrotesk(
                                     fontSize: 10.5,
                                     fontWeight: FontWeight.w700,

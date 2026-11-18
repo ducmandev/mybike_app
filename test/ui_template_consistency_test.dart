@@ -100,7 +100,7 @@ void main() {
                       color: AppColors.textPrimary,
                     ),
                     title: 'Thông tin ứng dụng',
-                    trailing: Text('v2.6.46'),
+                    trailing: Text('v2.6.47'),
                   ),
                 ],
               ),
@@ -113,7 +113,7 @@ void main() {
       expect(find.text('Nhà xe của tôi'), findsOneWidget);
       expect(find.text('2 xe đã lưu'), findsOneWidget);
       expect(find.text('Thông tin ứng dụng'), findsOneWidget);
-      expect(find.text('v2.6.46'), findsOneWidget);
+      expect(find.text('v2.6.47'), findsOneWidget);
       expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
       expect(find.byType(PanelDivider), findsOneWidget);
 
@@ -244,7 +244,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(tester.takeException(), isNull);
-      expect(find.text('v2.6.46'), findsOneWidget);
+      expect(find.text('v2.6.47'), findsOneWidget);
     });
 
     testWidgets('ChargingScreen renders telemetry and charging details without overflow at 360x780', (tester) async {

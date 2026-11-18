@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 
 import '../../../core/ble/ble_controller.dart';
+import '../../../core/services/gps_route_snapping_service.dart';
 import '../../../core/services/map_tile_service.dart';
 import '../../../core/services/trip_gps_tracker.dart';
 import '../../../ui/app_theme.dart';
@@ -18,6 +19,13 @@ enum MapCameraMode {
   northUp,   // Cố định Hướng Bắc (0 độ)
   headingUp, // Xoay theo Hướng Xe đang di chuyển
   overview,  // Góc nhìn Tổng Quan Lộ Trình
+}
+
+/// Trạng thái hiển thị hoặc thu gọn sang hai thanh bên của ô Tốc độ Xe & Tốc độ GPS.
+enum _SpeedHudDockState {
+  expanded,
+  hiddenLeft,
+  hiddenRight,
 }
 
 /// Màn hình Độc Lập Toàn Màn Hình Bản Đồ Hành Trình (Full-Bleed Viền Tràn)
@@ -118,6 +126,55 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
   bool _isLocating = false;
   LatLng? _myLocation;
   bool _hasInitialCentered = false;
+
+  _SpeedHudDockState _speedHudDock = _SpeedHudDockState.expanded;
+  double _speedHudDragDx = 0.0;
+  double _dockedTabDragDx = 0.0;
+
+  static const double _kHideSwipeDistance = 42.0;
+  static const double _kHideSwipeVelocity = 220.0;
+  static const double _kRevealSwipeDistance = 18.0;
+  static const double _kRevealSwipeVelocity = 160.0;
+
+  void _onSpeedHudDragUpdate(DragUpdateDetails details) {
+    setState(() {
+      _speedHudDragDx = (_speedHudDragDx + details.delta.dx).clamp(-160.0, 160.0);
+    });
+  }
+
+  void _onSpeedHudDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0.0;
+    final dx = _speedHudDragDx;
+    setState(() {
+      _speedHudDragDx = 0.0;
+      if (velocity < -_kHideSwipeVelocity || dx < -_kHideSwipeDistance) {
+        _speedHudDock = _SpeedHudDockState.hiddenLeft;
+      } else if (velocity > _kHideSwipeVelocity || dx > _kHideSwipeDistance) {
+        _speedHudDock = _SpeedHudDockState.hiddenRight;
+      }
+    });
+  }
+
+  void _onDockedTabDragUpdate(DragUpdateDetails details, {required bool dockedLeft}) {
+    setState(() {
+      final raw = _dockedTabDragDx + details.delta.dx;
+      _dockedTabDragDx = dockedLeft ? raw.clamp(0.0, 80.0) : raw.clamp(-80.0, 0.0);
+    });
+  }
+
+  void _onDockedTabDragEnd(DragEndDetails details, {required bool dockedLeft}) {
+    final velocity = details.primaryVelocity ?? 0.0;
+    final dx = _dockedTabDragDx;
+    final shouldExpand = dockedLeft
+        ? (velocity > _kRevealSwipeVelocity || dx > _kRevealSwipeDistance)
+        : (velocity < -_kRevealSwipeVelocity || dx < -_kRevealSwipeDistance);
+    setState(() {
+      _dockedTabDragDx = 0.0;
+      if (shouldExpand) {
+        _speedHudDock = _SpeedHudDockState.expanded;
+      }
+    });
+  }
 
   void _moveCameraSafely(LatLng target, double zoom) {
     if (!mounted) return;
@@ -249,9 +306,77 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
         duration: const Duration(seconds: 1),
         backgroundColor: const Color(0xFF0F172A),
         behavior: SnackBarBehavior.floating,
+        margin: widget.isFullScreen
+            ? EdgeInsets.only(
+                left: 16,
+                right: 16,
+                bottom: _speedHudDock == _SpeedHudDockState.expanded ? 158 : 78,
+              )
+            : null,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
+  }
+
+  List<Widget> _buildLiveRouteLayers() {
+    final subTracks = GpsRouteAnalyzer.splitContinuousSubTracks(_liveRoute);
+    final borderCol = MapTileService.routeBorderColorFor(_tileStyle);
+    final gapPolylines = <Polyline>[];
+    final basePolylines = <Polyline>[];
+    final speedPolylines = <Polyline>[];
+
+    for (var s = 0; s < subTracks.length; s++) {
+      final sub = subTracks[s];
+      if (s > 0 && subTracks[s - 1].isNotEmpty && sub.isNotEmpty) {
+        final a = subTracks[s - 1].last;
+        final b = sub.first;
+        gapPolylines.add(
+          Polyline(
+            points: [LatLng(a.lat, a.lng), LatLng(b.lat, b.lng)],
+            strokeWidth: 2.2,
+            strokeCap: StrokeCap.round,
+            color: AppColors.textMuted.withValues(alpha: 0.70),
+            pattern: StrokePattern.dashed(segments: const [5, 5]),
+          ),
+        );
+      }
+      if (sub.length >= 2) {
+        basePolylines.add(
+          Polyline(
+            points: sub.map((p) => LatLng(p.lat, p.lng)).toList(),
+            strokeWidth: 5.0,
+            borderStrokeWidth: 2.2,
+            borderColor: borderCol,
+            strokeCap: StrokeCap.round,
+            strokeJoin: StrokeJoin.round,
+            color: MapTileService.getHighContrastSpeedColor(sub.last.speedKmh),
+          ),
+        );
+        for (var i = 0; i < sub.length - 1; i++) {
+          speedPolylines.add(
+            Polyline(
+              points: [
+                LatLng(sub[i].lat, sub[i].lng),
+                LatLng(sub[i + 1].lat, sub[i + 1].lng),
+              ],
+              strokeWidth: 5.0,
+              strokeCap: StrokeCap.round,
+              strokeJoin: StrokeJoin.round,
+              gradientColors: [
+                MapTileService.getHighContrastSpeedColor(sub[i].speedKmh),
+                MapTileService.getHighContrastSpeedColor(sub[i + 1].speedKmh),
+              ],
+            ),
+          );
+        }
+      }
+    }
+
+    return [
+      if (gapPolylines.isNotEmpty) PolylineLayer(polylines: gapPolylines),
+      if (basePolylines.isNotEmpty) PolylineLayer(polylines: basePolylines),
+      if (speedPolylines.isNotEmpty) PolylineLayer(polylines: speedPolylines),
+    ];
   }
 
   void _toggleCameraMode() {
@@ -539,41 +664,8 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               // Tile Layer (Hỗ trợ Tối Giản Positron lọc bớt khu phố/phường & Chi Tiết)
               MapTileService.buildTileLayer(style: _tileStyle),
 
-              // Polyline Lộ trình xe đang di chuyển thực tế (Breadcrumbs)
-              if (hasRoute) ...[
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: _liveRoute.map((p) => LatLng(p.lat, p.lng)).toList(),
-                      strokeWidth: 5.0,
-                      borderStrokeWidth: 2.2,
-                      borderColor: MapTileService.routeBorderColorFor(_tileStyle),
-                      strokeCap: StrokeCap.round,
-                      strokeJoin: StrokeJoin.round,
-                      color: MapTileService.getHighContrastSpeedColor(_liveRoute.last.speedKmh),
-                    ),
-                  ],
-                ),
-                if (_liveRoute.length >= 2)
-                  PolylineLayer(
-                    polylines: [
-                      for (int i = 0; i < _liveRoute.length - 1; i++)
-                        Polyline(
-                          points: [
-                            LatLng(_liveRoute[i].lat, _liveRoute[i].lng),
-                            LatLng(_liveRoute[i + 1].lat, _liveRoute[i + 1].lng),
-                          ],
-                          strokeWidth: 5.0,
-                          strokeCap: StrokeCap.round,
-                          strokeJoin: StrokeJoin.round,
-                          gradientColors: [
-                            MapTileService.getHighContrastSpeedColor(_liveRoute[i].speedKmh),
-                            MapTileService.getHighContrastSpeedColor(_liveRoute[i + 1].speedKmh),
-                          ],
-                        ),
-                    ],
-                  ),
-              ],
+              // Polyline Lộ trình xe đang di chuyển thực tế (tách đoạn tại ranh giới mất sóng GPS)
+              if (hasRoute) ..._buildLiveRouteLayers(),
 
               // Marker Vị trí xe Dat Bike với mũi tên xoay theo hướng đi thực tế
               MarkerLayer(
@@ -594,6 +686,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
           ),
 
           // 2. HEADER TOP Ở CHẾ ĐỘ THU NHỎ (DASHBOARD COMPACT MODE - !widget.isFullScreen)
+          // Chỉ giữ chip la bàn bên trái và cụm nút công cụ bên phải để không che khuất tốc độ GPS dưới đáy
           if (!widget.isFullScreen)
             Positioned(
               top: 8,
@@ -601,135 +694,51 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               right: 8,
               child: Row(
                 children: [
-                  // Chips: La bàn hướng đi, Tốc độ Xe, Tốc độ GPS
+                  // Chip La bàn hướng đi gọn bên trái (co giãn vừa đủ khi màn hình ngang / chữ lớn)
                   Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      physics: const BouncingScrollPhysics(),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // 1. Chip La bàn hướng đi
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(9999),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: AppColors.panel.withValues(alpha: 0.94),
-                                  borderRadius: BorderRadius.circular(9999),
-                                  border: Border.all(color: AppColors.panelBorderBright),
-                                  boxShadow: AppColors.cardShadow,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Transform.rotate(
-                                      angle: (_currentHeading * math.pi) / 180.0,
-                                      child: const Icon(
-                                        Icons.navigation_rounded,
-                                        size: 14,
-                                        color: AppColors.primary,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '${_currentHeading.toStringAsFixed(0).padLeft(3, '0')}° ${_shortCardinal(_currentHeading)}',
-                                      style: GoogleFonts.spaceGrotesk(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.textPrimary,
-                                        fontFeatures: const [FontFeature.tabularFigures()],
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(9999),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: AppColors.panel.withValues(alpha: 0.94),
+                                borderRadius: BorderRadius.circular(9999),
+                                border: Border.all(color: AppColors.panelBorderBright),
+                                boxShadow: AppColors.cardShadow,
                               ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          // 2. Chip Tốc độ Xe (ECU/BLE)
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(9999),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: AppColors.panel.withValues(alpha: 0.94),
-                                  borderRadius: BorderRadius.circular(9999),
-                                  border: Border.all(color: AppColors.panelBorderBright),
-                                  boxShadow: AppColors.cardShadow,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(
-                                      Icons.speed_rounded,
-                                      size: 13,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Transform.rotate(
+                                    angle: (_currentHeading * math.pi) / 180.0,
+                                    child: const Icon(
+                                      Icons.navigation_rounded,
+                                      size: 14,
                                       color: AppColors.primary,
                                     ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      'XE: ${bikeSpeed.toStringAsFixed(0)} km/h',
-                                      style: GoogleFonts.spaceGrotesk(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.textPrimary,
-                                        fontFeatures: const [FontFeature.tabularFigures()],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          // 3. Chip Tốc độ GPS
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(9999),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: AppColors.panel.withValues(alpha: 0.94),
-                                  borderRadius: BorderRadius.circular(9999),
-                                  border: Border.all(
-                                    color: isTracking
-                                        ? AppColors.tertiary.withValues(alpha: 0.35)
-                                        : AppColors.panelBorderBright,
                                   ),
-                                  boxShadow: AppColors.cardShadow,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Container(
-                                      width: 7,
-                                      height: 7,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: isTracking ? AppColors.tertiary : AppColors.secondary,
-                                      ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '${_currentHeading.toStringAsFixed(0).padLeft(3, '0')}° ${_shortCardinal(_currentHeading)}',
+                                    style: GoogleFonts.spaceGrotesk(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppColors.textPrimary,
+                                      fontFeatures: const [FontFeature.tabularFigures()],
                                     ),
-                                    const SizedBox(width: 5),
-                                    Text(
-                                      'GPS: ${gpsSpeed.toStringAsFixed(1)} km/h',
-                                      style: GoogleFonts.spaceGrotesk(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppColors.textPrimary,
-                                        fontFeatures: const [FontFeature.tabularFigures()],
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
@@ -872,14 +881,16 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
               ),
             ),
 
-          // 4. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải: La Bàn Xoay + Vị trí của tôi + Bám xe + Offline + Menu Layer)
+          // 4. NÚT ĐIỀU HƯỚNG TRÊN BẢN ĐỒ (Bên phải: La Bàn Xoay + Vị trí của tôi + Bám xe + Offline)
           Positioned(
-            bottom: widget.isFullScreen ? 148 : 48,
+            bottom: widget.isFullScreen
+                ? (_speedHudDock == _SpeedHudDockState.expanded ? 156 : 92)
+                : 48,
             right: 10,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Chỉ hiển thị La Bàn Tương Tác và Đổi Kiểu Bản Đồ trên cột phải khi ở chế độ FullScreen
+                // Chỉ hiển thị La Bàn Tương Tác trên cột phải khi ở chế độ FullScreen
                 if (widget.isFullScreen) ...[
                   _buildCompassButton(),
                   const SizedBox(height: 8),
@@ -897,7 +908,7 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
 
                 // Nút bám theo xe
                 _miniGlassBtn(
-                  icon: Icons.navigation_rounded,
+                  icon: _followBike ? Icons.near_me_rounded : Icons.near_me_disabled_rounded,
                   iconColor: _followBike ? AppColors.primary : AppColors.textPrimary,
                   isActive: _followBike,
                   tooltip: _followBike ? 'Đang bám xe' : 'Tự do xoay bản đồ',
@@ -925,352 +936,508 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                       );
                     },
                   ),
-                  const SizedBox(height: 8),
-                  // Nút mở nhanh menu Giao diện Bản đồ Tối Giản / Chi Tiết
-                  _miniGlassBtn(
-                    icon: MapTileService.isMinimal(_tileStyle)
-                        ? Icons.layers_clear_rounded
-                        : Icons.layers_rounded,
-                    iconColor: MapTileService.isMinimal(_tileStyle)
-                        ? const Color(0xFF10B981)
-                        : AppColors.textPrimary,
-                    tooltip: 'Giao diện bản đồ (${MapTileService.getStyleName(_tileStyle)})',
-                    onTap: _showMapStyleMenu,
-                  ),
                 ],
               ],
             ),
           ),
 
-          // 5. BẢNG BÁO TỐC ĐỘ DƯỚI ĐÁY BẢN ĐỒ THU NHỎ (DASHBOARD COMPACT BOTTOM BAR - !widget.isFullScreen)
-          if (!widget.isFullScreen)
+          // 5. BẢNG BÁO TỐC ĐỘ DƯỚI ĐÁY BẢN ĐỒ THU NHỎ (DASHBOARD COMPACT BOTTOM BAR)
+          // Hỗ trợ vuốt ngang để ẩn sang thanh bên trái/phải và vuốt thanh ẩn để hiện lại
+          if (!widget.isFullScreen && _speedHudDock == _SpeedHudDockState.expanded)
             Positioned(
               left: 8,
               right: 8,
               bottom: 8,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                  child: Container(
-                    height: 34,
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppColors.panel.withValues(alpha: 0.94),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.panelBorderBright),
-                      boxShadow: AppColors.cardShadow,
-                    ),
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final isCompact = constraints.maxWidth < 340;
-                        return Row(
-                          children: [
-                            // Bên trái: TỐC ĐỘ XE
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
+              child: GestureDetector(
+                key: const ValueKey('speed_hud_expanded'),
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragUpdate: _onSpeedHudDragUpdate,
+                onHorizontalDragEnd: _onSpeedHudDragEnd,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOutCubic,
+                  transform: Matrix4.translationValues(_speedHudDragDx * 0.45, 0, 0),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                      child: Container(
+                        height: 36,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppColors.panel.withValues(alpha: 0.94),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.panelBorderBright),
+                          boxShadow: AppColors.cardShadow,
+                        ),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final isCompact = constraints.maxWidth < 260;
+                            final showSparkline = _gpsSpeedHistory.length >= 2 && constraints.maxWidth >= 260;
+                            return Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
-                                const SizedBox(width: 4),
-                                if (!isCompact)
-                                  Text(
-                                    'XE: ',
-                                    style: GoogleFonts.spaceGrotesk(
-                                      fontSize: 9.5,
-                                      fontWeight: FontWeight.w800,
-                                      color: AppColors.textDim,
-                                      letterSpacing: 0.3,
-                                    ),
-                                  ),
-                                Text(
-                                  '${bikeSpeed.toStringAsFixed(0)} km/h',
-                                  style: GoogleFonts.spaceGrotesk(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.primary,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
-                                  ),
-                                ),
-                              ],
-                            ),
-                            // Ở giữa: Biểu đồ sparkline nếu history >= 2 và đủ chỗ
-                            if (_gpsSpeedHistory.length >= 2 && constraints.maxWidth >= 260) ...[
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: CustomPaint(
-                                  size: const Size(double.infinity, 22),
-                                  painter: _GpsSpeedSparklinePainter(
-                                    history: _gpsSpeedHistory,
-                                    color: AppColors.secondary,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                            ] else ...[
-                              const Spacer(),
-                            ],
-                            // Bên phải: TỐC ĐỘ GPS
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  width: 6,
-                                  height: 6,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: isTracking ? AppColors.tertiary : AppColors.secondary,
-                                  ),
-                                ),
-                                const SizedBox(width: 4),
-                                if (!isCompact)
-                                  Text(
-                                    'GPS: ',
-                                    style: GoogleFonts.spaceGrotesk(
-                                      fontSize: 9.5,
-                                      fontWeight: FontWeight.w800,
-                                      color: AppColors.textDim,
-                                      letterSpacing: 0.3,
-                                    ),
-                                  ),
-                                Text(
-                                  '${gpsSpeed.toStringAsFixed(1)} km/h',
-                                  style: GoogleFonts.spaceGrotesk(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.secondary,
-                                    fontFeatures: const [FontFeature.tabularFigures()],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // 6. BẢNG BÁO TỐC ĐỘ KÉP TOÀN MÀN HÌNH (DUAL SPEEDOMETER TELEMETRY HUD CARD - widget.isFullScreen == true)
-          if (widget.isFullScreen)
-            Positioned(
-              bottom: 14,
-              left: 12,
-              right: 12,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: AppColors.panel.withValues(alpha: 0.95),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppColors.panelBorderBright, width: 1.2),
-                      boxShadow: AppColors.cardShadow,
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Hàng hiển thị song song 2 đồng hồ tốc độ (50% - 50%)
-                        Row(
-                          children: [
-                            // Cột trái — TỐC ĐỘ XE (ECU)
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.speed_rounded,
-                                        size: 15,
-                                        color: AppColors.primary,
-                                      ),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        'TỐC ĐỘ XE',
-                                        style: GoogleFonts.spaceGrotesk(
-                                          fontSize: 10.5,
-                                          fontWeight: FontWeight.w800,
-                                          color: AppColors.textDim,
-                                          letterSpacing: 0.5,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Row(
-                                    crossAxisAlignment: CrossAxisAlignment.baseline,
-                                    textBaseline: TextBaseline.alphabetic,
-                                    children: [
-                                      Text(
-                                        bikeSpeed.toStringAsFixed(1),
-                                        style: GoogleFonts.spaceGrotesk(
-                                          fontSize: 26,
-                                          fontWeight: FontWeight.w800,
-                                          color: AppColors.textPrimary,
-                                          fontFeatures: const [FontFeature.tabularFigures()],
-                                        ),
-                                      ),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        'km/h',
-                                        style: GoogleFonts.spaceGrotesk(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w700,
-                                          color: AppColors.primary,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-
-                            // Vạch ngăn cách dọc
-                            Container(
-                              width: 1,
-                              height: 44,
-                              color: AppColors.panelBorderBright,
-                            ),
-
-                            // Cột phải — TỐC ĐỘ GPS
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.only(left: 12.0),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Row(
+                                // Bên trái: TỐC ĐỘ XE
+                                Flexible(
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    alignment: Alignment.centerLeft,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
                                       children: [
-                                        Container(
-                                          width: 7,
-                                          height: 7,
-                                          decoration: BoxDecoration(
-                                            shape: BoxShape.circle,
-                                            color: isTracking
-                                                ? AppColors.tertiary
-                                                : const Color(0xFF0EA5E9),
+                                        const Icon(Icons.speed_rounded, size: 14, color: AppColors.primary),
+                                        const SizedBox(width: 4),
+                                        if (!isCompact)
+                                          Text(
+                                            'XE: ',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 9.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: AppColors.textDim,
+                                              letterSpacing: 0.3,
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 5),
                                         Text(
-                                          'TỐC ĐỘ GPS',
+                                          '${bikeSpeed.toStringAsFixed(0)} km/h',
                                           style: GoogleFonts.spaceGrotesk(
-                                            fontSize: 10.5,
+                                            fontSize: 11,
                                             fontWeight: FontWeight.w800,
-                                            color: AppColors.textDim,
-                                            letterSpacing: 0.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Row(
-                                      crossAxisAlignment: CrossAxisAlignment.baseline,
-                                      textBaseline: TextBaseline.alphabetic,
-                                      children: [
-                                        Text(
-                                          gpsSpeed.toStringAsFixed(1),
-                                          style: GoogleFonts.spaceGrotesk(
-                                            fontSize: 26,
-                                            fontWeight: FontWeight.w800,
-                                            color: const Color(0xFF0EA5E9),
+                                            color: AppColors.primary,
                                             fontFeatures: const [FontFeature.tabularFigures()],
                                           ),
                                         ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                // Ở giữa: Biểu đồ sparkline nếu history >= 2 và đủ chỗ
+                                if (showSparkline) ...[
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: CustomPaint(
+                                      size: const Size(double.infinity, 22),
+                                      painter: _GpsSpeedSparklinePainter(
+                                        history: _gpsSpeedHistory,
+                                        color: AppColors.secondary,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                ] else ...[
+                                  const SizedBox(width: 8),
+                                ],
+                                // Bên phải: TỐC ĐỘ GPS
+                                Flexible(
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    alignment: Alignment.centerRight,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Container(
+                                          width: 6,
+                                          height: 6,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: isTracking ? AppColors.tertiary : AppColors.secondary,
+                                          ),
+                                        ),
                                         const SizedBox(width: 4),
+                                        if (!isCompact)
+                                          Text(
+                                            'GPS: ',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 9.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: AppColors.textDim,
+                                              letterSpacing: 0.3,
+                                            ),
+                                          ),
                                         Text(
-                                          'km/h',
+                                          '${gpsSpeed.toStringAsFixed(1)} km/h',
                                           style: GoogleFonts.spaceGrotesk(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            color: const Color(0xFF0EA5E9),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w800,
+                                            color: AppColors.secondary,
+                                            fontFeatures: const [FontFeature.tabularFigures()],
                                           ),
                                         ),
                                       ],
                                     ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-
-                        // Hàng thông tin phụ bên dưới
-                        const Divider(height: 12, color: AppColors.panelBorderBright),
-                        LayoutBuilder(
-                          builder: (context, subConstraints) {
-                            final hideDetail = subConstraints.maxWidth < 360;
-                            return Row(
-                              children: [
-                                // Độ lệch
-                                Text(
-                                  hideDetail
-                                      ? 'Δ: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)}'
-                                      : 'Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 9.5,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.textDim,
                                   ),
-                                ),
-                                const SizedBox(width: 4),
-                                // Sparkline ở giữa nếu history >= 2 và đủ chỗ
-                                if (_gpsSpeedHistory.length >= 2 && subConstraints.maxWidth >= 280) ...[
-                                  Expanded(
-                                    child: SizedBox(
-                                      height: 18,
-                                      child: CustomPaint(
-                                        size: const Size(double.infinity, 18),
-                                        painter: _GpsSpeedSparklinePainter(
-                                          history: _gpsSpeedHistory,
-                                          color: const Color(0xFF0EA5E9),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                ] else ...[
-                                  const Spacer(),
-                                ],
-                                // Trạng thái GPS
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      isTracking ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded,
-                                      size: 11,
-                                      color: isTracking ? AppColors.tertiary : AppColors.textDim,
-                                    ),
-                                    const SizedBox(width: 2),
-                                    Text(
-                                      hideDetail
-                                          ? (isTracking ? 'GPS' : 'OFF')
-                                          : 'GPS: ${isTracking ? "Đang theo dõi" : "Sẵn sàng"}',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: isTracking ? AppColors.tertiary : AppColors.textDim,
-                                      ),
-                                    ),
-                                  ],
                                 ),
                               ],
                             );
                           },
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
+
+          // 6. BẢNG BÁO TỐC ĐỘ KÉP TOÀN MÀN HÌNH (DUAL SPEEDOMETER TELEMETRY HUD CARD)
+          // Hỗ trợ vuốt ngang sang trái/phải để ẩn vào 2 thanh bên
+          if (widget.isFullScreen && _speedHudDock == _SpeedHudDockState.expanded)
+            Positioned(
+              bottom: 14,
+              left: 12,
+              right: 12,
+              child: GestureDetector(
+                key: const ValueKey('speed_hud_expanded'),
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragUpdate: _onSpeedHudDragUpdate,
+                onHorizontalDragEnd: _onSpeedHudDragEnd,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  curve: Curves.easeOutCubic,
+                  transform: Matrix4.translationValues(_speedHudDragDx * 0.45, 0, 0),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                      child: Container(
+                        padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+                        decoration: BoxDecoration(
+                          color: AppColors.panel.withValues(alpha: 0.95),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: AppColors.panelBorderBright, width: 1.2),
+                          boxShadow: AppColors.cardShadow,
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Thanh chỉ dẫn vuốt ngang thu gọn sang 2 bên
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.chevron_left_rounded, size: 12, color: AppColors.textMuted.withValues(alpha: 0.7)),
+                                Container(
+                                  width: 28,
+                                  height: 3,
+                                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.panelBorderBright,
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                ),
+                                Icon(Icons.chevron_right_rounded, size: 12, color: AppColors.textMuted.withValues(alpha: 0.7)),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            // Hàng hiển thị song song 2 đồng hồ tốc độ (50% - 50%)
+                            Row(
+                              children: [
+                                // Cột trái — TỐC ĐỘ XE (ECU)
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.speed_rounded,
+                                            size: 15,
+                                            color: AppColors.primary,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'TỐC ĐỘ XE',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 10.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: AppColors.textDim,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        crossAxisAlignment: CrossAxisAlignment.baseline,
+                                        textBaseline: TextBaseline.alphabetic,
+                                        children: [
+                                          Text(
+                                            bikeSpeed.toStringAsFixed(1),
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 26,
+                                              fontWeight: FontWeight.w800,
+                                              color: AppColors.textPrimary,
+                                              fontFeatures: const [FontFeature.tabularFigures()],
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'km/h',
+                                            style: GoogleFonts.spaceGrotesk(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w700,
+                                              color: AppColors.primary,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+
+                                // Vạch ngăn cách dọc
+                                Container(
+                                  width: 1,
+                                  height: 44,
+                                  color: AppColors.panelBorderBright,
+                                ),
+
+                                // Cột phải — TỐC ĐỘ GPS
+                                Expanded(
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 12.0),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Container(
+                                              width: 7,
+                                              height: 7,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                color: isTracking
+                                                    ? AppColors.tertiary
+                                                    : const Color(0xFF0EA5E9),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 5),
+                                            Text(
+                                              'TỐC ĐỘ GPS',
+                                              style: GoogleFonts.spaceGrotesk(
+                                                fontSize: 10.5,
+                                                fontWeight: FontWeight.w800,
+                                                color: AppColors.textDim,
+                                                letterSpacing: 0.5,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Row(
+                                          crossAxisAlignment: CrossAxisAlignment.baseline,
+                                          textBaseline: TextBaseline.alphabetic,
+                                          children: [
+                                            Text(
+                                              gpsSpeed.toStringAsFixed(1),
+                                              style: GoogleFonts.spaceGrotesk(
+                                                fontSize: 26,
+                                                fontWeight: FontWeight.w800,
+                                                color: const Color(0xFF0EA5E9),
+                                                fontFeatures: const [FontFeature.tabularFigures()],
+                                              ),
+                                            ),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              'km/h',
+                                              style: GoogleFonts.spaceGrotesk(
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w700,
+                                                color: const Color(0xFF0EA5E9),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            // Hàng thông tin phụ bên dưới
+                            const Divider(height: 12, color: AppColors.panelBorderBright),
+                            LayoutBuilder(
+                              builder: (context, subConstraints) {
+                                final hideDetail = subConstraints.maxWidth < 360;
+                                return Row(
+                                  children: [
+                                    // Độ lệch
+                                    Text(
+                                      hideDetail
+                                          ? 'Δ: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)}'
+                                          : 'Độ lệch: ${(bikeSpeed - gpsSpeed).abs().toStringAsFixed(1)} km/h',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppColors.textDim,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    // Sparkline ở giữa nếu history >= 2 và đủ chỗ
+                                    if (_gpsSpeedHistory.length >= 2 && subConstraints.maxWidth >= 280) ...[
+                                      Expanded(
+                                        child: SizedBox(
+                                          height: 18,
+                                          child: CustomPaint(
+                                            size: const Size(double.infinity, 18),
+                                            painter: _GpsSpeedSparklinePainter(
+                                              history: _gpsSpeedHistory,
+                                              color: const Color(0xFF0EA5E9),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                    ] else ...[
+                                      const Spacer(),
+                                    ],
+                                    // Trạng thái GPS
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          isTracking ? Icons.gps_fixed_rounded : Icons.gps_not_fixed_rounded,
+                                          size: 11,
+                                          color: isTracking ? AppColors.tertiary : AppColors.textDim,
+                                        ),
+                                        const SizedBox(width: 2),
+                                        Text(
+                                          hideDetail
+                                              ? (isTracking ? 'GPS' : 'OFF')
+                                              : 'GPS: ${isTracking ? "Đang theo dõi" : "Sẵn sàng"}',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontSize: 9.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: isTracking ? AppColors.tertiary : AppColors.textDim,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // 6B. THANH ẨN HAI BÊN KHI ĐÃ VUỐT THU GỌN Ô TỐC ĐỘ XE & GPS
+          if (_speedHudDock != _SpeedHudDockState.expanded)
+            Positioned(
+              left: _speedHudDock == _SpeedHudDockState.hiddenLeft ? 0 : null,
+              right: _speedHudDock == _SpeedHudDockState.hiddenRight ? 0 : null,
+              bottom: widget.isFullScreen ? 14 : 8,
+              child: _buildDockedSpeedTab(
+                dockedLeft: _speedHudDock == _SpeedHudDockState.hiddenLeft,
+                bikeSpeed: bikeSpeed,
+                gpsSpeed: gpsSpeed,
+              ),
+            ),
         ],
+      ),
+    );
+  }
+
+  /// Thanh ẩn gắn ở cạnh trái/phải khi vuốt thu gọn ô tốc độ xe & GPS.
+  /// Hỗ trợ vuốt ngược vào giữa hoặc chạm để hiển thị lại bảng tốc độ đầy đủ.
+  Widget _buildDockedSpeedTab({
+    required bool dockedLeft,
+    required double bikeSpeed,
+    required double gpsSpeed,
+  }) {
+    final radius = dockedLeft
+        ? const BorderRadius.horizontal(right: Radius.circular(14))
+        : const BorderRadius.horizontal(left: Radius.circular(14));
+    final arrowIcon = dockedLeft ? Icons.chevron_right_rounded : Icons.chevron_left_rounded;
+
+    final handleGrip = Container(
+      width: 3,
+      height: widget.isFullScreen ? 28 : 18,
+      decoration: BoxDecoration(
+        color: AppColors.primary.withValues(alpha: 0.65),
+        borderRadius: BorderRadius.circular(2),
+      ),
+    );
+
+    final speedReadout = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: dockedLeft ? CrossAxisAlignment.start : CrossAxisAlignment.end,
+      children: [
+        Text(
+          'XE ${bikeSpeed.toStringAsFixed(0)}',
+          style: GoogleFonts.spaceGrotesk(
+            fontSize: widget.isFullScreen ? 11 : 10,
+            fontWeight: FontWeight.w800,
+            color: AppColors.primary,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        Text(
+          'GPS ${gpsSpeed.toStringAsFixed(1)}',
+          style: GoogleFonts.spaceGrotesk(
+            fontSize: widget.isFullScreen ? 10.5 : 9.5,
+            fontWeight: FontWeight.w700,
+            color: AppColors.secondary,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+
+    return GestureDetector(
+      key: ValueKey(dockedLeft ? 'speed_hud_docked_left' : 'speed_hud_docked_right'),
+      behavior: HitTestBehavior.opaque,
+      onTap: () => setState(() {
+        _dockedTabDragDx = 0.0;
+        _speedHudDock = _SpeedHudDockState.expanded;
+      }),
+      onHorizontalDragUpdate: (d) => _onDockedTabDragUpdate(d, dockedLeft: dockedLeft),
+      onHorizontalDragEnd: (d) => _onDockedTabDragEnd(d, dockedLeft: dockedLeft),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOutCubic,
+        transform: Matrix4.translationValues(_dockedTabDragDx * 0.45, 0, 0),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: widget.isFullScreen ? 10 : 6,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.panel.withValues(alpha: 0.94),
+                borderRadius: radius,
+                border: Border.all(color: AppColors.panelBorderBright, width: 1.1),
+                boxShadow: AppColors.cardShadow,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: dockedLeft
+                    ? [
+                        handleGrip,
+                        const SizedBox(width: 7),
+                        speedReadout,
+                        const SizedBox(width: 4),
+                        Icon(arrowIcon, size: 18, color: AppColors.textDim),
+                      ]
+                    : [
+                        Icon(arrowIcon, size: 18, color: AppColors.textDim),
+                        const SizedBox(width: 4),
+                        speedReadout,
+                        const SizedBox(width: 7),
+                        handleGrip,
+                      ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1300,8 +1467,8 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
               child: Container(
-                width: 38,
-                height: 46,
+                width: 40,
+                height: 48,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
@@ -1318,16 +1485,15 @@ class _CockpitLiveMapState extends ConsumerState<CockpitLiveMap> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Transform.rotate(
-                      angle: -(_mapRotation * math.pi) / 180.0,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          const Icon(Icons.navigation_rounded, color: Color(0xFFEF4444), size: 18),
-                          Transform.rotate(
-                            angle: math.pi,
-                            child: const Icon(Icons.navigation_rounded, color: Color(0xFF94A3B8), size: 12),
-                          ),
-                        ],
+                      angle: _cameraMode == MapCameraMode.overview
+                          ? 0.0
+                          : -(_mapRotation * math.pi) / 180.0,
+                      child: CustomPaint(
+                        size: const Size(20, 20),
+                        painter: _CompassModePainter(
+                          mode: _cameraMode,
+                          accentColor: color,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -1513,4 +1679,115 @@ class _GpsSpeedSparklinePainter extends CustomPainter {
   bool shouldRepaint(_GpsSpeedSparklinePainter old) =>
       old.history.length != history.length ||
       (history.isNotEmpty && old.history.isNotEmpty && old.history.last != history.last);
+}
+
+/// Vẽ biểu tượng vector sắc nét cho 3 chế độ nút góc nhìn bản đồ (Hướng Bắc, Theo xe, Tổng quan).
+class _CompassModePainter extends CustomPainter {
+  final MapCameraMode mode;
+  final Color accentColor;
+
+  const _CompassModePainter({
+    required this.mode,
+    required this.accentColor,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    switch (mode) {
+      case MapCameraMode.northUp:
+        final northPath = Path()
+          ..moveTo(cx, cy - 8.5)
+          ..lineTo(cx + 4.2, cy)
+          ..lineTo(cx - 4.2, cy)
+          ..close();
+        final southPath = Path()
+          ..moveTo(cx, cy + 8.5)
+          ..lineTo(cx + 4.2, cy)
+          ..lineTo(cx - 4.2, cy)
+          ..close();
+
+        canvas.drawPath(
+          northPath,
+          Paint()
+            ..color = const Color(0xFFEF4444)
+            ..style = PaintingStyle.fill,
+        );
+        canvas.drawPath(
+          southPath,
+          Paint()
+            ..color = const Color(0xFF94A3B8)
+            ..style = PaintingStyle.fill,
+        );
+        canvas.drawCircle(
+          Offset(cx, cy),
+          1.7,
+          Paint()..color = Colors.white,
+        );
+        break;
+
+      case MapCameraMode.headingUp:
+        final arrowPath = Path()
+          ..moveTo(cx, cy - 8.0)
+          ..lineTo(cx + 6.5, cy + 6.8)
+          ..lineTo(cx, cy + 3.4)
+          ..lineTo(cx - 6.5, cy + 6.8)
+          ..close();
+
+        canvas.drawPath(
+          arrowPath,
+          Paint()
+            ..color = accentColor
+            ..style = PaintingStyle.fill,
+        );
+        canvas.drawCircle(
+          Offset(cx, cy + 0.5),
+          1.5,
+          Paint()..color = Colors.white,
+        );
+        break;
+
+      case MapCameraMode.overview:
+        final bracketPaint = Paint()
+          ..color = accentColor
+          ..strokeWidth = 2.0
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round;
+
+        const r = 7.0;
+        const arm = 3.8;
+        // 4 góc khung tổng quan
+        final brackets = Path()
+          // Top-left
+          ..moveTo(cx - r, cy - r + arm)
+          ..lineTo(cx - r, cy - r)
+          ..lineTo(cx - r + arm, cy - r)
+          // Top-right
+          ..moveTo(cx + r - arm, cy - r)
+          ..lineTo(cx + r, cy - r)
+          ..lineTo(cx + r, cy - r + arm)
+          // Bottom-right
+          ..moveTo(cx + r, cy + r - arm)
+          ..lineTo(cx + r, cy + r)
+          ..lineTo(cx + r - arm, cy + r)
+          // Bottom-left
+          ..moveTo(cx - r + arm, cy + r)
+          ..lineTo(cx - r, cy + r)
+          ..lineTo(cx - r, cy + r - arm);
+        canvas.drawPath(brackets, bracketPaint);
+        canvas.drawCircle(
+          Offset(cx, cy),
+          2.6,
+          Paint()..color = accentColor,
+        );
+        break;
+    }
+  }
+
+  @override
+  bool shouldRepaint(_CompassModePainter old) =>
+      old.mode != mode || old.accentColor != accentColor;
 }

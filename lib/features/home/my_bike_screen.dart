@@ -2420,14 +2420,14 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
 
           const SizedBox(height: 16),
 
-          // Lưới 4 thông số chuyến đi của xe máy điện
+          // Lưới thông số chuyến đi của xe máy điện (KM xe ODO & KM GPS song song)
           Row(
             children: [
               Expanded(
                 child: _tripMetricItem(
                   icon: Icons.straighten_rounded,
                   iconColor: AppColors.primary,
-                  label: 'Quãng đường',
+                  label: 'KM xe (ODO)',
                   value: trip.distanceKm.toStringAsFixed(1),
                   unit: 'km',
                 ),
@@ -2435,10 +2435,34 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
               const SizedBox(width: 10),
               Expanded(
                 child: _tripMetricItem(
+                  icon: Icons.gps_fixed_rounded,
+                  iconColor: AppColors.tertiary,
+                  label: 'KM theo GPS',
+                  value: trip.gpsDistanceKm.toStringAsFixed(1),
+                  unit: 'km',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _tripMetricItem(
                   icon: Icons.speed_rounded,
                   iconColor: AppColors.accent,
                   label: 'Vận tốc TB',
                   value: trip.avgSpeedKmh.toStringAsFixed(1),
+                  unit: 'km/h',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _tripMetricItem(
+                  icon: Icons.electric_bolt_rounded,
+                  iconColor: AppColors.amber,
+                  label: 'Tốc độ tối đa',
+                  value: trip.maxSpeedKmh.toStringAsFixed(0),
                   unit: 'km/h',
                 ),
               ),
@@ -2449,21 +2473,21 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
             children: [
               Expanded(
                 child: _tripMetricItem(
-                  icon: Icons.electric_bolt_rounded,
-                  iconColor: AppColors.amber,
-                  label: 'Tốc độ tối đa',
-                  value: trip.maxSpeedKmh.toStringAsFixed(0),
-                  unit: 'km/h',
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _tripMetricItem(
                   icon: Icons.battery_charging_full_rounded,
                   iconColor: AppColors.tertiary,
                   label: 'Pin tiêu hao',
                   value: '-${trip.usedPercent}',
                   unit: '%',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _tripMetricItem(
+                  icon: Icons.satellite_alt_rounded,
+                  iconColor: trip.gpsSignalLossCount > 0 ? AppColors.amber : AppColors.tertiary,
+                  label: 'Tín hiệu GPS',
+                  value: trip.gpsSignalLossCount > 0 ? '-${trip.gpsSignalLossCount}' : 'Ổn định',
+                  unit: trip.gpsSignalLossCount > 0 ? 'mất sóng' : '',
                 ),
               ),
             ],
@@ -2665,6 +2689,8 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
           final weekTrips = history.where((t) => t.startTime.isAfter(oneWeekAgo)).toList();
 
           final weekDist = weekTrips.fold<double>(0.0, (sum, t) => sum + t.distanceKm);
+          final weekGpsDist = weekTrips.fold<double>(0.0, (sum, t) => sum + (t.effectiveGpsDistanceKm() ?? 0.0));
+          final hasWeekGps = weekTrips.any((t) => t.effectiveGpsDistanceKm() != null);
           final weekCount = weekTrips.length;
           final savedMoney = (weekDist * 575).round();
           final savedCo2 = (weekDist * 0.065);
@@ -2800,7 +2826,11 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: _summaryStat(label: 'Tổng quãng đường', value: weekDist.toStringAsFixed(1), unit: 'km'),
+                                child: _summaryStat(
+                                  label: hasWeekGps ? 'ODO (GPS ${weekGpsDist.toStringAsFixed(1)})' : 'Tổng quãng đường',
+                                  value: weekDist.toStringAsFixed(1),
+                                  unit: 'km',
+                                ),
                               ),
                               Container(width: 1, height: 32, color: AppColors.panelBorder),
                               Expanded(
@@ -2851,7 +2881,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              'Hành trình sẽ tự động lưu khi xe di chuyển trên 50m\nhoặc khi bấm Đặt lại Trip / Tắt xe.',
+                              'Hành trình chỉ bắt đầu khi xe vào mode chạy với tốc độ ECU > 4 km/h\nvà tự động lưu khi đi từ 1 km ODO hoặc bấm Đặt lại / Tắt xe.',
                               style: AppTypography.labelMd(
                                 color: AppColors.textMuted,
                                 fontWeight: FontWeight.w400,
@@ -2871,6 +2901,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                         final durText = durMin > 0 ? '$durMin phút $durSec giây' : '$durSec giây';
                         final timeStr = '${trip.startTime.day.toString().padLeft(2, '0')}/${trip.startTime.month.toString().padLeft(2, '0')} · ${trip.startTime.hour.toString().padLeft(2, '0')}:${trip.startTime.minute.toString().padLeft(2, '0')} ($durText)';
                         final co2 = (trip.distanceKm * 0.065).toStringAsFixed(1);
+                        final gpsKm = trip.effectiveGpsDistanceKm();
 
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 10),
@@ -2878,6 +2909,9 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             title: 'Hành trình #${history.length - index}',
                             time: timeStr,
                             distance: '${trip.distanceKm.toStringAsFixed(1)} km',
+                            gpsDistance: gpsKm != null ? 'GPS ${gpsKm.toStringAsFixed(1)} km' : null,
+                            isRoadSnapped: trip.isGpsRoadSnapped,
+                            gpsSignalLossCount: trip.gpsSignalLossCount,
                             avgSpeed: '${trip.avgSpeedKmh.toStringAsFixed(0)} km/h',
                             batteryUsed: trip.usedPercent > 0 ? '-${trip.usedPercent}%' : '--',
                             co2Saved: '$co2 kg',
@@ -2996,6 +3030,9 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
     required String title,
     required String time,
     required String distance,
+    String? gpsDistance,
+    bool isRoadSnapped = false,
+    int gpsSignalLossCount = 0,
     required String avgSpeed,
     required String batteryUsed,
     required String co2Saved,
@@ -3070,12 +3107,25 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    distance,
-                    style: AppTypography.headlineSm(color: AppColors.textPrimary).copyWith(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        distance,
+                        style: AppTypography.headlineSm(color: AppColors.textPrimary).copyWith(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      if (gpsDistance != null)
+                        Text(
+                          gpsDistance,
+                          style: AppTypography.labelSm(
+                            color: AppColors.tertiaryContainer,
+                            fontWeight: FontWeight.w700,
+                          ).copyWith(fontSize: 10.5, letterSpacing: 0),
+                        ),
+                    ],
                   ),
                   if (onDelete != null) ...[
                     const SizedBox(width: 8),
@@ -3119,6 +3169,18 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                       label: '-$co2Saved CO₂',
                       color: AppColors.tertiaryContainer,
                     ),
+                    if (isRoadSnapped)
+                      _tripBadge(
+                        icon: Icons.alt_route_rounded,
+                        label: 'Nắn đường',
+                        color: AppColors.primary,
+                      ),
+                    if (gpsSignalLossCount > 0)
+                      _tripBadge(
+                        icon: Icons.signal_wifi_off_rounded,
+                        label: '-$gpsSignalLossCount mất sóng',
+                        color: AppColors.amber,
+                      ),
                   ],
                 ),
               ),

@@ -9,6 +9,7 @@ import '../../../ui/app_theme.dart';
 class TripCleanVideoOverlay extends StatelessWidget {
   final double speedKmh;
   final double distanceKm;
+  final double? gpsDistanceKm;
   final String durationText;
   final bool isLive;
   final VoidCallback onExit;
@@ -17,6 +18,7 @@ class TripCleanVideoOverlay extends StatelessWidget {
     super.key,
     required this.speedKmh,
     required this.distanceKm,
+    this.gpsDistanceKm,
     required this.durationText,
     this.isLive = false,
     required this.onExit,
@@ -77,7 +79,9 @@ class TripCleanVideoOverlay extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      '${distanceKm.toStringAsFixed(1)} km',
+                      (gpsDistanceKm != null && gpsDistanceKm! > 0)
+                          ? '${distanceKm.toStringAsFixed(1)} km · GPS ${gpsDistanceKm!.toStringAsFixed(1)} km'
+                          : '${distanceKm.toStringAsFixed(1)} km',
                       style: GoogleFonts.spaceGrotesk(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w700,

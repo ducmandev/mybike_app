@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
@@ -636,6 +636,117 @@ void main() {
       expect(find.textContaining('TỐC ĐỘ XE'), findsWidgets);
       expect(find.textContaining('TỐC ĐỘ GPS'), findsWidgets);
       expect(find.byIcon(Icons.arrow_back_rounded), findsWidgets);
+      // Màn hình Full chỉ còn đúng 1 nút chọn giao diện bản đồ (không bị lặp 2 nút)
+      expect(find.byIcon(Icons.layers_clear_rounded), findsOneWidget);
+    });
+
+    testWidgets(
+        'CockpitLiveMap compact dashboard shows unobstructed GPS speed and supports horizontal swipe to dock left/right',
+        (tester) async {
+      tester.view.physicalSize = const Size(360 * 2.0, 780 * 2.0);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      await tester.pumpWidget(
+        const ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: Padding(
+                padding: EdgeInsets.all(14),
+                child: CockpitLiveMap(
+                  currentSpeedKmh: 38.0,
+                  isFullScreen: false,
+                  batteryPercent: 80,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      // Không lặp GPS chip ở thanh trên để tránh bị icon che; chỉ hiển thị 1 lần rõ ràng ở thanh đáy
+      expect(find.text('GPS: '), findsOneWidget);
+      expect(find.text('XE: '), findsOneWidget);
+      expect(find.byKey(const ValueKey('speed_hud_expanded')), findsOneWidget);
+
+      // Vuốt sang trái để thu gọn thanh tốc độ vào cạnh trái
+      await tester.drag(find.byKey(const ValueKey('speed_hud_expanded')), const Offset(-140, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_docked_left')), findsOneWidget);
+      expect(find.byKey(const ValueKey('speed_hud_expanded')), findsNothing);
+
+      // Vuốt thanh ẩn sang phải (ngược vào giữa) để hiển thị lại
+      await tester.drag(find.byKey(const ValueKey('speed_hud_docked_left')), const Offset(80, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_expanded')), findsOneWidget);
+
+      // Vuốt sang phải để thu gọn sang cạnh phải
+      await tester.drag(find.byKey(const ValueKey('speed_hud_expanded')), const Offset(140, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_docked_right')), findsOneWidget);
+
+      // Vuốt thanh ẩn bên phải vào giữa để mở lại
+      await tester.drag(find.byKey(const ValueKey('speed_hud_docked_right')), const Offset(-80, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_expanded')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'CockpitLiveMap fullscreen Speed HUD swipes cleanly to left/right edge bars and compass cycles 3 modes',
+        (tester) async {
+      tester.view.physicalSize = const Size(400 * 2.0, 820 * 2.0);
+      tester.view.devicePixelRatio = 2.0;
+      addTearDown(() => tester.view.resetPhysicalSize());
+
+      await tester.pumpWidget(
+        const ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(
+              body: CockpitLiveMap(
+                currentSpeedKmh: 52.0,
+                isFullScreen: true,
+                batteryPercent: 85,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Chu kỳ góc nhìn: BẮC -> XE -> TỔNG -> BẮC
+      expect(find.text('BẮC'), findsOneWidget);
+      await tester.tap(find.text('BẮC'));
+      await tester.pumpAndSettle();
+      expect(find.text('XE'), findsOneWidget);
+      await tester.tap(find.text('XE'));
+      await tester.pumpAndSettle();
+      expect(find.text('TỔNG'), findsOneWidget);
+      await tester.tap(find.text('TỔNG'));
+      await tester.pumpAndSettle();
+      expect(find.text('BẮC'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      // Vuốt ngang ô tốc độ sang trái / phải trong màn hình Fullscreen
+      await tester.drag(find.byKey(const ValueKey('speed_hud_expanded')), const Offset(-160, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_docked_left')), findsOneWidget);
+
+      await tester.drag(find.byKey(const ValueKey('speed_hud_docked_left')), const Offset(90, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_expanded')), findsOneWidget);
+
+      await tester.drag(find.byKey(const ValueKey('speed_hud_expanded')), const Offset(160, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_docked_right')), findsOneWidget);
+
+      await tester.drag(find.byKey(const ValueKey('speed_hud_docked_right')), const Offset(-90, 0));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('speed_hud_expanded')), findsOneWidget);
+      expect(tester.takeException(), isNull);
     });
   });
 

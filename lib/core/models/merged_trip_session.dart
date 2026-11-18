@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import '../ble/ble_controller.dart' show TripRecord;
+import '../services/gps_route_snapping_service.dart';
 import 'trip_gps_point.dart';
 
 /// Chế độ ghép nhiều hành trình thành một phiên xem & phát lại thống nhất.
@@ -56,6 +57,10 @@ class TripSegment {
   final int endPointIndex;
   final double cumulativeStartKm;
   final double cumulativeEndKm;
+  final double? gpsDistanceKm;
+  final double cumulativeGpsStartKm;
+  final double cumulativeGpsEndKm;
+  final int gpsSignalLossCount;
   final Duration gapBefore;
   final double gapDistanceBeforeMeters;
 
@@ -68,6 +73,10 @@ class TripSegment {
     required this.endPointIndex,
     required this.cumulativeStartKm,
     required this.cumulativeEndKm,
+    this.gpsDistanceKm,
+    this.cumulativeGpsStartKm = 0.0,
+    this.cumulativeGpsEndKm = 0.0,
+    this.gpsSignalLossCount = 0,
     required this.gapBefore,
     required this.gapDistanceBeforeMeters,
   });
@@ -108,6 +117,18 @@ class MergedTripSession {
 
   double get totalDistanceKm =>
       segments.fold<double>(0.0, (sum, s) => sum + s.trip.distanceKm);
+
+  double get totalGpsDistanceKm =>
+      segments.fold<double>(0.0, (sum, s) => sum + (s.gpsDistanceKm ?? 0.0));
+
+  bool get hasGpsDistance => segments.any((s) => s.gpsDistanceKm != null);
+
+  int get totalGpsSignalLossCount =>
+      segments.fold<int>(0, (sum, s) => sum + s.gpsSignalLossCount);
+
+  bool get isGpsRoadSnapped =>
+      hasGpsDistance &&
+      segments.where((s) => s.gpsDistanceKm != null).every((s) => s.trip.isGpsRoadSnapped);
 
   int get totalMovingDurationSec =>
       segments.fold<int>(0, (sum, s) => sum + s.trip.durationSec);
@@ -155,12 +176,25 @@ class MergedTripSession {
     return null;
   }
 
-  /// Quãng đường tích lũy (km) nội suy tuyến tính tại điểm toàn cục [globalIndex].
-  double cumulativeDistanceAtPointIndex(int globalIndex) {
+  /// Quãng đường ODO tích lũy (km) nội suy tuyến tính tại điểm toàn cục [globalIndex].
+  double cumulativeDistanceAtPointIndex(int globalIndex) =>
+      _cumulativeMetricAt(globalIndex, useGps: false);
+
+  /// Quãng đường GPS tích lũy (km) nội suy tuyến tính tại điểm toàn cục [globalIndex].
+  double cumulativeGpsDistanceAtPointIndex(int globalIndex) =>
+      _cumulativeMetricAt(globalIndex, useGps: true);
+
+  double _cumulativeMetricAt(int globalIndex, {required bool useGps}) {
     if (segments.isEmpty) return 0.0;
     if (allPoints.isEmpty) return 0.0;
-    if (globalIndex < 0) return segments.first.cumulativeStartKm;
-    if (globalIndex >= allPoints.length - 1) return totalDistanceKm;
+    if (globalIndex < 0) {
+      return useGps
+          ? segments.first.cumulativeGpsStartKm
+          : segments.first.cumulativeStartKm;
+    }
+    if (globalIndex >= allPoints.length - 1) {
+      return useGps ? totalGpsDistanceKm : totalDistanceKm;
+    }
 
     final seg = segmentAtPointIndex(globalIndex);
     if (seg == null) {
@@ -170,17 +204,19 @@ class MergedTripSession {
           fallback = candidate;
         }
       }
-      return fallback?.cumulativeEndKm ?? 0.0;
+      if (fallback == null) return 0.0;
+      return useGps ? fallback.cumulativeGpsEndKm : fallback.cumulativeEndKm;
     }
 
+    final segStart = useGps ? seg.cumulativeGpsStartKm : seg.cumulativeStartKm;
+    final segEnd = useGps ? seg.cumulativeGpsEndKm : seg.cumulativeEndKm;
     final span = seg.endPointIndex - seg.startPointIndex;
     if (span <= 0) {
-      return seg.cumulativeEndKm;
+      return segEnd;
     }
     final localOffset = (globalIndex - seg.startPointIndex).clamp(0, span);
     final fraction = localOffset / span;
-    return seg.cumulativeStartKm +
-        (seg.cumulativeEndKm - seg.cumulativeStartKm) * fraction;
+    return segStart + (segEnd - segStart) * fraction;
   }
 
   /// Tạo [MergedTripSession] từ danh sách [trips] (tự sắp xếp theo thứ tự thời gian tăng dần).
@@ -217,6 +253,7 @@ class MergedTripSession {
     final stopovers = <TripStopover>[];
 
     double cumulativeKm = 0.0;
+    double cumulativeGpsKm = 0.0;
     TripSegment? lastSegmentWithPoints;
     TripSegment? prevSegment;
 
@@ -224,6 +261,10 @@ class MergedTripSession {
       final trip = sortedTrips[i];
       final rawPoints = routesByTripId[trip.id] ?? trip.route;
       final points = List<TripGpsPoint>.unmodifiable(rawPoints);
+      final segGpsKm = trip.effectiveGpsDistanceKm(points);
+      final segLossCount = points.length >= 2
+          ? max(trip.gpsSignalLossCount, GpsRouteAnalyzer.measureRoute(points).signalLossCount)
+          : trip.gpsSignalLossCount;
 
       final int startIdx;
       final int endIdx;
@@ -241,6 +282,10 @@ class MergedTripSession {
       final cumEnd = cumulativeKm + trip.distanceKm;
       cumulativeKm = cumEnd;
 
+      final cumGpsStart = cumulativeGpsKm;
+      final cumGpsEnd = cumulativeGpsKm + (segGpsKm ?? 0.0);
+      cumulativeGpsKm = cumGpsEnd;
+
       Duration gapBefore = Duration.zero;
       double gapDistanceBeforeMeters = 0.0;
 
@@ -253,7 +298,7 @@ class MergedTripSession {
         if (lastSegmentWithPoints != null && points.isNotEmpty) {
           final p1 = lastSegmentWithPoints.points.last;
           final p2 = points.first;
-          gapDistanceBeforeMeters = _haversineMeters(p1.lat, p1.lng, p2.lat, p2.lng);
+          gapDistanceBeforeMeters = GpsGeoMath.distanceMeters(p1.lat, p1.lng, p2.lat, p2.lng);
         }
 
         final hasTimeGap = gapBefore > Duration.zero;
@@ -298,6 +343,10 @@ class MergedTripSession {
         endPointIndex: endIdx,
         cumulativeStartKm: cumStart,
         cumulativeEndKm: cumEnd,
+        gpsDistanceKm: segGpsKm,
+        cumulativeGpsStartKm: cumGpsStart,
+        cumulativeGpsEndKm: cumGpsEnd,
+        gpsSignalLossCount: segLossCount,
         gapBefore: gapBefore,
         gapDistanceBeforeMeters: gapDistanceBeforeMeters,
       );
@@ -343,27 +392,6 @@ class MergedTripSession {
         return 'Chuỗi ${sortedTrips.length} hành trình';
     }
   }
-
-  static double _haversineMeters(
-    double lat1,
-    double lng1,
-    double lat2,
-    double lng2,
-  ) {
-    const earthRadiusMeters = 6371000.0;
-    final dLat = _degToRad(lat2 - lat1);
-    final dLng = _degToRad(lng2 - lng1);
-    final a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(_degToRad(lat1)) *
-            cos(_degToRad(lat2)) *
-            sin(dLng / 2) *
-            sin(dLng / 2);
-    final clampedA = a.clamp(0.0, 1.0);
-    final c = 2 * atan2(sqrt(clampedA), sqrt(1 - clampedA));
-    return earthRadiusMeters * c;
-  }
-
-  static double _degToRad(double deg) => deg * (pi / 180.0);
 }
 
 /// Nhóm các chuyến đi diễn ra trong cùng một ngày (theo giờ địa phương).
@@ -390,6 +418,12 @@ class TripDayGroup {
 
   double get totalDistanceKm =>
       trips.fold<double>(0.0, (sum, t) => sum + t.distanceKm);
+
+  double get totalGpsDistanceKm =>
+      trips.fold<double>(0.0, (sum, t) => sum + (t.effectiveGpsDistanceKm() ?? 0.0));
+
+  bool get hasGpsDistance =>
+      trips.any((t) => t.effectiveGpsDistanceKm() != null);
 
   int get totalMovingDurationSec =>
       trips.fold<int>(0, (sum, t) => sum + t.durationSec);

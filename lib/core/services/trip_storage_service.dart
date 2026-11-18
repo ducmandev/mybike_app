@@ -37,6 +37,12 @@ class TripStorageService extends JsonPrefsStore<TripRecord> {
   Future<Directory>? _initFuture;
   Future<void> _opLock = Future.value();
 
+  @visibleForTesting
+  void resetDirectoryCacheForTesting() {
+    _tripsDir = null;
+    _initFuture = null;
+  }
+
   Future<T> _synchronized<T>(Future<T> Function() action) {
     final completer = Completer<T>();
     _opLock = _opLock.then((_) async {
@@ -372,6 +378,54 @@ class TripStorageService extends JsonPrefsStore<TripRecord> {
         await removeKeys(const [_kLegacyTripKey]);
       } catch (e) {
         debugPrint('[TripStorageService] Lỗi lưu chuyến đi: $e');
+      }
+    });
+  }
+
+  /// Cập nhật chỉ số KM GPS & lộ trình đã nắn đường cho một chuyến đi sẵn có, giữ nguyên thứ tự lịch sử.
+  Future<TripRecord?> updateTripGpsMetrics({
+    required String tripId,
+    required double gpsDistanceKm,
+    required bool isRoadSnapped,
+    required int signalLossCount,
+    required List<TripGpsPoint> route,
+  }) {
+    return _synchronized(() async {
+      try {
+        final existing = await _loadAllTripsUnsafe();
+        final idx = existing.indexWhere((t) => t.id == tripId);
+        if (idx == -1) return null;
+
+        if (route.isNotEmpty) {
+          final dir = await getTripsDirectory();
+          final tmpFile = File('${dir.path}/$tripId.json.tmp');
+          final targetFile = File('${dir.path}/$tripId.json');
+          final routeJson = jsonEncode(route.map((p) => p.toJson()).toList());
+          await tmpFile.writeAsString(routeJson, flush: true);
+          if (await targetFile.exists()) {
+            await targetFile.delete();
+          }
+          await tmpFile.rename(targetFile.path);
+        }
+
+        final updatedTrip = existing[idx].copyWith(
+          gpsDistanceKm: gpsDistanceKm,
+          isGpsRoadSnapped: isRoadSnapped,
+          gpsSignalLossCount: signalLossCount,
+          route: const [],
+        );
+        final updatedList = List<TripRecord>.from(existing);
+        updatedList[idx] = updatedTrip;
+
+        await writeList(
+          _kTripMetadataKey,
+          updatedList,
+          (e) => e.toMetadataJson(),
+        );
+        return updatedTrip;
+      } catch (e) {
+        debugPrint('[TripStorageService] Lỗi cập nhật KM GPS chuyến $tripId: $e');
+        return null;
       }
     });
   }

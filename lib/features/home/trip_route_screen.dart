@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart' hide Path;
 
 import '../../core/ble/ble_controller.dart' show TripRecord, TripGpsPoint, bleProvider, BlePhase;
 import '../../core/models/merged_trip_session.dart';
+import '../../core/services/gps_route_snapping_service.dart';
 import '../../core/services/map_tile_service.dart';
 import '../../core/services/trip_export_service.dart';
 import '../../core/services/trip_gps_tracker.dart';
@@ -187,12 +188,61 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     final route = await TripStorageService.instance.loadTripRoute(trip);
     if (!mounted) return;
 
+    final cleaned = TripGpsTracker.cleanAndSmoothRoute(route);
     setState(() {
-      _routePoints = TripGpsTracker.cleanAndSmoothRoute(route);
+      _routePoints = cleaned;
       _currentIndex = 0;
     });
 
     _scheduleFitRouteBounds();
+
+    if (cleaned.length >= 2 && !trip.isGpsRoadSnapped) {
+      unawaited(_snapSelectedTripIfOnline(trip, cleaned));
+    }
+  }
+
+  /// Tự động nắn đường bộ cho chuyến đi đang xem nếu chưa từng nắn (lưu cache để dùng lại).
+  Future<void> _snapSelectedTripIfOnline(
+    TripRecord trip,
+    List<TripGpsPoint> currentRoute,
+  ) async {
+    try {
+      final snapped = await GpsRouteSnappingService.instance.snapRouteToRoads(currentRoute);
+      if (!mounted || !snapped.metrics.isRoadSnapped) return;
+
+      final roundedGpsKm = double.parse(snapped.metrics.distanceKm.toStringAsFixed(2));
+      await ref.read(bleProvider.notifier).updateTripGpsMatchResult(
+        tripId: trip.id,
+        gpsDistanceKm: roundedGpsKm,
+        isRoadSnapped: true,
+        signalLossCount: snapped.metrics.signalLossCount,
+        snappedRoute: snapped.points,
+      );
+
+      if (!mounted) return;
+      final isStillSelected = _selectedTrip?.id == trip.id && !_isViewingLive && !_isViewingMerged;
+      setState(() {
+        _allTrips = _allTrips.map((t) {
+          if (t.id != trip.id) return t;
+          return t.copyWith(
+            gpsDistanceKm: roundedGpsKm,
+            isGpsRoadSnapped: true,
+            gpsSignalLossCount: snapped.metrics.signalLossCount,
+          );
+        }).toList();
+        if (isStillSelected) {
+          _selectedTrip = _selectedTrip!.copyWith(
+            gpsDistanceKm: roundedGpsKm,
+            isGpsRoadSnapped: true,
+            gpsSignalLossCount: snapped.metrics.signalLossCount,
+          );
+          _routePoints = snapped.points;
+          if (_currentIndex >= _routePoints.length) {
+            _currentIndex = math.max(0, _routePoints.length - 1);
+          }
+        }
+      });
+    } catch (_) {}
   }
 
   /// Ghép nhiều hành trình thành một phiên Live-Back liên tục theo thứ tự thời gian
@@ -528,6 +578,24 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     return 0.0;
   }
 
+  double? _cumulativeGpsDistanceKmAt(int index, double liveGpsDistanceKm) {
+    if (_isViewingMerged && _mergedSession != null) {
+      if (!_mergedSession!.hasGpsDistance) return null;
+      return _mergedSession!.cumulativeGpsDistanceAtPointIndex(index);
+    }
+    if (_isViewingLive) {
+      return liveGpsDistanceKm > 0 ? liveGpsDistanceKm : null;
+    }
+    if (_selectedTrip != null) {
+      final totalGps = _selectedTrip!.effectiveGpsDistanceKm(_routePoints);
+      if (totalGps == null) return null;
+      if (_routePoints.length <= 1) return totalGps;
+      final ratio = index.clamp(0, _routePoints.length - 1) / (_routePoints.length - 1);
+      return totalGps * ratio;
+    }
+    return null;
+  }
+
   MergedTripSession? _buildExportableSession() {
     if (_mergedSession != null) {
       return _mergedSession!;
@@ -543,7 +611,10 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
       final first = _routePoints.first;
       final last = _routePoints.last;
       final durSec = math.max(1, last.timestamp.difference(first.timestamp).inSeconds);
-      final distKm = TripGpsTracker.instance.totalDistanceKm;
+      final liveMetrics = GpsRouteAnalyzer.measureRoute(_routePoints);
+      final liveGpsKm = liveMetrics.distanceKm;
+      final liveOdoKm = ref.read(bleProvider).trip.distanceKm;
+      final effDist = liveOdoKm > 0 ? liveOdoKm : liveGpsKm;
       double maxSpd = 0.0;
       for (final p in _routePoints) {
         if (p.speedKmh > maxSpd) maxSpd = p.speedKmh;
@@ -552,9 +623,11 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
         id: 'live_${first.timestamp.millisecondsSinceEpoch}',
         startTime: first.timestamp,
         endTime: last.timestamp,
-        distanceKm: distKm,
+        distanceKm: effDist,
+        gpsDistanceKm: liveGpsKm,
+        gpsSignalLossCount: liveMetrics.signalLossCount,
         durationSec: durSec,
-        avgSpeedKmh: durSec > 0 ? distKm / (durSec / 3600.0) : 0.0,
+        avgSpeedKmh: durSec > 0 ? effDist / (durSec / 3600.0) : 0.0,
         maxSpeedKmh: maxSpd,
         usedPercent: 0,
         route: _routePoints,
@@ -1101,7 +1174,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                   ),
                                   const SizedBox(height: 3),
                                   Text(
-                                    '$dateStr · ${tripItem.distanceKm.toStringAsFixed(1)} km · $durMin phút',
+                                    tripItem.effectiveGpsDistanceKm() != null
+                                        ? '$dateStr · ${tripItem.distanceKm.toStringAsFixed(1)} km (GPS ${tripItem.effectiveGpsDistanceKm()!.toStringAsFixed(1)}) · $durMin p'
+                                        : '$dateStr · ${tripItem.distanceKm.toStringAsFixed(1)} km · $durMin phút',
                                     style: GoogleFonts.plusJakartaSans(
                                       fontSize: 11,
                                       color: AppColors.textDim,
@@ -1317,21 +1392,25 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     final now = DateTime.now();
 
     TripRecord? liveTripRecord;
-    if (TripGpsTracker.instance.isTracking) {
+    if (TripGpsTracker.instance.isActivelyRecording) {
       final livePts = TripGpsTracker.instance.getCurrentRoute();
       if (livePts.length >= 2) {
-        final liveDist = TripGpsTracker.instance.totalDistanceKm;
+        final liveGpsDist = TripGpsTracker.instance.totalDistanceKm;
+        final liveOdoDist = ref.read(bleProvider).trip.distanceKm;
+        final effDist = liveOdoDist > 0 ? liveOdoDist : liveGpsDist;
         final durSec = math.max(1, livePts.last.timestamp.difference(livePts.first.timestamp).inSeconds);
         double maxSpd = 0.0;
         for (final p in livePts) {
           if (p.speedKmh > maxSpd) maxSpd = p.speedKmh;
         }
-        final avgSpd = durSec > 0 ? liveDist / (durSec / 3600.0) : 0.0;
+        final avgSpd = durSec > 0 ? effDist / (durSec / 3600.0) : 0.0;
         liveTripRecord = TripRecord(
           id: 'live_today_${livePts.first.timestamp.millisecondsSinceEpoch}',
           startTime: livePts.first.timestamp,
           endTime: livePts.last.timestamp,
-          distanceKm: liveDist,
+          distanceKm: effDist,
+          gpsDistanceKm: liveGpsDist,
+          gpsSignalLossCount: TripGpsTracker.instance.signalLossCount,
           durationSec: durSec,
           avgSpeedKmh: avgSpd,
           maxSpeedKmh: maxSpd,
@@ -1369,6 +1448,8 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
             ? [...group.chronologicalTrips, liveTripRecord]
             : group.chronologicalTrips;
         final totalKm = tripsForDay.fold<double>(0.0, (s, t) => s + t.distanceKm);
+        final totalGpsKm = tripsForDay.fold<double>(0.0, (s, t) => s + (t.effectiveGpsDistanceKm() ?? 0.0));
+        final hasDayGpsKm = tripsForDay.any((t) => t.effectiveGpsDistanceKm() != null);
         final movingMin = tripsForDay.fold<int>(0, (s, t) => s + t.durationSec) ~/ 60;
         final label = group.formatDateLabel(now: now);
 
@@ -1409,7 +1490,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '${tripsForDay.length} chặng · ${totalKm.toStringAsFixed(1)} km · $movingMin phút',
+                          hasDayGpsKm
+                              ? '${tripsForDay.length} chặng · ODO ${totalKm.toStringAsFixed(1)} · GPS ${totalGpsKm.toStringAsFixed(1)} km · $movingMin p'
+                              : '${tripsForDay.length} chặng · ${totalKm.toStringAsFixed(1)} km · $movingMin phút',
                           style: GoogleFonts.plusJakartaSans(
                             fontSize: 11.5,
                             color: AppColors.textDim,
@@ -1594,7 +1677,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                '${_formatHm(trip.startTime)} → ${_formatHm(trip.endTime)} · ${trip.distanceKm.toStringAsFixed(1)} km · $durMin p',
+                trip.effectiveGpsDistanceKm() != null
+                    ? '${_formatHm(trip.startTime)} → ${_formatHm(trip.endTime)} · ${trip.distanceKm.toStringAsFixed(1)} km (GPS ${trip.effectiveGpsDistanceKm()!.toStringAsFixed(1)}) · $durMin p'
+                    : '${_formatHm(trip.startTime)} → ${_formatHm(trip.endTime)} · ${trip.distanceKm.toStringAsFixed(1)} km · $durMin p',
                 style: GoogleFonts.plusJakartaSans(fontSize: 11.5, color: AppColors.textPrimary),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1894,7 +1979,18 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                         ),
                         child: Column(
                           children: [
-                            _tripDetailRow('Tổng quãng đường', '${merged.totalDistanceKm.toStringAsFixed(1)} km'),
+                            _tripDetailRow('Tổng KM xe (ODO)', '${merged.totalDistanceKm.toStringAsFixed(1)} km'),
+                            const Divider(color: AppColors.panelBorder, height: 14),
+                            _tripDetailRow(
+                              'Tổng KM theo GPS',
+                              merged.hasGpsDistance
+                                  ? '${merged.totalGpsDistanceKm.toStringAsFixed(1)} km${merged.isGpsRoadSnapped ? ' (nắn đường)' : ' (trừ mất sóng)'}'
+                                  : '--',
+                            ),
+                            if (merged.totalGpsSignalLossCount > 0) ...[
+                              const Divider(color: AppColors.panelBorder, height: 14),
+                              _tripDetailRow('Đoạn mất sóng đã trừ', '${merged.totalGpsSignalLossCount} đoạn'),
+                            ],
                             const Divider(color: AppColors.panelBorder, height: 14),
                             _tripDetailRow('Thời gian di chuyển', AppFormatters.formatDurationVerboseSec(merged.totalMovingDurationSec)),
                             const Divider(color: AppColors.panelBorder, height: 14),
@@ -1961,20 +2057,48 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(color: AppColors.panelBorderBright),
                         ),
-                        child: Column(
-                          children: [
-                            _tripDetailRow('Quãng đường', '${trip.distanceKm.toStringAsFixed(1)} km'),
-                            const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Thời gian di chuyển', durText),
-                            const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Vận tốc trung bình', '${trip.avgSpeedKmh.toStringAsFixed(0)} km/h'),
-                            const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Vận tốc cao nhất', '${trip.maxSpeedKmh.toStringAsFixed(0)} km/h'),
-                            const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Tiêu thụ pin', trip.usedPercent > 0 ? '-${trip.usedPercent}%' : '--'),
-                            const Divider(color: AppColors.panelBorder, height: 14),
-                            _tripDetailRow('Giảm phát thải CO2', '$co2Kg kg'),
-                          ],
+                        child: Builder(
+                          builder: (_) {
+                            final singleGpsKm = trip.effectiveGpsDistanceKm(_routePoints);
+                            final routeMetrics = GpsRouteAnalyzer.measureRoute(
+                              _routePoints,
+                              isRoadSnapped: trip.isGpsRoadSnapped,
+                            );
+                            final lossCount = math.max(trip.gpsSignalLossCount, routeMetrics.signalLossCount);
+                            final gapKm = routeMetrics.excludedGapDistanceKm;
+
+                            return Column(
+                              children: [
+                                _tripDetailRow('Quãng đường xe (ODO)', '${trip.distanceKm.toStringAsFixed(1)} km'),
+                                const Divider(color: AppColors.panelBorder, height: 14),
+                                _tripDetailRow(
+                                  'Quãng đường theo GPS',
+                                  singleGpsKm != null
+                                      ? '${singleGpsKm.toStringAsFixed(1)} km${trip.isGpsRoadSnapped ? ' (đã nắn đường)' : ' (trừ mất sóng)'}'
+                                      : '--',
+                                ),
+                                if (lossCount > 0 || gapKm > 0.01) ...[
+                                  const Divider(color: AppColors.panelBorder, height: 14),
+                                  _tripDetailRow(
+                                    'Loại trừ mất sóng GPS',
+                                    gapKm > 0.01
+                                        ? '$lossCount đoạn (${gapKm.toStringAsFixed(2)} km)'
+                                        : '$lossCount đoạn',
+                                  ),
+                                ],
+                                const Divider(color: AppColors.panelBorder, height: 14),
+                                _tripDetailRow('Thời gian di chuyển', durText),
+                                const Divider(color: AppColors.panelBorder, height: 14),
+                                _tripDetailRow('Vận tốc trung bình', '${trip.avgSpeedKmh.toStringAsFixed(0)} km/h'),
+                                const Divider(color: AppColors.panelBorder, height: 14),
+                                _tripDetailRow('Vận tốc cao nhất', '${trip.maxSpeedKmh.toStringAsFixed(0)} km/h'),
+                                const Divider(color: AppColors.panelBorder, height: 14),
+                                _tripDetailRow('Tiêu thụ pin', trip.usedPercent > 0 ? '-${trip.usedPercent}%' : '--'),
+                                const Divider(color: AppColors.panelBorder, height: 14),
+                                _tripDetailRow('Giảm phát thải CO2', '$co2Kg kg'),
+                              ],
+                            );
+                          },
                         ),
                       ),
 
@@ -2080,7 +2204,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '${seg.trip.distanceKm.toStringAsFixed(1)} km · ${AppFormatters.formatDurationVerboseSec(seg.trip.durationSec)} · Max ${seg.trip.maxSpeedKmh.toStringAsFixed(0)} km/h${seg.trip.usedPercent > 0 ? ' · -${seg.trip.usedPercent}%' : ''}',
+                        seg.gpsDistanceKm != null
+                            ? '${seg.trip.distanceKm.toStringAsFixed(1)} km ODO · ${seg.gpsDistanceKm!.toStringAsFixed(1)} km GPS · ${AppFormatters.formatDurationVerboseSec(seg.trip.durationSec)} · Max ${seg.trip.maxSpeedKmh.toStringAsFixed(0)} km/h${seg.trip.usedPercent > 0 ? ' · -${seg.trip.usedPercent}%' : ''}'
+                            : '${seg.trip.distanceKm.toStringAsFixed(1)} km · ${AppFormatters.formatDurationVerboseSec(seg.trip.durationSec)} · Max ${seg.trip.maxSpeedKmh.toStringAsFixed(0)} km/h${seg.trip.usedPercent > 0 ? ' · -${seg.trip.usedPercent}%' : ''}',
                         style: GoogleFonts.plusJakartaSans(fontSize: 11, color: AppColors.textDim),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
@@ -2230,6 +2356,63 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     );
   }
 
+  /// Trả về các cặp chỉ số `(start, end)` của từng đoạn GPS liên tục (cắt tại điểm mất sóng).
+  List<({int start, int end})> _contiguousRunRanges(List<TripGpsPoint> points) {
+    if (points.isEmpty) return const [];
+    final ranges = <({int start, int end})>[];
+    var runStart = 0;
+    for (var i = 1; i < points.length; i++) {
+      if (GpsRouteAnalyzer.isSignalGap(points[i - 1], points[i])) {
+        ranges.add((start: runStart, end: i - 1));
+        runStart = i;
+      }
+    }
+    ranges.add((start: runStart, end: points.length - 1));
+    return ranges;
+  }
+
+  void _appendGapAndBackgroundRuns(
+    List<TripGpsPoint> pts,
+    Color borderBase,
+    List<Polyline> out,
+  ) {
+    final runs = _contiguousRunRanges(pts);
+    for (var r = 0; r < runs.length; r++) {
+      final run = runs[r];
+      if (r > 0) {
+        final prevEnd = pts[runs[r - 1].end];
+        final curStart = pts[run.start];
+        out.add(
+          Polyline(
+            points: [
+              LatLng(prevEnd.lat, prevEnd.lng),
+              LatLng(curStart.lat, curStart.lng),
+            ],
+            strokeWidth: 2.2,
+            strokeCap: StrokeCap.round,
+            color: AppColors.textMuted.withValues(alpha: 0.65),
+            borderStrokeWidth: 1.0,
+            borderColor: borderBase.withValues(alpha: 0.20),
+            pattern: StrokePattern.dashed(segments: const [5, 5]),
+          ),
+        );
+      }
+      if (run.end > run.start) {
+        out.add(
+          Polyline(
+            points: pts.sublist(run.start, run.end + 1).map((p) => LatLng(p.lat, p.lng)).toList(),
+            strokeWidth: 8.0,
+            strokeCap: StrokeCap.round,
+            strokeJoin: StrokeJoin.round,
+            color: AppColors.primary.withValues(alpha: 0.20),
+            borderStrokeWidth: 2.5,
+            borderColor: borderBase.withValues(alpha: 0.25),
+          ),
+        );
+      }
+    }
+  }
+
   List<Polyline> _buildBackgroundPolylines() {
     final borderBase = MapTileService.routeBorderColorFor(_tileStyle);
     if (_mergedSession != null) {
@@ -2254,17 +2437,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
           );
         }
         if (seg.points.length >= 2) {
-          polylines.add(
-            Polyline(
-              points: seg.points.map((p) => LatLng(p.lat, p.lng)).toList(),
-              strokeWidth: 8.0,
-              strokeCap: StrokeCap.round,
-              strokeJoin: StrokeJoin.round,
-              color: AppColors.primary.withValues(alpha: 0.20),
-              borderStrokeWidth: 2.5,
-              borderColor: borderBase.withValues(alpha: 0.25),
-            ),
-          );
+          _appendGapAndBackgroundRuns(seg.points, borderBase, polylines);
         }
         prevWithPoints = seg;
       }
@@ -2272,17 +2445,9 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     }
 
     if (_routePoints.length < 2) return const [];
-    return [
-      Polyline(
-        points: _routePoints.map((p) => LatLng(p.lat, p.lng)).toList(),
-        strokeWidth: 8.0,
-        strokeCap: StrokeCap.round,
-        strokeJoin: StrokeJoin.round,
-        color: AppColors.primary.withValues(alpha: 0.20),
-        borderStrokeWidth: 2.5,
-        borderColor: borderBase.withValues(alpha: 0.25),
-      ),
-    ];
+    final singlePolylines = <Polyline>[];
+    _appendGapAndBackgroundRuns(_routePoints, borderBase, singlePolylines);
+    return singlePolylines;
   }
 
   List<Polyline> _buildSegmentSpeedPolylines(
@@ -2293,52 +2458,56 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
     final n = segPoints.length;
     if (n < 2) return const [];
 
-    final sampled = <int>[0];
-    for (int i = stride; i < n - 1; i += stride) {
-      sampled.add(i);
-    }
-    sampled.add(n - 1);
+    final borderBase = MapTileService.routeBorderColorFor(_tileStyle);
+    final polylines = <Polyline>[];
+    final runs = _contiguousRunRanges(segPoints);
 
-    if (_currentIndex >= segStartGlobalIndex && _currentIndex < segStartGlobalIndex + n) {
+    for (final run in runs) {
+      if (run.end <= run.start) continue;
+
+      final sampled = <int>[run.start];
+      for (int i = run.start + stride; i < run.end; i += stride) {
+        sampled.add(i);
+      }
+      sampled.add(run.end);
+
       final localCur = _currentIndex - segStartGlobalIndex;
-      if (!sampled.contains(localCur)) {
+      if (localCur >= run.start && localCur <= run.end && !sampled.contains(localCur)) {
         sampled.add(localCur);
         sampled.sort();
       }
-    }
 
-    final borderBase = MapTileService.routeBorderColorFor(_tileStyle);
-    final polylines = <Polyline>[];
-    for (int k = 0; k < sampled.length - 1; k++) {
-      final a = sampled[k];
-      final b = sampled[k + 1];
-      final isPlayed = (segStartGlobalIndex + b) <= _currentIndex;
+      for (int k = 0; k < sampled.length - 1; k++) {
+        final a = sampled[k];
+        final b = sampled[k + 1];
+        final isPlayed = (segStartGlobalIndex + b) <= _currentIndex;
 
-      var c1 = _useHighlightMonoRoute
-          ? AppColors.primary
-          : MapTileService.getHighContrastSpeedColor(segPoints[a].speedKmh);
-      var c2 = _useHighlightMonoRoute
-          ? AppColors.primary
-          : MapTileService.getHighContrastSpeedColor(segPoints[b].speedKmh);
-      if (!isPlayed) {
-        c1 = c1.withValues(alpha: 0.35);
-        c2 = c2.withValues(alpha: 0.35);
+        var c1 = _useHighlightMonoRoute
+            ? AppColors.primary
+            : MapTileService.getHighContrastSpeedColor(segPoints[a].speedKmh);
+        var c2 = _useHighlightMonoRoute
+            ? AppColors.primary
+            : MapTileService.getHighContrastSpeedColor(segPoints[b].speedKmh);
+        if (!isPlayed) {
+          c1 = c1.withValues(alpha: 0.35);
+          c2 = c2.withValues(alpha: 0.35);
+        }
+
+        polylines.add(
+          Polyline(
+            points: [
+              LatLng(segPoints[a].lat, segPoints[a].lng),
+              LatLng(segPoints[b].lat, segPoints[b].lng),
+            ],
+            strokeWidth: isPlayed ? 5.5 : 4.5,
+            strokeCap: StrokeCap.round,
+            strokeJoin: StrokeJoin.round,
+            borderStrokeWidth: isPlayed ? 2.5 : 1.5,
+            borderColor: isPlayed ? borderBase : borderBase.withValues(alpha: 0.30),
+            gradientColors: [c1, c2],
+          ),
+        );
       }
-
-      polylines.add(
-        Polyline(
-          points: [
-            LatLng(segPoints[a].lat, segPoints[a].lng),
-            LatLng(segPoints[b].lat, segPoints[b].lng),
-          ],
-          strokeWidth: isPlayed ? 5.5 : 4.5,
-          strokeCap: StrokeCap.round,
-          strokeJoin: StrokeJoin.round,
-          borderStrokeWidth: isPlayed ? 2.5 : 1.5,
-          borderColor: isPlayed ? borderBase : borderBase.withValues(alpha: 0.30),
-          gradientColors: [c1, c2],
-        ),
-      );
     }
     return polylines;
   }
@@ -2380,15 +2549,19 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
           isConnected: s.phase == BlePhase.connected,
           tripDurationSec: s.trip.duration.inSeconds,
           tripDistanceKm: s.trip.distanceKm,
+          tripGpsDistanceKm: s.trip.gpsDistanceKm,
         ),
       ),
     );
-    final isTrackingActive = TripGpsTracker.instance.isTracking ||
-        TripGpsTracker.instance.getCurrentRoute().isNotEmpty ||
+    final isTrackingActive = TripGpsTracker.instance.isActivelyRecording ||
         (bleSummary.isConnected && bleSummary.tripDurationSec > 0);
-    final curLiveDistance = TripGpsTracker.instance.totalDistanceKm > 0
+    final curLiveGpsDistance = TripGpsTracker.instance.totalDistanceKm > 0
         ? TripGpsTracker.instance.totalDistanceKm
-        : bleSummary.tripDistanceKm;
+        : bleSummary.tripGpsDistanceKm;
+    final curLiveDistance = bleSummary.tripDistanceKm > 0
+        ? bleSummary.tripDistanceKm
+        : curLiveGpsDistance;
+    final selectedTripGpsKm = _selectedTrip?.effectiveGpsDistanceKm(_routePoints);
 
     final initialCenter = hasPoints
         ? LatLng(_routePoints.first.lat, _routePoints.first.lng)
@@ -2515,11 +2688,15 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                     Expanded(
                                       child: Text(
                                         _isViewingLive
-                                            ? 'Đang định vị chuyến đi · ${curLiveDistance.toStringAsFixed(1)} km'
+                                            ? 'Đang ghi · ODO ${curLiveDistance.toStringAsFixed(1)} · GPS ${curLiveGpsDistance.toStringAsFixed(1)} km'
                                             : (_isViewingMerged
-                                                ? '${_mergedSession!.title} · ${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km'
+                                                ? (_mergedSession!.hasGpsDistance
+                                                    ? '${_mergedSession!.title} · ${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km (GPS ${_mergedSession!.totalGpsDistanceKm.toStringAsFixed(1)})'
+                                                    : '${_mergedSession!.title} · ${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km')
                                                 : (_selectedTrip != null
-                                                    ? '#$_selectedTripIndex · ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km'
+                                                    ? (selectedTripGpsKm != null
+                                                        ? '#$_selectedTripIndex · ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km (GPS ${selectedTripGpsKm.toStringAsFixed(1)})'
+                                                        : '#$_selectedTripIndex · ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km')
                                                     : 'Tìm kiếm hành trình...')),
                                         style: GoogleFonts.plusJakartaSans(
                                           fontSize: 12,
@@ -2710,6 +2887,7 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
               child: TripCleanVideoOverlay(
                 speedKmh: currentPoint?.speedKmh ?? 0.0,
                 distanceKm: _cumulativeDistanceKmAt(safeIndex, curLiveDistance),
+                gpsDistanceKm: _cumulativeGpsDistanceKmAt(safeIndex, curLiveGpsDistance),
                 durationText: _formatHms(currentPoint?.timestamp ?? DateTime.now()),
                 isLive: _isViewingLive,
                 onExit: () => setState(() => _isCleanVideoMode = false),
@@ -2835,10 +3013,14 @@ class _TripRouteScreenState extends ConsumerState<TripRouteScreen> with TickerPr
                                             ),
                                             Text(
                                               _isViewingLive
-                                                  ? '${curLiveDistance.toStringAsFixed(1)} km · Điểm GPS: ${_routePoints.length}'
+                                                  ? 'ODO ${curLiveDistance.toStringAsFixed(1)} km · GPS ${curLiveGpsDistance.toStringAsFixed(1)} km · ${_routePoints.length} điểm'
                                                   : (_isViewingMerged
-                                                      ? '${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km · Chặng ${activeSegment?.displayOrder ?? 1}/${_mergedSession!.segmentCount}'
-                                                      : '${_selectedTrip!.distanceKm.toStringAsFixed(1)} km · ${_selectedTrip!.durationSec ~/ 60} phút · Max ${_selectedTrip!.maxSpeedKmh.toStringAsFixed(0)} km/h'),
+                                                      ? (_mergedSession!.hasGpsDistance
+                                                          ? 'ODO ${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} · GPS ${_mergedSession!.totalGpsDistanceKm.toStringAsFixed(1)} km · Chặng ${activeSegment?.displayOrder ?? 1}/${_mergedSession!.segmentCount}'
+                                                          : '${_mergedSession!.totalDistanceKm.toStringAsFixed(1)} km · Chặng ${activeSegment?.displayOrder ?? 1}/${_mergedSession!.segmentCount}')
+                                                      : (selectedTripGpsKm != null
+                                                          ? 'ODO ${_selectedTrip!.distanceKm.toStringAsFixed(1)} km · GPS ${selectedTripGpsKm.toStringAsFixed(1)} km · Max ${_selectedTrip!.maxSpeedKmh.toStringAsFixed(0)} km/h'
+                                                          : '${_selectedTrip!.distanceKm.toStringAsFixed(1)} km · ${_selectedTrip!.durationSec ~/ 60} phút · Max ${_selectedTrip!.maxSpeedKmh.toStringAsFixed(0)} km/h')),
                                               style: GoogleFonts.plusJakartaSans(
                                                 fontSize: 11,
                                                 color: AppColors.textDim,

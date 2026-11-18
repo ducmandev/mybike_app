@@ -172,9 +172,12 @@ class KmlTripSerializer extends TripFormatSerializer {
   String serialize(MergedTripSession session) {
     final buf = StringBuffer();
     final escapedTitle = XmlEscape.escape(session.title);
+    final gpsDescPart = session.hasGpsDistance
+        ? ' (GPS ${session.totalGpsDistanceKm.toStringAsFixed(2)} km)'
+        : '';
     final summaryDesc = XmlEscape.escape(
       '${session.segmentCount} chặng · '
-      '${session.totalDistanceKm.toStringAsFixed(2)} km · '
+      '${session.totalDistanceKm.toStringAsFixed(2)} km ODO$gpsDescPart · '
       'CO2 tiết kiệm ${session.totalCo2SavedKg.toStringAsFixed(2)} kg',
     );
 

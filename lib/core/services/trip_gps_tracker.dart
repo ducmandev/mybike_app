@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/trip_gps_point.dart';
+import 'gps_route_snapping_service.dart';
+import 'trip_recording_gate.dart';
 
 /// Bộ lọc Kalman 2D tối ưu hóa cho định vị GPS xe máy điện Dat Bike.
 /// Khử triệt để hiện tượng trôi vị trí (GPS drift), nhiễu đa đường (multipath),
@@ -80,12 +81,14 @@ class TripGpsTracker {
   final StreamController<TripGpsPoint> _pointController = StreamController<TripGpsPoint>.broadcast();
 
   bool _isTracking = false;
+  bool _hasStartedActiveRide = false;
   bool _isDriveMode = false;
   bool _isBikeConnected = false;
   bool _isBikeOn = false;
   bool _isSideStandDown = false;
   double _lastKnownBikeSpeed = 0.0;
   DateTime? _lastPointTime;
+  DateTime? _lastValidFixAt;
   Position? _lastPosition;
   TripGpsPoint? _lastFilteredPoint;
   DateTime? _lastPersistTime;
@@ -107,6 +110,8 @@ class TripGpsTracker {
   static const int kMinIntervalMs = 1200;                  // Tần suất lấy điểm tối đa ~1.2s
 
   bool get isTracking => _isTracking;
+  bool get hasStartedActiveRide => _hasStartedActiveRide;
+  bool get isActivelyRecording => _isTracking && _hasStartedActiveRide;
   bool get isDriveMode => _isDriveMode;
   bool get isBikeConnected => _isBikeConnected;
   bool get isBikeOn => _isBikeOn;
@@ -116,27 +121,47 @@ class TripGpsTracker {
   Position? get lastPosition => _lastPosition;
   TripGpsPoint? get currentPoint => _recordedPoints.isNotEmpty ? _recordedPoints.last : null;
 
-  /// Cập nhật chế độ lái xe (D hoặc S và không gạt chân chống)
+  /// Cập nhật chế độ lái xe (D/S/E/Cruise và không gạt chân chống)
   void setDriveMode(bool active) {
     if (_isDriveMode != active) {
       _isDriveMode = active;
-      debugPrint('[TripGpsTracker] Trạng thái ghi nhận chế độ lái D/S: $active');
+      debugPrint('[TripGpsTracker] Trạng thái chế độ lái ECU: $active');
     }
   }
 
-  /// Cập nhật trạng thái xe toàn diện từ BLE
+  /// Đánh dấu phiên hành trình hiện tại đã thực sự bắt đầu lăn bánh hay chưa.
+  void setActiveRideStarted(bool started) {
+    _hasStartedActiveRide = started;
+  }
+
+  /// Cập nhật trạng thái xe toàn diện từ telemetry ECU (BLE).
+  ///
+  /// CHỈ kích hoạt `_hasStartedActiveRide` khi ECU xác nhận xe đang ở chế độ chạy,
+  /// không gạt chân chống và tốc độ do ECU trả về vượt > 4.0 km/h (không dựa vào GPS).
   void updateVehicleState({
     required bool isConnected,
     required bool isBikeOn,
     required bool isSideStandDown,
     required bool isDriveMode,
     required double speedKmh,
+    bool? activeRideStarted,
   }) {
     _isBikeConnected = isConnected;
     _isBikeOn = isBikeOn;
     _isSideStandDown = isSideStandDown;
     _isDriveMode = isDriveMode;
     _lastKnownBikeSpeed = speedKmh >= 0 ? speedKmh : 0.0;
+
+    if (activeRideStarted != null) {
+      _hasStartedActiveRide = activeRideStarted;
+    } else if (!_hasStartedActiveRide &&
+        isConnected &&
+        isBikeOn &&
+        !isSideStandDown &&
+        isDriveMode &&
+        _lastKnownBikeSpeed > TripRecordingPolicy.kMinEcuRideSpeedKmh) {
+      _hasStartedActiveRide = true;
+    }
   }
 
   /// Tự động lưu bộ nhớ đệm GPS định kỳ vào SharedPreferences để chống mất lộ trình khi vuốt/kill app
@@ -198,8 +223,9 @@ class TripGpsTracker {
 
       if (cachedJson != null && cachedJson.isNotEmpty && cachedTimeStr != null) {
         final lastTime = DateTime.tryParse(cachedTimeStr);
-        // Nếu chuyến đi trong vòng 12 tiếng qua thì nạp lại
-        if (lastTime != null && DateTime.now().difference(lastTime).inHours < 12) {
+        // Chỉ tự động nạp lại cache GPS dở dang nếu còn mới (< 30 phút),
+        // tránh kéo lại hành trình cũ khi user chỉ đi ngang qua xe đỗ.
+        if (lastTime != null && DateTime.now().difference(lastTime).inMinutes < 30) {
           final decoded = jsonDecode(cachedJson) as List<dynamic>;
           final restored = decoded
               .map((item) => TripGpsPoint.fromJson(item as Map<String, dynamic>))
@@ -209,7 +235,8 @@ class TripGpsTracker {
               _recordedPoints.isEmpty) {
             _recordedPoints.addAll(restored);
             _lastFilteredPoint = restored.last;
-            debugPrint('[TripGpsTracker] Đã khôi phục thành công ${restored.length} điểm GPS từ bộ nhớ đệm!');
+            _lastValidFixAt = restored.last.timestamp;
+            debugPrint('[TripGpsTracker] Đã khôi phục ${restored.length} điểm GPS gần nhất từ bộ nhớ đệm!');
           }
         } else {
           await clearSavedCache();
@@ -231,20 +258,17 @@ class TripGpsTracker {
     } catch (_) {}
   }
 
-  /// Tính tổng quãng đường GPS đã tích lũy của chuyến đi hiện tại (km)
-  double get totalDistanceKm {
-    if (_recordedPoints.length < 2) return 0.0;
-    double totalMeters = 0.0;
-    for (int i = 0; i < _recordedPoints.length - 1; i++) {
-      totalMeters += Geolocator.distanceBetween(
-        _recordedPoints[i].lat,
-        _recordedPoints[i].lng,
-        _recordedPoints[i + 1].lat,
-        _recordedPoints[i + 1].lng,
-      );
-    }
-    return totalMeters / 1000.0;
-  }
+  /// Tính tổng quãng đường GPS thực tế đã tích lũy (km), đã tự động trừ các đoạn mất sóng GPS.
+  double get totalDistanceKm =>
+      GpsRouteAnalyzer.measureRoute(_recordedPoints).distanceKm;
+
+  /// Số đoạn mất sóng GPS đã bị loại trừ khỏi phép đo KM GPS hiện tại.
+  int get signalLossCount =>
+      GpsRouteAnalyzer.measureRoute(_recordedPoints).signalLossCount;
+
+  /// Tổng quãng đường (km) chim bay bị loại trừ do mất sóng GPS.
+  double get excludedGapDistanceKm =>
+      GpsRouteAnalyzer.measureRoute(_recordedPoints).excludedGapDistanceKm;
 
   /// Cập nhật vận tốc thực tế từ đồng hồ xe (BLE telemetry)
   void updateBikeSpeed(double speedKmh) {
@@ -386,37 +410,49 @@ class TripGpsTracker {
     }
   }
 
-  void _handleNewPosition(Position pos) {
-    _lastPosition = pos;
+  /// Tiếp nhận mẫu [Position] trong unit test để kiểm chứng rule ghi nhận & mất sóng GPS.
+  @visibleForTesting
+  void ingestPositionForTesting(Position pos, {DateTime? now}) {
+    _handleNewPosition(pos, nowOverride: now);
+  }
 
-    // 0. BỘ LỌC ĐIỀU KIỆN GHI NHẬN (ĐA CỔNG THÔNG MINH)
-    // Cho phép ghi nhận nếu xe ở chế độ D/S HOẶC đang bật/kết nối và thực tế đang di chuyển
-    final gpsSpeedKmh = pos.speed >= 0 ? (pos.speed * 3.6) : 0.0;
-    final isMovingWithBikeOn = _isBikeOn && !_isSideStandDown && (_lastKnownBikeSpeed > 1.0 || gpsSpeedKmh > 4.0);
-    final isMovingWhileConnected = _isBikeConnected && !_isSideStandDown && gpsSpeedKmh > 5.5 && pos.accuracy <= 20.0;
-    final shouldRecord = _isDriveMode || isMovingWithBikeOn || isMovingWhileConnected;
-    if (!shouldRecord) {
+  void _handleNewPosition(Position pos, {DateTime? nowOverride}) {
+    _lastPosition = pos;
+    final now = nowOverride ?? DateTime.now();
+    final hasValidAccuracy =
+        pos.accuracy > 0 && pos.accuracy <= kMaxAcceptableAccuracyMeters;
+
+    // 0. CỔNG NGHIỆP VỤ ECU BẮT BUỘC:
+    // - Tuyệt đối KHÔNG ghi nhận GPS khi chưa kích hoạt chuyến đi từ ECU (_hasStartedActiveRide),
+    //   hoặc khi chỉ đi bộ ngang qua xe / xe tắt / lock / gạt chân chống / không ở mode chạy.
+    // - Chỉ tin cậy tốc độ & chế độ chạy do ECU trả về (> 4 km/h để khởi đầu, > 0.5 km/h để tiếp tục).
+    final canRecordNow = _hasStartedActiveRide &&
+        _isBikeConnected &&
+        _isBikeOn &&
+        !_isSideStandDown &&
+        _isDriveMode &&
+        _lastKnownBikeSpeed > TripRecordingPolicy.kActiveContinueSpeedKmh;
+
+    if (!canRecordNow) {
+      // Khi chuyến đi đã bắt đầu và xe chỉ tạm dừng đèn đỏ mà GPS vẫn bắt sóng tốt,
+      // cập nhật _lastValidFixAt để không đánh dấu nhầm là mất sóng GPS khi xe lăn bánh lại.
+      if (_hasStartedActiveRide && _isBikeConnected && hasValidAccuracy) {
+        _lastValidFixAt = now;
+      }
       return;
     }
-
-    final now = DateTime.now();
 
     // 1. BỘ LỌC ĐỘ CHÍNH XÁC (Accuracy Filter)
-    // Bỏ qua các điểm có sai số lớn (> 25m hoặc âm) do phản xạ nhà cao tầng / cột sóng BTS
-    if (pos.accuracy > kMaxAcceptableAccuracyMeters || pos.accuracy <= 0) {
+    // Bỏ qua các điểm có sai số lớn (> 25m hoặc âm) do phản xạ nhà cao tầng / mất sóng trong hầm.
+    if (!hasValidAccuracy) {
       return;
     }
 
-    // 2. GIỚI HẠN TẦN SUẤT GHI (Time Filter)
-    if (_lastPointTime != null && now.difference(_lastPointTime!).inMilliseconds < kMinIntervalMs) {
-      return;
-    }
-
-    // 3. TÍNH KHOẢNG CÁCH VÀ VẬN TỐC THỰC TẾ
+    // 2. PHÁT HIỆN MẤT SÓNG GPS (> 15 giây không có tọa độ hợp lệ và dịch chuyển > 45m)
     double distFromLast = 0.0;
     double dtSec = 0.0;
     if (_lastFilteredPoint != null) {
-      distFromLast = Geolocator.distanceBetween(
+      distFromLast = GpsGeoMath.distanceMeters(
         _lastFilteredPoint!.lat,
         _lastFilteredPoint!.lng,
         pos.latitude,
@@ -425,8 +461,26 @@ class TripGpsTracker {
       dtSec = now.difference(_lastFilteredPoint!.timestamp).inMilliseconds / 1000.0;
     }
 
+    final gapFromLastFixSec =
+        _lastValidFixAt != null ? now.difference(_lastValidFixAt!).inSeconds : 0;
+    final isSignalLossRestart = _lastFilteredPoint != null &&
+        gapFromLastFixSec > GpsRouteAnalyzer.kSignalLossGapSeconds &&
+        distFromLast > GpsRouteAnalyzer.kSignalLossMinJumpMeters;
+
+    _lastValidFixAt = now;
+
+    // 3. GIỚI HẠN TẦN SUẤT GHI (Time Filter)
+    if (!isSignalLossRestart &&
+        _lastPointTime != null &&
+        now.difference(_lastPointTime!).inMilliseconds < kMinIntervalMs) {
+      return;
+    }
+
     // 4. BỘ LỌC ĐỘT BIẾN / NHẢY VỊ TRÍ PHI LÝ (Speed Spike / Teleportation Filter)
-    if (_lastFilteredPoint != null && dtSec > 0.05) {
+    if (!isSignalLossRestart &&
+        _lastFilteredPoint != null &&
+        dtSec > 0.05 &&
+        dtSec <= GpsRouteAnalyzer.kSignalLossGapSeconds) {
       final calculatedSpeedKmh = (distFromLast / dtSec) * 3.6;
       if (calculatedSpeedKmh > kMaxRealisticSpeedKmh) {
         debugPrint('[TripGpsTracker] Bỏ qua điểm nhảy bất thường: $calculatedSpeedKmh km/h, $distFromLast m');
@@ -434,27 +488,22 @@ class TripGpsTracker {
       }
     }
 
-    // Xác định vận tốc hiện tại: Ưu tiên BLE telemetry từ xe > GPS speed
-    double effectiveSpeedKmh = _lastKnownBikeSpeed;
-    if (effectiveSpeedKmh <= 0.0 && pos.speed >= 0.0) {
-      effectiveSpeedKmh = pos.speed * 3.6;
-    }
+    // Xác định vận tốc hiện tại thuần túy theo ECU xe
+    final effectiveSpeedKmh = _lastKnownBikeSpeed;
 
-    // 5. CHỐNG NHẢY ĐỊNH VỊ KHI XE ĐỨNG YÊN / ĐÈN ĐỎ (Stationary Jitter Suppression)
-    final isStationary = effectiveSpeedKmh <= kStationarySpeedKmh && (pos.speed * 3.6) <= kStationarySpeedKmh;
-    if (isStationary && _lastFilteredPoint != null) {
-      // Khi xe đang dừng, GPS vẫn có dao động 3-8m. Không ghi thêm điểm ziczac nếu chưa rời khỏi bán kính 6m
-      if (distFromLast < kStationaryMinDistanceMeters) {
-        return;
-      }
-    }
-
-    // 6. LỌC ĐIỂM DỒN CỤC KHI CHẠY CHẬM (Spatial Downsampling)
-    if (!isStationary && _lastFilteredPoint != null && distFromLast < kMovingMinDistanceMeters) {
+    // 5. LỌC ĐIỂM DỒN CỤC KHI CHẠY CHẬM (Spatial Downsampling)
+    if (!isSignalLossRestart &&
+        _lastFilteredPoint != null &&
+        distFromLast < kMovingMinDistanceMeters) {
       return;
     }
 
-    // 7. BỘ LỌC KALMAN 2D LÀM MƯỢT TỌA ĐỘ
+    // Nếu vừa phục hồi sau mất sóng GPS -> reset Kalman để không kéo ngược tọa độ vào hầm
+    if (isSignalLossRestart) {
+      _kalmanFilter.reset();
+    }
+
+    // 6. BỘ LỌC KALMAN 2D LÀM MƯỢT TỌA ĐỘ
     final speedMps = effectiveSpeedKmh / 3.6;
     _kalmanFilter.filter(
       measuredLat: pos.latitude,
@@ -467,9 +516,12 @@ class TripGpsTracker {
     final filteredLat = _kalmanFilter.lat ?? pos.latitude;
     final filteredLng = _kalmanFilter.lng ?? pos.longitude;
 
-    // 8. TÍNH TOÁN HƯỚNG DI CHUYỂN (HEADING)
+    // 7. TÍNH TOÁN HƯỚNG DI CHUYỂN (HEADING)
     double? heading = pos.heading >= 0 && pos.heading <= 360 ? pos.heading : null;
-    if ((heading == null || heading == 0.0) && _lastFilteredPoint != null && distFromLast >= 2.0) {
+    if ((heading == null || heading == 0.0) &&
+        !isSignalLossRestart &&
+        _lastFilteredPoint != null &&
+        distFromLast >= 2.0) {
       heading = calculateBearing(
         _lastFilteredPoint!.lat,
         _lastFilteredPoint!.lng,
@@ -485,6 +537,7 @@ class TripGpsTracker {
       timestamp: now,
       altitude: pos.altitude > -100 ? double.parse(pos.altitude.toStringAsFixed(1)) : null,
       heading: heading != null ? double.parse(heading.toStringAsFixed(1)) : null,
+      isSignalLossRestart: isSignalLossRestart,
     );
 
     _recordedPoints.add(point);
@@ -496,16 +549,7 @@ class TripGpsTracker {
 
   /// Tính góc phương vị di chuyển giữa 2 điểm tọa độ (Geodesic Bearing 0° - 360°)
   static double calculateBearing(double lat1, double lng1, double lat2, double lng2) {
-    final phi1 = lat1 * math.pi / 180.0;
-    final phi2 = lat2 * math.pi / 180.0;
-    final deltaLambda = (lng2 - lng1) * math.pi / 180.0;
-
-    final y = math.sin(deltaLambda) * math.cos(phi2);
-    final x = math.cos(phi1) * math.sin(phi2) -
-        math.sin(phi1) * math.cos(phi2) * math.cos(deltaLambda);
-
-    final theta = math.atan2(y, x);
-    return (theta * 180.0 / math.pi + 360.0) % 360.0;
+    return GpsGeoMath.bearingDegrees(lat1, lng1, lat2, lng2);
   }
 
   /// Dừng ghi GPS và trả về danh sách điểm đã được làm mịn, lọc sạch
@@ -513,6 +557,8 @@ class TripGpsTracker {
     _positionSub?.cancel();
     _positionSub = null;
     _isTracking = false;
+    _hasStartedActiveRide = false;
+    _lastValidFixAt = null;
     _kalmanFilter.reset();
     final smoothed = cleanAndSmoothRoute(_recordedPoints);
     return smoothed;
@@ -528,16 +574,19 @@ class TripGpsTracker {
     _sessionEpoch++;
     _recordedPoints.clear();
     _lastPointTime = null;
+    _lastValidFixAt = null;
     _lastFilteredPoint = null;
     _lastPersistTime = null;
+    _hasStartedActiveRide = false;
     _kalmanFilter.reset();
     unawaited(clearSavedCache());
   }
 
-  /// Thuật toán hậu xử lý và làm mịn lộ trình:
-  /// - Loại bỏ điểm đột biến GPS (speed spike > 115 km/h)
+  /// Thuật toán hậu xử lý và làm mịn lộ trình theo từng chặng liên tục:
+  /// - Loại bỏ điểm đột biến GPS (speed spike > 110 km/h trong khoảng thời gian ngắn)
+  /// - Tách riêng các chặng bị mất sóng GPS (không làm mịn vắt ngang qua hầm / vùng mất sóng)
   /// - Gộp cụm điểm đứng yên tại các chốt đèn giao thông
-  /// - Làm mịn đường vẽ (Weighted Moving Average) giúp đường vẽ uốn lượn tự nhiên theo mặt đường
+  /// - Làm mịn đường vẽ (Weighted Moving Average 0.2 - 0.6 - 0.2)
   static List<TripGpsPoint> cleanAndSmoothRoute(List<TripGpsPoint> rawPoints) {
     if (rawPoints.length <= 2) return List.from(rawPoints);
 
@@ -547,17 +596,23 @@ class TripGpsTracker {
       final prev = filtered.last;
       final cur = rawPoints[i];
       final dt = cur.timestamp.difference(prev.timestamp).inMilliseconds / 1000.0;
-      final dist = Geolocator.distanceBetween(prev.lat, prev.lng, cur.lat, cur.lng);
+      final dist = GpsGeoMath.distanceMeters(prev.lat, prev.lng, cur.lat, cur.lng);
 
-      if (dt > 0.05) {
+      if (!cur.isSignalLossRestart &&
+          dt > 0.05 &&
+          dt <= GpsRouteAnalyzer.kSignalLossGapSeconds) {
         final speed = (dist / dt) * 3.6;
         if (speed > kMaxRealisticSpeedKmh) {
-          continue; // Bỏ qua điểm đột biến
+          continue; // Bỏ qua điểm đột biến ngắn hạn
         }
       }
 
       // Khử cụm điểm giật tại chỗ khi dừng đỗ (< 2m và tốc độ <= 1.5 km/h)
-      if (dist < 2.0 && cur.speedKmh <= 1.5 && prev.speedKmh <= 1.5 && i < rawPoints.length - 1) {
+      if (!cur.isSignalLossRestart &&
+          dist < 2.0 &&
+          cur.speedKmh <= 1.5 &&
+          prev.speedKmh <= 1.5 &&
+          i < rawPoints.length - 1) {
         continue;
       }
 
@@ -566,27 +621,50 @@ class TripGpsTracker {
 
     if (filtered.length <= 2) return filtered;
 
-    // Bước 2: Làm mịn tọa độ theo thuật toán Weighted Moving Average (0.2 - 0.6 - 0.2)
-    final smoothed = <TripGpsPoint>[filtered.first];
-    for (int i = 1; i < filtered.length - 1; i++) {
-      final pPrev = filtered[i - 1];
-      final pCur = filtered[i];
-      final pNext = filtered[i + 1];
+    // Bước 2: Tách theo chặng liên tục rồi làm mịn từng chặng độc lập
+    final subTracks = GpsRouteAnalyzer.splitContinuousSubTracks(filtered);
+    final result = <TripGpsPoint>[];
 
-      final smoothLat = 0.2 * pPrev.lat + 0.6 * pCur.lat + 0.2 * pNext.lat;
-      final smoothLng = 0.2 * pPrev.lng + 0.6 * pCur.lng + 0.2 * pNext.lng;
+    for (var subIdx = 0; subIdx < subTracks.length; subIdx++) {
+      final sub = subTracks[subIdx];
+      if (sub.length <= 2) {
+        for (var j = 0; j < sub.length; j++) {
+          result.add(
+            sub[j].copyWith(
+              isSignalLossRestart: (subIdx > 0 && j == 0) || sub[j].isSignalLossRestart,
+            ),
+          );
+        }
+        continue;
+      }
 
-      smoothed.add(TripGpsPoint(
-        lat: double.parse(smoothLat.toStringAsFixed(6)),
-        lng: double.parse(smoothLng.toStringAsFixed(6)),
-        speedKmh: pCur.speedKmh,
-        timestamp: pCur.timestamp,
-        altitude: pCur.altitude,
-        heading: pCur.heading,
-      ));
+      result.add(
+        sub.first.copyWith(
+          isSignalLossRestart: (subIdx > 0) || sub.first.isSignalLossRestart,
+        ),
+      );
+      for (int i = 1; i < sub.length - 1; i++) {
+        final pPrev = sub[i - 1];
+        final pCur = sub[i];
+        final pNext = sub[i + 1];
+
+        final smoothLat = 0.2 * pPrev.lat + 0.6 * pCur.lat + 0.2 * pNext.lat;
+        final smoothLng = 0.2 * pPrev.lng + 0.6 * pCur.lng + 0.2 * pNext.lng;
+
+        result.add(TripGpsPoint(
+          lat: double.parse(smoothLat.toStringAsFixed(6)),
+          lng: double.parse(smoothLng.toStringAsFixed(6)),
+          speedKmh: pCur.speedKmh,
+          timestamp: pCur.timestamp,
+          altitude: pCur.altitude,
+          heading: pCur.heading,
+          isSignalLossRestart: false,
+        ));
+      }
+      result.add(sub.last.copyWith(isSignalLossRestart: false));
     }
-    smoothed.add(filtered.last);
-    return smoothed;
+
+    return result;
   }
 
   /// Không sử dụng lộ trình giả lập — ứng dụng chỉ hiển thị GPS thực tế
