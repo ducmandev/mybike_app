@@ -65,6 +65,17 @@ class GpsKalmanFilter2D {
   }
 }
 
+/// Bộ dữ liệu khôi phục đồng bộ (metadata ODO + tọa độ GPS) khi app bị đóng đột ngột.
+class RecoveredTripCache {
+  final ActiveTripRecoverySnapshot snapshot;
+  final List<TripGpsPoint> points;
+
+  const RecoveredTripCache({
+    required this.snapshot,
+    required this.points,
+  });
+}
+
 /// Quản lý việc ghi lại lộ trình GPS trong suốt chuyến đi xe máy điện Dat Bike.
 /// Tích hợp hệ thống lọc đa tầng:
 /// 1. Lọc ngưỡng độ chính xác (Accuracy Gate): Loại bỏ các vị trí sai số > 25m
@@ -92,12 +103,12 @@ class TripGpsTracker {
   Position? _lastPosition;
   TripGpsPoint? _lastFilteredPoint;
   DateTime? _lastPersistTime;
+  ActiveTripRecoverySnapshot? _recoverySnapshot;
   int _sessionEpoch = 0;
-  bool _hasRestoredFromCache = false;
-  Future<void>? _restoreFuture;
 
   static const String _kActiveGpsPointsKey = 'active_trip_gps_points_cache';
   static const String _kActiveGpsTimeKey = 'active_trip_gps_last_time';
+  static const String _kActiveTripSessionKey = 'active_trip_session_state_v1';
 
   final GpsKalmanFilter2D _kalmanFilter = GpsKalmanFilter2D();
 
@@ -129,9 +140,48 @@ class TripGpsTracker {
     }
   }
 
+  /// Cập nhật trạng thái kết nối BLE tức thì (khi vừa rớt kết nối, khóa ghi ngay lập tức).
+  void setBikeConnected(bool connected) {
+    _isBikeConnected = connected;
+  }
+
   /// Đánh dấu phiên hành trình hiện tại đã thực sự bắt đầu lăn bánh hay chưa.
   void setActiveRideStarted(bool started) {
     _hasStartedActiveRide = started;
+  }
+
+  /// Đồng bộ metadata ODO & thời gian của phiên hiện tại để lưu kèm bộ đệm GPS.
+  void updateRecoverySnapshot(ActiveTripRecoverySnapshot? snapshot) {
+    _recoverySnapshot = snapshot;
+  }
+
+  /// Đảm bảo bộ đệm GPS trong RAM sạch hoàn toàn khi bắt đầu một chuyến đi mới tinh.
+  void ensureFreshTripBuffer() {
+    if (_recordedPoints.isEmpty &&
+        _lastPointTime == null &&
+        _lastFilteredPoint == null) {
+      return;
+    }
+    _sessionEpoch++;
+    _recordedPoints.clear();
+    _lastPointTime = null;
+    _lastValidFixAt = null;
+    _lastFilteredPoint = null;
+    _lastPersistTime = null;
+    _kalmanFilter.reset();
+  }
+
+  /// Nạp lại danh sách điểm GPS đã xác minh khớp ODO & cùng xe khi nối tiếp chuyến bị gián đoạn.
+  void adoptRecoveredPoints(List<TripGpsPoint> points) {
+    _sessionEpoch++;
+    _recordedPoints
+      ..clear()
+      ..addAll(points);
+    _hasStartedActiveRide = true;
+    _lastFilteredPoint = _recordedPoints.isNotEmpty ? _recordedPoints.last : null;
+    _lastPointTime = _lastFilteredPoint?.timestamp;
+    _lastValidFixAt = _lastFilteredPoint?.timestamp;
+    _kalmanFilter.reset();
   }
 
   /// Cập nhật trạng thái xe toàn diện từ telemetry ECU (BLE).
@@ -164,9 +214,12 @@ class TripGpsTracker {
     }
   }
 
-  /// Tự động lưu bộ nhớ đệm GPS định kỳ vào SharedPreferences để chống mất lộ trình khi vuốt/kill app
+  /// Tự động lưu bộ nhớ đệm GPS + ODO định kỳ vào SharedPreferences để chống mất lộ trình khi kill app
   Future<void> _persistPointsDebounced() async {
-    if (!_isTracking || _recordedPoints.isEmpty) {
+    if (!_isTracking ||
+        !_hasStartedActiveRide ||
+        _recordedPoints.isEmpty ||
+        _recoverySnapshot == null) {
       return;
     }
     final now = DateTime.now();
@@ -174,87 +227,99 @@ class TripGpsTracker {
       return;
     }
     _lastPersistTime = now;
+    await persistSessionSnapshotImmediately(_recoverySnapshot!);
+  }
 
+  /// Lưu tức thì cả metadata ODO lẫn lộ trình GPS hiện tại xuống SharedPreferences.
+  Future<void> persistSessionSnapshotImmediately(
+    ActiveTripRecoverySnapshot snapshot,
+  ) async {
+    _recoverySnapshot = snapshot;
     final epoch = _sessionEpoch;
-    final snapshotJson = jsonEncode(_recordedPoints.map((p) => p.toJson()).toList());
-    final nowIso = now.toIso8601String();
+    final pointsSnapshot = List<TripGpsPoint>.from(_recordedPoints);
+    final snapshotJson = jsonEncode(pointsSnapshot.map((p) => p.toJson()).toList());
+    final sessionJson = jsonEncode(snapshot.toJson());
+    final nowIso = DateTime.now().toIso8601String();
 
     try {
       final prefs = await SharedPreferences.getInstance();
+      if (epoch != _sessionEpoch) return;
+      await prefs.setString(_kActiveTripSessionKey, sessionJson);
       if (epoch != _sessionEpoch) return;
       await prefs.setString(_kActiveGpsPointsKey, snapshotJson);
       if (epoch != _sessionEpoch) return;
       await prefs.setString(_kActiveGpsTimeKey, nowIso);
     } catch (e) {
-      debugPrint('[TripGpsTracker] Lỗi lưu đệm GPS vào SharedPreferences: $e');
+      debugPrint('[TripGpsTracker] Lỗi lưu đệm phiên GPS+ODO vào SharedPreferences: $e');
     }
   }
 
-  /// Khôi phục các điểm GPS đang ghi dở dang nếu người dùng lỡ vuốt tắt app
-  Future<void> restoreUnsavedPoints() {
-    if (_restoreFuture != null) {
-      return _restoreFuture!;
-    }
-    if (_hasRestoredFromCache || _recordedPoints.isNotEmpty) {
-      return Future.value();
-    }
-
-    _hasRestoredFromCache = true;
-    final epoch = _sessionEpoch;
-    late final Future<void> future;
-    future = _performRestoreUnsavedPoints(epoch).whenComplete(() {
-      if (identical(_restoreFuture, future)) {
-        _restoreFuture = null;
-      }
-    });
-    _restoreFuture = future;
-    return future;
-  }
-
-  Future<void> _performRestoreUnsavedPoints(int epoch) async {
+  /// Đọc bộ đệm hành trình dở dang (nếu app từng bị đóng đột ngột) vào vùng staging
+  /// để [BleController] đối chiếu với ODO & trạng thái xe trước khi nối tiếp hoặc chốt sổ.
+  ///
+  /// Nếu phát hiện cache GPS mồ côi (không có `active_trip_session_state_v1` đi kèm —
+  /// ví dụ từ bản app cũ), tự động xóa sạch ngay để tuyệt đối không ghép GPS cũ vào ODO mới!
+  Future<RecoveredTripCache?> loadRecoveredSessionCache({
+    SharedPreferences? existingPrefs,
+  }) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      if (epoch != _sessionEpoch || _recordedPoints.isNotEmpty) {
-        return;
-      }
-
+      final prefs = existingPrefs ?? await SharedPreferences.getInstance();
       final cachedJson = prefs.getString(_kActiveGpsPointsKey);
-      final cachedTimeStr = prefs.getString(_kActiveGpsTimeKey);
+      final sessionJson = prefs.getString(_kActiveTripSessionKey);
 
-      if (cachedJson != null && cachedJson.isNotEmpty && cachedTimeStr != null) {
-        final lastTime = DateTime.tryParse(cachedTimeStr);
-        // Chỉ tự động nạp lại cache GPS dở dang nếu còn mới (< 30 phút),
-        // tránh kéo lại hành trình cũ khi user chỉ đi ngang qua xe đỗ.
-        if (lastTime != null && DateTime.now().difference(lastTime).inMinutes < 30) {
-          final decoded = jsonDecode(cachedJson) as List<dynamic>;
-          final restored = decoded
-              .map((item) => TripGpsPoint.fromJson(item as Map<String, dynamic>))
-              .toList();
-          if (restored.isNotEmpty &&
-              epoch == _sessionEpoch &&
-              _recordedPoints.isEmpty) {
-            _recordedPoints.addAll(restored);
-            _lastFilteredPoint = restored.last;
-            _lastValidFixAt = restored.last.timestamp;
-            debugPrint('[TripGpsTracker] Đã khôi phục ${restored.length} điểm GPS gần nhất từ bộ nhớ đệm!');
-          }
-        } else {
+      if (sessionJson == null || sessionJson.isEmpty) {
+        if (cachedJson != null || prefs.containsKey(_kActiveGpsTimeKey)) {
           await clearSavedCache();
         }
+        return null;
       }
+
+      final decodedSession = jsonDecode(sessionJson);
+      final snapshot = ActiveTripRecoverySnapshot.tryFromJson(decodedSession);
+      if (snapshot == null) {
+        await clearSavedCache();
+        return null;
+      }
+
+      final pts = <TripGpsPoint>[];
+      if (cachedJson != null && cachedJson.isNotEmpty) {
+        final decoded = jsonDecode(cachedJson);
+        if (decoded is List<dynamic>) {
+          for (final item in decoded) {
+            if (item is Map<String, dynamic>) {
+              pts.add(TripGpsPoint.fromJson(item));
+            }
+          }
+        }
+      }
+
+      if (pts.isEmpty && snapshot.odoDistanceKm < 1.0) {
+        await clearSavedCache();
+        return null;
+      }
+
+      debugPrint(
+        '[TripGpsTracker] Đọc bộ đệm phiên dở dang: '
+        'ODO=${snapshot.odoDistanceKm.toStringAsFixed(2)}km, ${pts.length} điểm GPS',
+      );
+      return RecoveredTripCache(snapshot: snapshot, points: pts);
     } catch (e) {
-      debugPrint('[TripGpsTracker] Lỗi khôi phục điểm GPS: $e');
+      debugPrint('[TripGpsTracker] Lỗi đọc bộ đệm hành trình: $e');
+      await clearSavedCache();
+      return null;
     }
   }
 
-  /// Xóa sạch bộ nhớ đệm điểm GPS dở dang
+  /// Xóa sạch bộ nhớ đệm điểm GPS và trạng thái ODO dở dang
   Future<void> clearSavedCache() async {
     _sessionEpoch++;
     _lastPersistTime = null;
+    _recoverySnapshot = null;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_kActiveGpsPointsKey);
       await prefs.remove(_kActiveGpsTimeKey);
+      await prefs.remove(_kActiveTripSessionKey);
     } catch (_) {}
   }
 
@@ -434,9 +499,14 @@ class TripGpsTracker {
         _lastKnownBikeSpeed > TripRecordingPolicy.kActiveContinueSpeedKmh;
 
     if (!canRecordNow) {
-      // Khi chuyến đi đã bắt đầu và xe chỉ tạm dừng đèn đỏ mà GPS vẫn bắt sóng tốt,
-      // cập nhật _lastValidFixAt để không đánh dấu nhầm là mất sóng GPS khi xe lăn bánh lại.
-      if (_hasStartedActiveRide && _isBikeConnected && hasValidAccuracy) {
+      // CHỈ cập nhật _lastValidFixAt khi xe VẪN ĐANG BẬT, chân chống đã gạt lên
+      // và đang ở mode chạy tiến (ví dụ dừng đèn đỏ) — không giữ ấm khi xe tắt/hạ chống.
+      if (_hasStartedActiveRide &&
+          _isBikeConnected &&
+          _isBikeOn &&
+          !_isSideStandDown &&
+          _isDriveMode &&
+          hasValidAccuracy) {
         _lastValidFixAt = now;
       }
       return;
@@ -492,9 +562,11 @@ class TripGpsTracker {
     final effectiveSpeedKmh = _lastKnownBikeSpeed;
 
     // 5. LỌC ĐIỂM DỒN CỤC KHI CHẠY CHẬM (Spatial Downsampling)
+    final minMovingDist =
+        effectiveSpeedKmh <= 6.0 ? 4.0 : kMovingMinDistanceMeters;
     if (!isSignalLossRestart &&
         _lastFilteredPoint != null &&
-        distFromLast < kMovingMinDistanceMeters) {
+        distFromLast < minMovingDist) {
       return;
     }
 
@@ -577,6 +649,7 @@ class TripGpsTracker {
     _lastValidFixAt = null;
     _lastFilteredPoint = null;
     _lastPersistTime = null;
+    _recoverySnapshot = null;
     _hasStartedActiveRide = false;
     _kalmanFilter.reset();
     unawaited(clearSavedCache());

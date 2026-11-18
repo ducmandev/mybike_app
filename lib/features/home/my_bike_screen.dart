@@ -2881,7 +2881,7 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              'Hành trình chỉ bắt đầu khi xe vào mode chạy với tốc độ ECU > 4 km/h\nvà tự động lưu khi đi từ 1 km ODO hoặc bấm Đặt lại / Tắt xe.',
+                              'Hành trình chỉ bắt đầu khi xe vào mode chạy với tốc độ ECU > 4 km/h\nvà tự động kết thúc, lưu lịch sử (từ 1 km ODO) khi xe tắt nguồn, ngắt BLE hoặc bấm Đặt lại.',
                               style: AppTypography.labelMd(
                                 color: AppColors.textMuted,
                                 fontWeight: FontWeight.w400,

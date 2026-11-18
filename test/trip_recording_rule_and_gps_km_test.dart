@@ -516,4 +516,439 @@ void main() {
       expect(summary.totalGpsDistanceKm, closeTo(10.55, 0.001));
     });
   });
+
+  group('Vòng đời kết thúc hành trình khi xe tắt & Chống lệch ODO vs GPS', () {
+    Future<Directory> mountMockTripsDir() async {
+      final tmpDir = await Directory.systemTemp.createTemp('datbike_trip_lifecycle_');
+      const pathProviderChannel = MethodChannel('plugins.flutter.io/path_provider');
+      TripStorageService.instance.resetDirectoryCacheForTesting();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProviderChannel, (call) async {
+        if (call.method == 'getApplicationDocumentsDirectory' ||
+            call.method == 'getTemporaryDirectory') {
+          return tmpDir.path;
+        }
+        return null;
+      });
+      addTearDown(() async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProviderChannel, null);
+        TripStorageService.instance.resetDirectoryCacheForTesting();
+        if (await tmpDir.exists()) {
+          await tmpDir.delete(recursive: true);
+        }
+      });
+      return tmpDir;
+    }
+
+    test('Xe tắt bằng nút trên xe / NFC (BikeState.off / lock) tự chốt & lưu hành trình sau 3s dù BLE chưa rớt', () async {
+      await mountMockTripsDir();
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => _TestBleController())],
+      );
+      addTearDown(container.dispose);
+
+      final ctrl = container.read(bleProvider.notifier);
+      final t0 = DateTime(2026, 11, 18, 12, 0, 0);
+
+      // Chạy 4.2 km (t0 -> t0 + 600s)
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 2000.0
+          ..percent = 90
+          ..speed = 25.0,
+        now: t0,
+      );
+      var liveTrip = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 2004.2
+          ..percent = 87
+          ..speed = 28.0,
+        now: t0.add(const Duration(seconds: 600)),
+      );
+      expect(liveTrip.distanceKm, closeTo(4.2, 0.001));
+      expect(liveTrip.duration.inSeconds, 600);
+
+      // Gói MTU cắt cụt giả mạo không được phép tắt hành trình
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.off
+          ..parking = false
+          ..odo = 2004.2
+          ..speed = 0.0,
+        now: t0.add(const Duration(seconds: 605)),
+        hasAuthoritativeState: false,
+      );
+      expect(ctrl.bikeOffSinceForTesting, isNull);
+      expect(container.read(bleProvider).tripHistory, isEmpty);
+
+      // Xe thực sự chuyển sang BikeState.off (tắt nút trên xe) -> đóng băng duration tại giây 610
+      final offAt = t0.add(const Duration(seconds: 610));
+      liveTrip = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.off
+          ..parking = true
+          ..odo = 2004.2
+          ..percent = 87
+          ..speed = 0.0,
+        now: offAt,
+        hasAuthoritativeState: true,
+      );
+      expect(ctrl.bikeOffSinceForTesting, offAt);
+      expect(container.read(bleProvider).tripHistory, isEmpty);
+
+      // Giữ off >= 3s dù BLE vẫn connected -> tự động kết thúc & lưu 4.2 km đúng mốc 610s!
+      liveTrip = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.off
+          ..parking = true
+          ..odo = 2004.2
+          ..percent = 87
+          ..speed = 0.0,
+        now: offAt.add(const Duration(seconds: 3)),
+        hasAuthoritativeState: true,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final state = container.read(bleProvider);
+      expect(state.trip.distanceKm, 0.0);
+      expect(state.tripHistory.length, 1);
+      expect(state.tripHistory.first.distanceKm, closeTo(4.2, 0.01));
+      expect(state.tripHistory.first.durationSec, 610);
+      expect(state.tripHistory.first.usedPercent, 3);
+      expect(TripGpsTracker.instance.hasStartedActiveRide, isFalse);
+    });
+
+    test('Rớt BLE tạm thời rồi reconnect về: nối tiếp nếu xe vẫn ON hoặc chốt ngay nếu reconnect thấy xe đã OFF', () async {
+      await mountMockTripsDir();
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => _TestBleController())],
+      );
+      addTearDown(container.dispose);
+
+      final ctrl = container.read(bleProvider.notifier);
+      final t0 = DateTime(2026, 11, 18, 13, 0, 0);
+
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 3000.0
+          ..speed = 22.0,
+        now: t0,
+      );
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 3002.5
+          ..speed = 35.0,
+        now: t0.add(const Duration(seconds: 300)),
+      );
+
+      // Rớt BLE bất ngờ khi đang chạy -> vào grace window thay vì cắt đôi chuyến
+      ctrl.simulateConnectionLostForTesting(
+        manual: false,
+        now: t0.add(const Duration(seconds: 302)),
+      );
+      expect(ctrl.hasPendingDisconnectArchiveForTesting, isTrue);
+      expect(TripGpsTracker.instance.isBikeConnected, isFalse);
+      expect(container.read(bleProvider).tripHistory, isEmpty);
+
+      // Reconnect sau 5s và xe vẫn đang ON, ODO liên tục -> nối tiếp liền mạch!
+      final resumed = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 3004.2
+          ..speed = 30.0,
+        now: t0.add(const Duration(seconds: 307)),
+      );
+      expect(ctrl.hasPendingDisconnectArchiveForTesting, isFalse);
+      expect(resumed.distanceKm, closeTo(4.2, 0.01));
+      expect(container.read(bleProvider).tripHistory, isEmpty);
+
+      // Rớt BLE lần nữa, nhưng khi reconnect lại phát hiện xe ĐÃ TẮT -> chốt ngay 4.2 km
+      ctrl.simulateConnectionLostForTesting(
+        manual: false,
+        now: t0.add(const Duration(seconds: 310)),
+      );
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.off
+          ..parking = true
+          ..odo = 3004.2
+          ..speed = 0.0,
+        now: t0.add(const Duration(seconds: 315)),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final state = container.read(bleProvider);
+      expect(state.tripHistory.length, 1);
+      expect(state.tripHistory.first.distanceKm, closeTo(4.2, 0.01));
+    });
+
+    test('Chặn triệt để lỗi GPS cache 12.8km cộng nhầm vào ODO 4.2km (cả cache mồ côi lẫn khác phiên)', () async {
+      await mountMockTripsDir();
+      final t0 = DateTime(2026, 11, 18, 14, 0, 0);
+
+      // 1. Giả lập cache GPS mồ côi liên tục ~12.8 km (không có active_trip_session_state_v1 như bản cũ)
+      final orphanPts = List.generate(
+        129,
+        (i) => TripGpsPoint(
+          lat: 10.700000 + i * 0.0009,
+          lng: 106.700000,
+          speedKmh: 36.0,
+          timestamp: t0.add(Duration(seconds: i * 10)),
+        ),
+      );
+      final orphanEnd = orphanPts.last.timestamp;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'active_trip_gps_points_cache',
+        jsonEncode(orphanPts.map((p) => p.toJson()).toList()),
+      );
+      await prefs.setString('active_trip_gps_last_time', orphanEnd.toIso8601String());
+
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => _TestBleController())],
+      );
+      addTearDown(container.dispose);
+      final ctrl = container.read(bleProvider.notifier);
+
+      await ctrl.prepareRecoveredTripCacheForTesting(
+        now: orphanEnd.add(const Duration(minutes: 2)),
+      );
+      // Cache mồ côi bị xóa sạch, không bao giờ nạp vào TripGpsTracker
+      expect(TripGpsTracker.instance.recordedPoints, isEmpty);
+
+      // Bắt đầu chạy chuyến mới 4.2 km ODO + 2 điểm GPS mới (~111m) -> GPS KHÔNG bị cộng 12.8 km cũ
+      final rideStart = orphanEnd.add(const Duration(minutes: 3));
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 5000.0
+          ..speed = 25.0,
+        now: rideStart,
+      );
+      TripGpsTracker.instance.ingestPositionForTesting(
+        _makePosition(lat: 10.770000, lng: 106.710000, ts: rideStart),
+        now: rideStart,
+      );
+      TripGpsTracker.instance.ingestPositionForTesting(
+        _makePosition(
+          lat: 10.771000,
+          lng: 106.710000,
+          ts: rideStart.add(const Duration(seconds: 10)),
+        ),
+        now: rideStart.add(const Duration(seconds: 10)),
+      );
+      final rideEnd = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 5004.2
+          ..speed = 25.0,
+        now: rideStart.add(const Duration(minutes: 8)),
+      );
+      expect(rideEnd.distanceKm, closeTo(4.2, 0.01));
+      expect(rideEnd.gpsDistanceKm, lessThan(0.25)); // Tuyệt đối KHÔNG nhảy lên ~13 km!
+    });
+
+    test('Phiên bị ngắt hợp lệ (cùng xe, < 10 phút, xe vẫn bật, ODO khớp) khôi phục đồng bộ CẢ ODO + GPS', () async {
+      await mountMockTripsDir();
+      final t0 = DateTime(2026, 11, 18, 15, 0, 0);
+      final savedPts = List.generate(
+        129,
+        (i) => TripGpsPoint(
+          lat: 10.700000 + i * 0.0009,
+          lng: 106.700000,
+          speedKmh: 36.0,
+          timestamp: t0.add(Duration(seconds: i * 10)),
+        ),
+      );
+      final snapEnd = savedPts.last.timestamp;
+      final snap = ActiveTripRecoverySnapshot(
+        bikeId: 'BIKE-1',
+        startTime: t0,
+        lastActiveAt: snapEnd,
+        startOdo: 6000.0,
+        lastOdo: 6012.8,
+        startPercent: 85,
+        lastPercent: 79,
+        maxSpeedKmh: 55.0,
+        speedSum: 120.0,
+        speedSamples: 3,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('active_trip_session_state_v1', jsonEncode(snap.toJson()));
+      await prefs.setString(
+        'active_trip_gps_points_cache',
+        jsonEncode(savedPts.map((p) => p.toJson()).toList()),
+      );
+      await prefs.setString('active_trip_gps_last_time', snap.lastActiveAt.toIso8601String());
+
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => _TestBleController())],
+      );
+      addTearDown(container.dispose);
+      final ctrl = container.read(bleProvider.notifier);
+
+      await ctrl.prepareRecoveredTripCacheForTesting(
+        now: snapEnd.add(const Duration(minutes: 2)),
+      );
+
+      // Xe vẫn đang bật và ODO tiếp nối hợp lệ (6012.8 -> 6013.2 km), rồi chạy tiếp tới 6017.0 km
+      var resumed = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 6013.2
+          ..percent = 78
+          ..speed = 28.0,
+        now: snapEnd.add(const Duration(minutes: 2)),
+      );
+      expect(resumed.distanceKm, closeTo(13.2, 0.01));
+
+      resumed = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 6017.0
+          ..percent = 76
+          ..speed = 32.0,
+        now: snapEnd.add(const Duration(minutes: 7)),
+      );
+      expect(resumed.distanceKm, closeTo(17.0, 0.01));
+      expect(resumed.gpsDistanceKm, greaterThan(12.0));
+      expect(resumed.usedPercent, 9);
+
+      // Kiểm tra quy tắc từ chối nối tiếp khi khác xe, > 10 phút, xe đã tắt, hoặc nhảy ODO > 3 km
+      final probeMsg = BikeLogMsg()
+        ..state = BikeState.drive
+        ..parking = false
+        ..odo = 6014.0
+        ..speed = 25.0;
+      expect(
+        snap.canResumeWith(msg: probeMsg, bikeId: 'BIKE-2', now: snapEnd.add(const Duration(minutes: 2))),
+        isFalse,
+      );
+      expect(
+        snap.canResumeWith(msg: probeMsg, bikeId: 'BIKE-1', now: snapEnd.add(const Duration(minutes: 15))),
+        isFalse,
+      );
+      expect(
+        snap.canResumeWith(
+          msg: BikeLogMsg()..state = BikeState.off..odo = 6012.8,
+          bikeId: 'BIKE-1',
+          now: snapEnd.add(const Duration(minutes: 2)),
+        ),
+        isFalse,
+      );
+      expect(
+        snap.canResumeWith(
+          msg: BikeLogMsg()..state = BikeState.drive..odo = 6025.0,
+          bikeId: 'BIKE-1',
+          now: snapEnd.add(const Duration(minutes: 2)),
+        ),
+        isFalse,
+      );
+    });
+
+    test('GpsRouteSnappingService từ chối đường vòng ô tô OSRM thổi phồng > 1.40x', () async {
+      final t0 = DateTime(2026, 11, 18, 16, 0, 0);
+      // Lộ trình liên tục gồm các điểm cách nhau 10s (~555m tổng)
+      final rawPts = [
+        TripGpsPoint(lat: 10.770000, lng: 106.710000, speedKmh: 30.0, timestamp: t0),
+        TripGpsPoint(lat: 10.771250, lng: 106.710000, speedKmh: 30.0, timestamp: t0.add(const Duration(seconds: 10))),
+        TripGpsPoint(lat: 10.772500, lng: 106.710000, speedKmh: 30.0, timestamp: t0.add(const Duration(seconds: 20))),
+        TripGpsPoint(lat: 10.773750, lng: 106.710000, speedKmh: 30.0, timestamp: t0.add(const Duration(seconds: 30))),
+        TripGpsPoint(lat: 10.775000, lng: 106.710000, speedKmh: 30.0, timestamp: t0.add(const Duration(seconds: 40))),
+      ];
+
+      // Giả lập OSRM /driving/ bắt đi vòng 1000m (~1.8x > 1.40x)
+      var osrmCalled = 0;
+      final detourClient = MockClient((_) async {
+        osrmCalled++;
+        return http.Response(
+          jsonEncode({
+            'code': 'Ok',
+            'matchings': [
+              {
+                'distance': 1000.0,
+                'geometry': {
+                  'type': 'LineString',
+                  'coordinates': [
+                    [106.710000, 10.770000],
+                    [106.714500, 10.772500],
+                    [106.710000, 10.775000],
+                  ],
+                },
+              },
+            ],
+          }),
+          200,
+        );
+      });
+
+      final snapped = await GpsRouteSnappingService.instance.snapRouteToRoads(
+        rawPts,
+        httpClient: detourClient,
+      );
+      expect(osrmCalled, greaterThanOrEqualTo(1));
+      expect(snapped.metrics.isRoadSnapped, isFalse);
+      expect(snapped.metrics.distanceKm, closeTo(0.555, 0.02));
+    });
+
+    test('TripGpsTracker không giữ ấm _lastValidFixAt khi xe đã tắt / hạ chân chống', () {
+      final t0 = DateTime(2026, 11, 18, 16, 30, 0);
+      TripGpsTracker.instance.updateVehicleState(
+        isConnected: true,
+        isBikeOn: true,
+        isSideStandDown: false,
+        isDriveMode: true,
+        speedKmh: 30.0,
+      );
+      TripGpsTracker.instance.ingestPositionForTesting(
+        _makePosition(lat: 10.770000, lng: 106.710000, ts: t0),
+        now: t0,
+      );
+
+      // Xe tạm chuyển Parking / tắt máy khi vẫn nhận GPS (đi phà / dắt xa > 45m)
+      TripGpsTracker.instance.updateVehicleState(
+        isConnected: true,
+        isBikeOn: false,
+        isSideStandDown: true,
+        isDriveMode: false,
+        speedKmh: 0.0,
+      );
+      TripGpsTracker.instance.ingestPositionForTesting(
+        _makePosition(lat: 10.772000, lng: 106.710000, ts: t0.add(const Duration(seconds: 30))),
+        now: t0.add(const Duration(seconds: 30)),
+      );
+
+      // Bật xe đi lại ở vị trí cách 300m sau 40s
+      TripGpsTracker.instance.updateVehicleState(
+        isConnected: true,
+        isBikeOn: true,
+        isSideStandDown: false,
+        isDriveMode: true,
+        speedKmh: 28.0,
+      );
+      TripGpsTracker.instance.ingestPositionForTesting(
+        _makePosition(lat: 10.773000, lng: 106.710000, ts: t0.add(const Duration(seconds: 40))),
+        now: t0.add(const Duration(seconds: 40)),
+      );
+
+      final pts = TripGpsTracker.instance.recordedPoints;
+      expect(pts.length, 2);
+      expect(pts.last.isSignalLossRestart, isTrue);
+      expect(TripGpsTracker.instance.totalDistanceKm, lessThan(0.05));
+    });
+  });
 }

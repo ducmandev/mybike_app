@@ -506,12 +506,14 @@ class BleState {
     required BluetoothDevice device,
     String? bikeName,
     required BikeModel bikeModel,
+    TripData? trip,
   }) =>
       BleState(
         phase: BlePhase.connecting,
         device: device,
         bikeName: bikeName ?? this.bikeName,
         bikeModel: bikeModel,
+        trip: trip ?? const TripData(),
         tripHistory: tripHistory,
         userName: userName,
         autoLockWalkAway: autoLockWalkAway,
@@ -689,6 +691,26 @@ class BleController extends Notifier<BleState> {
 
   final TripSessionCoordinator _tripSession = TripSessionCoordinator();
   bool _archiveBusy = false;
+  Timer? _bikeOffArchiveTimer;
+  DateTime? _bikeOffSince;
+  Timer? _disconnectGraceTimer;
+  DateTime? _lastActiveRideAt;
+  bool _hasPendingDisconnectArchive = false;
+  RecoveredTripCache? _pendingRecoveredCache;
+
+  void _cancelTripLifecycleTimers() {
+    _bikeOffArchiveTimer?.cancel();
+    _bikeOffArchiveTimer = null;
+    _disconnectGraceTimer?.cancel();
+    _disconnectGraceTimer = null;
+    _hasPendingDisconnectArchive = false;
+  }
+
+  void _resetTripRuntimeMetadata() {
+    _cancelTripLifecycleTimers();
+    _bikeOffSince = null;
+    _lastActiveRideAt = null;
+  }
 
   @override
   BleState build() {
@@ -785,8 +807,10 @@ class BleController extends Notifier<BleState> {
       reconnectMaxAttempts: reconnMax,
       reconnectIntervalSeconds: reconnInterval,
     );
-    // Tự động khôi phục dữ liệu GPS hành trình dở dang nếu trước đó app bị vuốt tắt
-    unawaited(TripGpsTracker.instance.restoreUnsavedPoints());
+    // Đọc bộ đệm phiên dở dang (nếu app từng bị kill giữa chừng) vào vùng chờ đối chiếu ODO
+    // TRƯỚC KHI auto-reconnect kết nối với xe (chặn rò rỉ cache GPS cũ vào ODO mới).
+    await _prepareRecoveredTripCache(existingPrefs: prefs);
+    if (!ref.mounted) return;
     // Tự động kết nối ngay khi mở app nếu đã từng kết nối xe trước đó
     if (activeId != null && activeId.isNotEmpty && autoReconn) {
       unawaited(tryRestoreLastBike());
@@ -849,23 +873,119 @@ class BleController extends Notifier<BleState> {
     ));
   }
 
-  Future<void> _archiveCurrentTripIfMeaningful() async {
+  Future<void> _prepareRecoveredTripCache({
+    SharedPreferences? existingPrefs,
+    DateTime? now,
+  }) async {
+    final cached = await TripGpsTracker.instance.loadRecoveredSessionCache(
+      existingPrefs: existingPrefs,
+    );
+    if (cached == null) {
+      _pendingRecoveredCache = null;
+      return;
+    }
+
+    final currentNow = now ?? DateTime.now();
+    final age = currentNow.difference(cached.snapshot.lastActiveAt);
+    if (age.isNegative || age > TripRecordingPolicy.kMaxCrashResumeGap) {
+      await _finalizeRecoveredSnapshotIfMeaningful(cached);
+      _pendingRecoveredCache = null;
+      return;
+    }
+
+    _pendingRecoveredCache = cached;
+  }
+
+  Future<void> _finalizeRecoveredSnapshotIfMeaningful(
+    RecoveredTripCache cached,
+  ) async {
+    final snap = cached.snapshot;
+    final odoKm = snap.odoDistanceKm;
+
+    if (snap.startOdo != null &&
+        odoKm >= TripStorageService.kMinTripDistanceKm) {
+      final cleanedRoute = TripGpsTracker.cleanAndSmoothRoute(cached.points);
+      final rawGpsMetrics = GpsRouteAnalyzer.measureRoute(cleanedRoute);
+      final initialGpsKm = cleanedRoute.length >= 2
+          ? double.parse(rawGpsMetrics.distanceKm.toStringAsFixed(2))
+          : null;
+
+      final record = TripRecord(
+        startTime: snap.startTime,
+        endTime: snap.lastActiveAt,
+        distanceKm: double.parse(odoKm.toStringAsFixed(2)),
+        gpsDistanceKm: initialGpsKm,
+        isGpsRoadSnapped: false,
+        gpsSignalLossCount: rawGpsMetrics.signalLossCount,
+        durationSec: snap.durationSec,
+        avgSpeedKmh: snap.avgSpeedKmh,
+        maxSpeedKmh: snap.maxSpeedKmh,
+        usedPercent: snap.usedPercent,
+        startOdo: snap.startOdo,
+        endOdo: snap.lastOdo,
+        route: cleanedRoute,
+      );
+
+      state = state.copyWith(
+        tripHistory: [
+          record.copyWith(route: const []),
+          ...state.tripHistory.where(
+            (t) => t.id != record.id && !TripStorageService.isDuplicateTrip(t, record),
+          ),
+        ].take(250).toList(),
+      );
+
+      try {
+        await TripStorageService.instance.saveTrip(
+          trip: record,
+          route: cleanedRoute,
+        );
+        BleLogger.instance.event('trip_recovered_from_cache', {
+          'id': record.id,
+          'dist_km': record.distanceKm,
+          'gps_dist_km': record.gpsDistanceKm,
+          'dur_sec': record.durationSec,
+          'route_points': cleanedRoute.length,
+        });
+        if (cleanedRoute.length >= 2) {
+          unawaited(_snapSavedTripInBackground(record, cleanedRoute));
+        }
+      } catch (e) {
+        BleLogger.instance.event('trip_recovery_archive_error', {'error': '$e'});
+      }
+    }
+
+    await TripGpsTracker.instance.clearSavedCache();
+  }
+
+  Future<void> _archiveCurrentTripIfMeaningful({
+    DateTime? endTimeOverride,
+  }) async {
     if (_archiveBusy) {
       BleLogger.instance.event('trip_archive_skipped_busy', {});
       return;
     }
     _archiveBusy = true;
     try {
+      _cancelTripLifecycleTimers();
       final trip = state.trip;
-      final durSec = trip.duration.inSeconds;
+      final startTime = _tripSession.startTime;
+      final endTime = endTimeOverride ?? _bikeOffSince ?? _lastActiveRideAt ?? DateTime.now();
+      final clampedEndTime = (startTime != null && endTime.isBefore(startTime))
+          ? startTime
+          : endTime;
+      final rawSpanSec = startTime != null
+          ? max(0, clampedEndTime.difference(startTime).inSeconds)
+          : 0;
+      final durSec = rawSpanSec > 0 ? rawSpanSec : trip.duration.inSeconds;
       final gpsDistKm = TripGpsTracker.instance.totalDistanceKm;
-      // Dùng trực tiếp quãng đường đọc từ ODO xe chạy (trip.distanceKm)
-      final effectiveDistKm = trip.distanceKm;
+      // Dùng trực tiếp quãng đường đọc từ ODO xe chạy (_tripSession / trip.distanceKm)
+      final effectiveDistKm = max(_tripSession.odoDistanceKm, trip.distanceKm);
       final currentRoute = TripGpsTracker.instance.getCurrentRoute();
 
       // Bỏ qua nếu chưa từng kích hoạt chuyến đi thật từ ECU hoặc ODO < 1.0 km
       if (!_tripSession.hasActiveRide ||
-          _tripSession.startTime == null ||
+          startTime == null ||
           effectiveDistKm < TripStorageService.kMinTripDistanceKm) {
         BleLogger.instance.event('trip_skipped_under_1km', {
           'active_ride': _tripSession.hasActiveRide,
@@ -879,16 +999,20 @@ class BleController extends Notifier<BleState> {
         TripGpsTracker.instance.stopTracking();
         TripGpsTracker.instance.clear();
         _tripSession.reset();
+        _resetTripRuntimeMetadata();
         state = state.copyWith(
           trip: TripData(powerKw: state.trip.powerKw),
         );
         return;
       }
 
-      final startTime = _tripSession.startTime!;
       final startOdo = _tripSession.startOdo;
-      final endOdo = state.lastTelemetry?.odo;
-      final now = DateTime.now();
+      final endOdo = _tripSession.lastOdo ?? state.lastTelemetry?.odo;
+      final avgSpd = _tripSession.avgSpeedKmh > 0
+          ? _tripSession.avgSpeedKmh
+          : trip.avgSpeedKmh;
+      final maxSpd = max(_tripSession.maxSpeedKmh, trip.maxSpeedKmh);
+      final usedPct = max(_tripSession.usedPercent, trip.usedPercent);
       final recordedRoute = TripGpsTracker.instance.stopTracking();
       final rawGpsMetrics = GpsRouteAnalyzer.measureRoute(recordedRoute);
       final hasGpsRoute = recordedRoute.length >= 2;
@@ -898,25 +1022,26 @@ class BleController extends Notifier<BleState> {
 
       final record = TripRecord(
         startTime: startTime,
-        endTime: now,
+        endTime: clampedEndTime,
         distanceKm: double.parse(effectiveDistKm.toStringAsFixed(2)),
         gpsDistanceKm: initialGpsKm,
         isGpsRoadSnapped: false,
         gpsSignalLossCount: rawGpsMetrics.signalLossCount,
         durationSec: durSec,
-        avgSpeedKmh: trip.avgSpeedKmh,
-        maxSpeedKmh: trip.maxSpeedKmh,
-        usedPercent: trip.usedPercent,
+        avgSpeedKmh: avgSpd,
+        maxSpeedKmh: maxSpd,
+        usedPercent: usedPct,
         startOdo: startOdo,
         endOdo: endOdo,
         route: recordedRoute,
       );
 
       // Snapshot xong: dọn sạch bộ nhớ RAM GPS & reset toàn bộ bộ đếm đồng bộ
-      // NGAY TRƯỚC KHI await saveTrip để các sự kiện nối đuôi (turnOffBike -> disconnected)
+      // NGAY TRƯỚC KHI await saveTrip để các sự kiện nối đuôi (bikeOff / turnOffBike -> disconnected)
       // không bao giờ đọc lại dữ liệu chuyến cũ.
       TripGpsTracker.instance.clear();
       _tripSession.reset();
+      _resetTripRuntimeMetadata();
       state = state.copyWith(
         tripHistory: [
           record.copyWith(route: const []),
@@ -1009,15 +1134,48 @@ class BleController extends Notifier<BleState> {
     required bool isConnected,
     DateTime? now,
     bool allowGpsStreamStart = true,
+    bool hasAuthoritativeState = true,
   }) {
     final currentNow = now ?? DateTime.now();
     final isDriveMode = TripRecordingPolicy.isEcuDriveMode(msg.state) && !msg.parking;
+    final activeBikeId = _device?.remoteId.str ?? state.activeBikeId;
 
-    DateTime? restoredStartTime;
-    if (!_tripSession.hasActiveRide && TripGpsTracker.instance.recordedPoints.isNotEmpty) {
-      final firstPtTime = TripGpsTracker.instance.recordedPoints.first.timestamp;
-      if (currentNow.difference(firstPtTime).inMinutes < 30) {
-        restoredStartTime = firstPtTime;
+    // 1. Đối chiếu bộ đệm crash recovery (nếu có): CHỈ nối tiếp nếu cùng xe, xe còn bật & ODO khớp.
+    // Tuyệt đối không giữ điểm GPS cũ khi bắt đầu cuốc mới.
+    var wasResumedFromCrash = false;
+    final pendingCrash = _pendingRecoveredCache;
+    if (pendingCrash != null) {
+      _pendingRecoveredCache = null;
+      if (!_tripSession.hasActiveRide &&
+          pendingCrash.snapshot.canResumeWith(
+            msg: msg,
+            bikeId: activeBikeId,
+            now: currentNow,
+          )) {
+        _tripSession.restoreFromSnapshot(pendingCrash.snapshot);
+        TripGpsTracker.instance.adoptRecoveredPoints(pendingCrash.points);
+        _lastActiveRideAt = pendingCrash.snapshot.lastActiveAt;
+        wasResumedFromCrash = true;
+      } else {
+        unawaited(_finalizeRecoveredSnapshotIfMeaningful(pendingCrash));
+      }
+    }
+
+    // 2. Nếu vừa rớt BLE ngoài ý muốn rồi reconnect trong cửa sổ grace:
+    // Kiểm tra xem xe có còn bật & ODO nối tiếp không; nếu xe đã tắt -> chốt chuyến cũ ngay!
+    if (_hasPendingDisconnectArchive) {
+      _disconnectGraceTimer?.cancel();
+      _disconnectGraceTimer = null;
+      _hasPendingDisconnectArchive = false;
+      if (_tripSession.hasActiveRide &&
+          (!hasAuthoritativeState
+              ? TripRecordingPolicy.isEcuPoweredOff(msg)
+              : !_tripSession.canContinueWith(msg))) {
+        unawaited(
+          _archiveCurrentTripIfMeaningful(
+            endTimeOverride: _bikeOffSince ?? _lastActiveRideAt ?? currentNow,
+          ),
+        );
       }
     }
 
@@ -1026,8 +1184,13 @@ class BleController extends Notifier<BleState> {
       gpsDistanceKm: TripGpsTracker.instance.totalDistanceKm,
       gpsSignalLossCount: TripGpsTracker.instance.signalLossCount,
       now: currentNow,
-      restoredStartTime: restoredStartTime,
+      hasAuthoritativeState: hasAuthoritativeState,
     );
+
+    // Đảm bảo hành trình mới tinh luôn bắt đầu với bộ đệm GPS hoàn toàn trống
+    if (snapshot.justStartedRide && !wasResumedFromCrash) {
+      TripGpsTracker.instance.ensureFreshTripBuffer();
+    }
 
     TripGpsTracker.instance.updateVehicleState(
       isConnected: isConnected,
@@ -1038,11 +1201,67 @@ class BleController extends Notifier<BleState> {
       activeRideStarted: snapshot.hasActiveRide,
     );
 
-    if (allowGpsStreamStart &&
-        snapshot.hasActiveRide &&
-        !TripGpsTracker.instance.isTracking &&
-        (snapshot.justStartedRide || TripRecordingPolicy.isEcuActivelyRiding(msg))) {
-      unawaited(TripGpsTracker.instance.startTracking());
+    if (snapshot.hasActiveRide) {
+      if (snapshot.lastActiveAt != null) {
+        _lastActiveRideAt = snapshot.lastActiveAt;
+      }
+
+      final recoverySnap = _tripSession.toRecoverySnapshot(
+        bikeId: activeBikeId,
+        now: currentNow,
+      );
+      TripGpsTracker.instance.updateRecoverySnapshot(recoverySnap);
+
+      if (hasAuthoritativeState &&
+          TripRecordingPolicy.isEcuPoweredOff(msg) &&
+          msg.speed <= 0.5) {
+        _bikeOffSince ??= snapshot.suggestedEndTime ?? currentNow;
+        if (snapshot.shouldAutoFinalize) {
+          _bikeOffArchiveTimer?.cancel();
+          _bikeOffArchiveTimer = null;
+          BleLogger.instance.event('trip_auto_finalized_on_bike_off', {
+            'state': msg.state.name,
+            'odo_dist_km': snapshot.distanceKm,
+            'gps_dist_km': snapshot.gpsDistanceKm,
+          });
+          unawaited(
+            _archiveCurrentTripIfMeaningful(
+              endTimeOverride: _bikeOffSince ?? currentNow,
+            ),
+          );
+          return TripData(powerKw: snapshot.powerKw);
+        } else if (_bikeOffArchiveTimer == null) {
+          final capturedOffAt = _bikeOffSince!;
+          _bikeOffArchiveTimer = Timer(
+            TripRecordingPolicy.kBikeOffConfirmDuration,
+            () {
+              _bikeOffArchiveTimer = null;
+              if (!ref.mounted) return;
+              if (_tripSession.hasActiveRide && _bikeOffSince != null) {
+                unawaited(
+                  _archiveCurrentTripIfMeaningful(
+                    endTimeOverride: capturedOffAt,
+                  ),
+                );
+              }
+            },
+          );
+        }
+      } else if (msg.isBikeOn || msg.speed > 0.5) {
+        _bikeOffSince = null;
+        _bikeOffArchiveTimer?.cancel();
+        _bikeOffArchiveTimer = null;
+      }
+
+      if (allowGpsStreamStart &&
+          !TripGpsTracker.instance.isTracking &&
+          (snapshot.justStartedRide ||
+              wasResumedFromCrash ||
+              TripRecordingPolicy.isEcuActivelyRiding(msg))) {
+        unawaited(TripGpsTracker.instance.startTracking());
+      }
+    } else {
+      TripGpsTracker.instance.updateRecoverySnapshot(null);
     }
 
     return TripData(
@@ -1063,16 +1282,32 @@ class BleController extends Notifier<BleState> {
     BikeLogMsg msg, {
     bool isConnected = true,
     DateTime? now,
+    bool hasAuthoritativeState = true,
   }) {
     final trip = _processTripTelemetry(
       msg,
       isConnected: isConnected,
       now: now,
       allowGpsStreamStart: false,
+      hasAuthoritativeState: hasAuthoritativeState,
     );
     state = state.copyWith(lastTelemetry: msg, trip: trip);
     return trip;
   }
+
+  @visibleForTesting
+  Future<void> prepareRecoveredTripCacheForTesting({DateTime? now}) =>
+      _prepareRecoveredTripCache(now: now);
+
+  @visibleForTesting
+  void simulateConnectionLostForTesting({required bool manual, DateTime? now}) =>
+      _handleConnectionLost(manual: manual, now: now);
+
+  @visibleForTesting
+  bool get hasPendingDisconnectArchiveForTesting => _hasPendingDisconnectArchive;
+
+  @visibleForTesting
+  DateTime? get bikeOffSinceForTesting => _bikeOffSince;
 
   Future<void> setFindBikePattern(int val) async {
     final prefs = await _prefs;
@@ -1483,6 +1718,11 @@ class BleController extends Notifier<BleState> {
     }
     state = state.copyWith(isLocked: lock, lastTelemetry: tele);
     if (lock) {
+      unawaited(
+        _archiveCurrentTripIfMeaningful(
+          endTimeOverride: _bikeOffSince ?? _lastActiveRideAt,
+        ),
+      );
       return '$msg\n🔒 Xe đang KHÓA AN TOÀN: cần QUẸT THẺ NFC lên xe để mở/kết nối '
           'lại. Còi sẽ hú khi có người động vào xe (đá chống).';
     }
@@ -2193,6 +2433,11 @@ class BleController extends Notifier<BleState> {
         'val': '0',
         'note': 'anti-theft force',
       });
+      unawaited(
+        _archiveCurrentTripIfMeaningful(
+          endTimeOverride: _bikeOffSince ?? _lastActiveRideAt,
+        ),
+      );
     }
   }
 
@@ -2389,6 +2634,7 @@ class BleController extends Notifier<BleState> {
     TripGpsTracker.instance.stopTracking();
     TripGpsTracker.instance.clear();
     _tripSession.reset();
+    _resetTripRuntimeMetadata();
     state = state.copyWith(
       trip: TripData(powerKw: state.trip.powerKw),
     );
@@ -2410,6 +2656,14 @@ class BleController extends Notifier<BleState> {
         state.device?.remoteId == device.remoteId) {
       return;
     }
+    final isSameBike = _device?.remoteId == device.remoteId ||
+        (state.activeBikeId != null &&
+            state.activeBikeId!.toLowerCase() == device.remoteId.str.toLowerCase());
+    if (!isSameBike && _tripSession.hasActiveRide) {
+      await _archiveCurrentTripIfMeaningful(
+        endTimeOverride: _bikeOffSince ?? _lastActiveRideAt,
+      );
+    }
     _manualDisconnect = false;
     _writeCounter = 0;
     _dashboardFailStreak = 0;
@@ -2423,6 +2677,7 @@ class BleController extends Notifier<BleState> {
       device: device,
       bikeName: name,
       bikeModel: resolvedModel,
+      trip: (isSameBike && _tripSession.hasActiveRide) ? state.trip : null,
     );
     unawaited(ForegroundService.start(
       title: 'Dat Bike',
@@ -3437,9 +3692,11 @@ class BleController extends Notifier<BleState> {
       }
 
       // Cập nhật máy tính chuyến đi & TripGpsTracker theo rule ECU (> 4 km/h ở mode chạy)
+      final hasAuthoritativeState = !isRawStruct || payloadToDecode.length >= 33;
       final currentTrip = _processTripTelemetry(
         msg,
         isConnected: state.phase == BlePhase.connected,
+        hasAuthoritativeState: hasAuthoritativeState,
       );
 
       String? autoSerial = state.frameSerial;
@@ -3675,7 +3932,11 @@ class BleController extends Notifier<BleState> {
     }
     try {
       await _sendPowerCommand('0', 'TẮT XE');
-      unawaited(_archiveCurrentTripIfMeaningful());
+      unawaited(
+        _archiveCurrentTripIfMeaningful(
+          endTimeOverride: _bikeOffSince ?? _lastActiveRideAt ?? DateTime.now(),
+        ),
+      );
       _recordParkingSnapshot();
     } catch (e) {
       if (tele != null) {
@@ -3793,8 +4054,11 @@ class BleController extends Notifier<BleState> {
 
   Future<void> disconnect() async {
     _manualDisconnect = true;
-    await _archiveCurrentTripIfMeaningful();
+    await _archiveCurrentTripIfMeaningful(
+      endTimeOverride: _bikeOffSince ?? _lastActiveRideAt,
+    );
     _recordParkingSnapshot();
+    TripGpsTracker.instance.setBikeConnected(false);
     TripGpsTracker.instance.stopTracking();
     TripGpsTracker.instance.clear();
     _cancelReconnect();
@@ -4767,6 +5031,11 @@ class BleController extends Notifier<BleState> {
   /// Quên xe đã nhớ (unpair logic) — xoá cả bond hệ thống nếu có và xoá trạng thái.
   Future<void> forgetBike() async {
     _manualDisconnect = true;
+    _cancelTripLifecycleTimers();
+    await _archiveCurrentTripIfMeaningful(
+      endTimeOverride: _bikeOffSince ?? _lastActiveRideAt,
+    );
+    TripGpsTracker.instance.setBikeConnected(false);
     _cancelReconnect();
     _stopKeepalive();
     _findBikeTimeoutTimer?.cancel();
@@ -4861,7 +5130,7 @@ class BleController extends Notifier<BleState> {
         _resetProximitySession();
         _batteryChar = null;
         _batteryPollCounter = 0;
-        unawaited(_archiveCurrentTripIfMeaningful());
+        _handleConnectionLost(manual: _manualDisconnect);
         _recordParkingSnapshot();
 
         if (_manualDisconnect) {
@@ -5002,7 +5271,71 @@ class BleController extends Notifier<BleState> {
     _reconnectPending = false;
   }
 
+  void _handleConnectionLost({required bool manual, DateTime? now}) {
+    final eventTime = now ?? DateTime.now();
+    _bikeOffArchiveTimer?.cancel();
+    _bikeOffArchiveTimer = null;
+    TripGpsTracker.instance.setBikeConnected(false);
+
+    if (!_tripSession.hasActiveRide) {
+      _hasPendingDisconnectArchive = false;
+      _disconnectGraceTimer?.cancel();
+      _disconnectGraceTimer = null;
+      TripGpsTracker.instance.stopTracking();
+      TripGpsTracker.instance.clear();
+      return;
+    }
+
+    final tele = state.lastTelemetry;
+    final alreadyPoweredOff =
+        _bikeOffSince != null || (tele != null && !tele.isBikeOn);
+
+    if (manual || !state.autoReconnect || alreadyPoweredOff) {
+      _hasPendingDisconnectArchive = false;
+      _disconnectGraceTimer?.cancel();
+      _disconnectGraceTimer = null;
+      unawaited(
+        _archiveCurrentTripIfMeaningful(
+          endTimeOverride: _bikeOffSince ?? _lastActiveRideAt ?? eventTime,
+        ),
+      );
+      return;
+    }
+
+    final bikeId = _device?.remoteId.str ?? state.activeBikeId;
+    final snap = _tripSession.toRecoverySnapshot(
+      bikeId: bikeId,
+      now: _lastActiveRideAt ?? eventTime,
+    );
+    if (snap != null) {
+      unawaited(TripGpsTracker.instance.persistSessionSnapshotImmediately(snap));
+    }
+
+    final isActivelyRiding =
+        tele != null && TripRecordingPolicy.isEcuActivelyRiding(tele);
+    final grace = isActivelyRiding
+        ? TripRecordingPolicy.kBleReconnectGraceDriving
+        : TripRecordingPolicy.kBleReconnectGraceIdle;
+
+    _hasPendingDisconnectArchive = true;
+    _disconnectGraceTimer?.cancel();
+    _disconnectGraceTimer = Timer(grace, () {
+      if (!_hasPendingDisconnectArchive || !ref.mounted) return;
+      _hasPendingDisconnectArchive = false;
+      _disconnectGraceTimer = null;
+      BleLogger.instance.event('trip_archive_disconnect_grace_expired', {
+        'grace_sec': grace.inSeconds,
+      });
+      unawaited(
+        _archiveCurrentTripIfMeaningful(
+          endTimeOverride: _lastActiveRideAt ?? eventTime,
+        ),
+      );
+    });
+  }
+
   void _teardown() {
+    _cancelTripLifecycleTimers();
     _cancelReconnect();
     _stopKeepalive();
     _findBikeTimeoutTimer?.cancel();
@@ -5179,6 +5512,11 @@ class BleController extends Notifier<BleState> {
   /// Xóa toàn bộ xe đã lưu trong Garage và đưa app về trạng thái sạch hoàn toàn
   Future<void> deleteAllSavedBikes() async {
     _manualDisconnect = true;
+    _cancelTripLifecycleTimers();
+    await _archiveCurrentTripIfMeaningful(
+      endTimeOverride: _bikeOffSince ?? _lastActiveRideAt,
+    );
+    TripGpsTracker.instance.setBikeConnected(false);
     _cancelReconnect();
     _stopKeepalive();
     _findBikeTimeoutTimer?.cancel();

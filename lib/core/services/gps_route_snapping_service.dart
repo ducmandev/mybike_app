@@ -415,7 +415,7 @@ class GpsRouteSnappingService {
           '$base/$coordStr?geometries=geojson&overview=full&tidy=true&gaps=ignore&timestamps=$tsStr&radiuses=$radiiStr',
         );
         final res = await client.get(uri, headers: const {
-          'User-Agent': 'DatBikeApp/2.6.47 (mobile-app; contact@dat.bike)',
+          'User-Agent': 'DatBikeApp/2.6.48 (mobile-app; contact@dat.bike)',
         }).timeout(const Duration(seconds: 4));
 
         if (res.statusCode != 200) continue;
@@ -465,6 +465,10 @@ class GpsRouteSnappingService {
         if (!_passesDistanceSanity(rawChunkMeters, chosenMeters)) {
           continue;
         }
+        // Chống OSRM cộng gộp nhiều matchings bị đứt gãy vượt xa hình học đường vẽ thực tế
+        if (apiDistanceSum > 0 && geoMeters > 0 && apiDistanceSum > geoMeters * 1.35) {
+          continue;
+        }
 
         return (points: snappedPoints, distanceMeters: chosenMeters);
       } catch (_) {
@@ -477,8 +481,8 @@ class GpsRouteSnappingService {
 
   static bool _passesDistanceSanity(double rawMeters, double matchedMeters) {
     if (!matchedMeters.isFinite || matchedMeters <= 0) return false;
-    if (rawMeters < 50.0) return matchedMeters <= 250.0;
-    return matchedMeters >= rawMeters * 0.45 && matchedMeters <= rawMeters * 2.2;
+    if (rawMeters < 50.0) return matchedMeters <= rawMeters * 1.45 + 25.0;
+    return matchedMeters >= rawMeters * 0.65 && matchedMeters <= rawMeters * 1.40;
   }
 
   /// Nội suy tốc độ, độ cao và timestamp giữ nguyên thứ tự thời gian từ [source]
