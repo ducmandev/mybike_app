@@ -541,7 +541,7 @@ void main() {
       return tmpDir;
     }
 
-    test('Xe tắt bằng nút trên xe / NFC (BikeState.off / lock) tự chốt & lưu hành trình sau 3s dù BLE chưa rớt', () async {
+    test('Xe tắt bằng nút trên xe / NFC (BikeState.off / lock) tự chốt & lưu hành trình sau 5s dù BLE chưa rớt', () async {
       await mountMockTripsDir();
       final container = ProviderContainer(
         overrides: [bleProvider.overrideWith(() => _TestBleController())],
@@ -601,7 +601,7 @@ void main() {
       expect(ctrl.bikeOffSinceForTesting, offAt);
       expect(container.read(bleProvider).tripHistory, isEmpty);
 
-      // Giữ off >= 3s dù BLE vẫn connected -> tự động kết thúc & lưu 4.2 km đúng mốc 610s!
+      // Sau 3s chưa vội chốt (tránh nhiễu chuyển tiếp); giữ off >= 5s mới tự động chốt & lưu 4.2 km đúng mốc 610s!
       liveTrip = ctrl.ingestTripTelemetryForTesting(
         BikeLogMsg()
           ..state = BikeState.off
@@ -610,6 +610,18 @@ void main() {
           ..percent = 87
           ..speed = 0.0,
         now: offAt.add(const Duration(seconds: 3)),
+        hasAuthoritativeState: true,
+      );
+      expect(container.read(bleProvider).tripHistory, isEmpty);
+
+      liveTrip = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.off
+          ..parking = true
+          ..odo = 2004.2
+          ..percent = 87
+          ..speed = 0.0,
+        now: offAt.add(const Duration(seconds: 5)),
         hasAuthoritativeState: true,
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -828,7 +840,7 @@ void main() {
       expect(resumed.gpsDistanceKm, greaterThan(12.0));
       expect(resumed.usedPercent, 9);
 
-      // Kiểm tra quy tắc từ chối nối tiếp khi khác xe, > 10 phút, xe đã tắt, hoặc nhảy ODO > 3 km
+      // Kiểm tra quy tắc từ chối nối tiếp khi khác xe, > 10 phút, xe đã tắt, hoặc nhảy ODO > 15 km
       final probeMsg = BikeLogMsg()
         ..state = BikeState.drive
         ..parking = false
@@ -852,7 +864,7 @@ void main() {
       );
       expect(
         snap.canResumeWith(
-          msg: BikeLogMsg()..state = BikeState.drive..odo = 6025.0,
+          msg: BikeLogMsg()..state = BikeState.drive..odo = 6035.0,
           bikeId: 'BIKE-1',
           now: snapEnd.add(const Duration(minutes: 2)),
         ),
@@ -949,6 +961,137 @@ void main() {
       expect(pts.length, 2);
       expect(pts.last.isSignalLossRestart, isTrue);
       expect(TripGpsTracker.instance.totalDistanceKm, lessThan(0.05));
+    });
+
+    test('Dừng đèn đỏ quá lâu (> 3 phút) khi CHƯA về P mode vẫn giữ nguyên hành trình & KHÔNG reset', () async {
+      await mountMockTripsDir();
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => _TestBleController())],
+      );
+      addTearDown(container.dispose);
+
+      final ctrl = container.read(bleProvider.notifier);
+      final t0 = DateTime(2026, 11, 18, 17, 0, 0);
+
+      // Chạy 0.6 km (< 1.0 km) rồi dừng đèn đỏ ở mode Drive/Super, chân chống lên (!parking)
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 7000.0
+          ..speed = 25.0,
+        now: t0,
+      );
+      var liveTrip = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 7000.6
+          ..speed = 22.0,
+        now: t0.add(const Duration(seconds: 70)),
+      );
+      expect(liveTrip.distanceKm, closeTo(0.6, 0.01));
+
+      // Đứng im speed = 0.0 tại đèn đỏ suốt 180 giây (3 phút), vẫn giữ mode Drive (!parking)
+      for (var s = 90; s <= 250; s += 20) {
+        liveTrip = ctrl.ingestTripTelemetryForTesting(
+          BikeLogMsg()
+            ..state = BikeState.drive
+            ..parking = false
+            ..odo = 7000.6
+            ..speed = 0.0,
+          now: t0.add(Duration(seconds: s)),
+        );
+      }
+      expect(TripGpsTracker.instance.hasStartedActiveRide, isTrue);
+      expect(liveTrip.distanceKm, closeTo(0.6, 0.01));
+      expect(liveTrip.duration.inSeconds, 250);
+      expect(container.read(bleProvider).tripHistory, isEmpty);
+
+      // Đèn xanh chạy tiếp tới +2.1 km -> toàn bộ hành trình 2.1 km được nối liền
+      liveTrip = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.drive
+          ..parking = false
+          ..odo = 7002.1
+          ..speed = 34.0,
+        now: t0.add(const Duration(seconds: 400)),
+      );
+      expect(liveTrip.distanceKm, closeTo(2.1, 0.01));
+    });
+
+    test('Rớt BLE khi đang dừng đèn đỏ (speed = 0, chưa về P mode) giữ grace 10 phút thay vì ngắt ở 20s', () {
+      final redLightDrive = BikeLogMsg()
+        ..state = BikeState.drive
+        ..parking = false
+        ..speed = 0.0;
+      final parkedP = BikeLogMsg()
+        ..state = BikeState.parking
+        ..parking = true
+        ..speed = 0.0;
+      final bikeOff = BikeLogMsg()
+        ..state = BikeState.off
+        ..parking = true
+        ..speed = 0.0;
+
+      expect(
+        TripRecordingPolicy.selectReconnectGrace(redLightDrive),
+        TripRecordingPolicy.kBleReconnectGraceRideMode,
+      );
+      expect(
+        TripRecordingPolicy.selectReconnectGrace(parkedP),
+        TripRecordingPolicy.kBleReconnectGraceParked,
+      );
+      expect(TripRecordingPolicy.selectReconnectGrace(bikeOff), isNull);
+
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => _TestBleController())],
+      );
+      addTearDown(container.dispose);
+
+      final ctrl = container.read(bleProvider.notifier);
+      final t0 = DateTime(2026, 11, 18, 17, 15, 0);
+
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.super_
+          ..parking = false
+          ..odo = 8000.0
+          ..speed = 30.0,
+        now: t0,
+      );
+      ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.super_
+          ..parking = false
+          ..odo = 8000.8
+          ..speed = 0.0, // dừng đèn đỏ trước khi rớt BLE
+        now: t0.add(const Duration(seconds: 90)),
+      );
+
+      ctrl.simulateConnectionLostForTesting(
+        manual: false,
+        now: t0.add(const Duration(seconds: 95)),
+      );
+      expect(ctrl.hasPendingDisconnectArchiveForTesting, isTrue);
+      // Cửa sổ chờ là 10 phút (KHÔNG phải 20s), trip vẫn giữ nguyên 0.8 km
+      expect(
+        ctrl.pendingDisconnectGraceForTesting,
+        TripRecordingPolicy.kBleReconnectGraceRideMode,
+      );
+      expect(container.read(bleProvider).trip.distanceKm, closeTo(0.8, 0.01));
+
+      // Sau 150s đèn đỏ + reconnect lại khi đèn xanh -> nối tiếp mượt lên 2.5 km
+      final resumed = ctrl.ingestTripTelemetryForTesting(
+        BikeLogMsg()
+          ..state = BikeState.super_
+          ..parking = false
+          ..odo = 8002.5
+          ..speed = 32.0,
+        now: t0.add(const Duration(seconds: 245)),
+      );
+      expect(ctrl.hasPendingDisconnectArchiveForTesting, isFalse);
+      expect(resumed.distanceKm, closeTo(2.5, 0.01));
     });
   });
 }

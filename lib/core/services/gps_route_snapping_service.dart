@@ -415,7 +415,7 @@ class GpsRouteSnappingService {
           '$base/$coordStr?geometries=geojson&overview=full&tidy=true&gaps=ignore&timestamps=$tsStr&radiuses=$radiiStr',
         );
         final res = await client.get(uri, headers: const {
-          'User-Agent': 'DatBikeApp/2.6.48 (mobile-app; contact@dat.bike)',
+          'User-Agent': 'DatBikeApp/2.6.49 (mobile-app; contact@dat.bike)',
         }).timeout(const Duration(seconds: 4));
 
         if (res.statusCode != 200) continue;

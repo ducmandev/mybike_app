@@ -17,23 +17,44 @@ abstract final class TripRecordingPolicy {
   static const double kActiveContinueSpeedKmh = 0.5;
 
   /// Thời gian xác nhận xe đã thực sự TẮT (`off` / `lock`) trước khi tự động chốt hành trình.
-  static const Duration kBikeOffConfirmDuration = Duration(seconds: 3);
+  static const Duration kBikeOffConfirmDuration = Duration(seconds: 5);
 
-  /// Cửa sổ chờ tự kết nối lại khi BLE đứt đột ngột lúc xe ĐANG CHẠY (> 4 km/h).
-  static const Duration kBleReconnectGraceDriving = Duration(seconds: 45);
+  /// Cửa sổ chờ tự kết nối lại khi BLE đứt lúc xe CHƯA chuyển về P mode (`D`/`S`/`E`/`Cruise`, `!parking`)
+  /// — bao gồm trường hợp dừng đèn đỏ lâu đứng im 0 km/h với màn hình tắt hoặc mất BLE tạm thời.
+  static const Duration kBleReconnectGraceRideMode = Duration(minutes: 10);
 
-  /// Cửa sổ chờ tự kết nối lại khi BLE đứt lúc xe đang đỗ/dừng (không ở trạng thái tắt).
-  static const Duration kBleReconnectGraceIdle = Duration(seconds: 20);
+  /// Cửa sổ chờ tự kết nối lại khi BLE đứt lúc xe đã về P mode / hạ chân chống / StandBy.
+  static const Duration kBleReconnectGraceParked = Duration(seconds: 90);
 
   /// Ngưỡng tối đa cho phép nối tiếp phiên hành trình nếu app bị đóng/kill đột ngột.
   static const Duration kMaxCrashResumeGap = Duration(minutes: 10);
 
   /// Sai lệch ODO tối đa (km) giữa phiên lưu đệm và telemetry mới để coi là cùng một chuyến.
-  static const double kMaxOdoContinuityJumpKm = 3.0;
+  static const double kMaxOdoContinuityJumpKm = 15.0;
 
   /// Xe có đang ở trạng thái tắt nguồn hoặc khóa an toàn hay không.
   static bool isEcuPoweredOff(BikeLogMsg msg) {
     return msg.state == BikeState.off || msg.state == BikeState.lock;
+  }
+
+  /// Xe chưa chuyển về P mode (`D`, `S`, `E`, `Cruise` và chân chống gạt lên),
+  /// vẫn đang trong hành trình kể cả khi đứng im `speed == 0` chờ đèn đỏ.
+  static bool isInActiveRideGear(BikeLogMsg msg) {
+    return isEcuDriveMode(msg.state) && !msg.parking;
+  }
+
+  /// Chọn thời gian chờ tự kết nối lại khi BLE đứt đột ngột dựa trên trạng thái ECU cuối cùng:
+  /// - Xe đã tắt (`off` / `lock`) -> `null` (chốt ngay lập tức).
+  /// - Xe chưa về P mode (`D`/`S`/`E`/`Cruise`, `!parking`, kể cả đứng im đèn đỏ) -> 10 phút.
+  /// - Xe đã về P mode / hạ chân chống / StandBy -> 90 giây.
+  static Duration? selectReconnectGrace(BikeLogMsg? lastTelemetry) {
+    if (lastTelemetry != null && isEcuPoweredOff(lastTelemetry)) {
+      return null;
+    }
+    if (lastTelemetry != null && isInActiveRideGear(lastTelemetry)) {
+      return kBleReconnectGraceRideMode;
+    }
+    return kBleReconnectGraceParked;
   }
 
   /// Kiểm tra telemetry [msg] có liên tục hợp lệ với chuyến đi đang mở hay không.

@@ -694,6 +694,7 @@ class BleController extends Notifier<BleState> {
   Timer? _bikeOffArchiveTimer;
   DateTime? _bikeOffSince;
   Timer? _disconnectGraceTimer;
+  Duration? _pendingDisconnectGraceDuration;
   DateTime? _lastActiveRideAt;
   bool _hasPendingDisconnectArchive = false;
   RecoveredTripCache? _pendingRecoveredCache;
@@ -703,6 +704,7 @@ class BleController extends Notifier<BleState> {
     _bikeOffArchiveTimer = null;
     _disconnectGraceTimer?.cancel();
     _disconnectGraceTimer = null;
+    _pendingDisconnectGraceDuration = null;
     _hasPendingDisconnectArchive = false;
   }
 
@@ -1257,6 +1259,7 @@ class BleController extends Notifier<BleState> {
           !TripGpsTracker.instance.isTracking &&
           (snapshot.justStartedRide ||
               wasResumedFromCrash ||
+              TripRecordingPolicy.isInActiveRideGear(msg) ||
               TripRecordingPolicy.isEcuActivelyRiding(msg))) {
         unawaited(TripGpsTracker.instance.startTracking());
       }
@@ -1305,6 +1308,9 @@ class BleController extends Notifier<BleState> {
 
   @visibleForTesting
   bool get hasPendingDisconnectArchiveForTesting => _hasPendingDisconnectArchive;
+
+  @visibleForTesting
+  Duration? get pendingDisconnectGraceForTesting => _pendingDisconnectGraceDuration;
 
   @visibleForTesting
   DateTime? get bikeOffSinceForTesting => _bikeOffSince;
@@ -3323,9 +3329,11 @@ class BleController extends Notifier<BleState> {
     final walkUpAllowed = !_autoSecureBusy && !_isCommandBusy && !userRecent;
 
     // Timeout 90 giây đứng gần 2-3m nhưng không vào số chạy (Idle Standstill Timeout):
+    // Tuyệt đối không chạy khi đang có chuyến đi mở (_tripSession.hasActiveRide).
     if (isBikeOn &&
         (_openedByWalkUp || state.autoLockWalkAway) &&
         !_hasEnteredDriveInSession &&
+        !_tripSession.hasActiveRide &&
         isParkedOrStandby &&
         speed <= 0.5 &&
         autoLockAllowed) {
@@ -3695,7 +3703,7 @@ class BleController extends Notifier<BleState> {
       final hasAuthoritativeState = !isRawStruct || payloadToDecode.length >= 33;
       final currentTrip = _processTripTelemetry(
         msg,
-        isConnected: state.phase == BlePhase.connected,
+        isConnected: state.phase == BlePhase.connected || state.isAuthorized,
         hasAuthoritativeState: hasAuthoritativeState,
       );
 
@@ -5281,6 +5289,7 @@ class BleController extends Notifier<BleState> {
       _hasPendingDisconnectArchive = false;
       _disconnectGraceTimer?.cancel();
       _disconnectGraceTimer = null;
+      _pendingDisconnectGraceDuration = null;
       TripGpsTracker.instance.stopTracking();
       TripGpsTracker.instance.clear();
       return;
@@ -5289,11 +5298,16 @@ class BleController extends Notifier<BleState> {
     final tele = state.lastTelemetry;
     final alreadyPoweredOff =
         _bikeOffSince != null || (tele != null && !tele.isBikeOn);
+    final selectedGrace = TripRecordingPolicy.selectReconnectGrace(tele);
 
-    if (manual || !state.autoReconnect || alreadyPoweredOff) {
+    if (manual ||
+        !state.autoReconnect ||
+        alreadyPoweredOff ||
+        selectedGrace == null) {
       _hasPendingDisconnectArchive = false;
       _disconnectGraceTimer?.cancel();
       _disconnectGraceTimer = null;
+      _pendingDisconnectGraceDuration = null;
       unawaited(
         _archiveCurrentTripIfMeaningful(
           endTimeOverride: _bikeOffSince ?? _lastActiveRideAt ?? eventTime,
@@ -5311,20 +5325,16 @@ class BleController extends Notifier<BleState> {
       unawaited(TripGpsTracker.instance.persistSessionSnapshotImmediately(snap));
     }
 
-    final isActivelyRiding =
-        tele != null && TripRecordingPolicy.isEcuActivelyRiding(tele);
-    final grace = isActivelyRiding
-        ? TripRecordingPolicy.kBleReconnectGraceDriving
-        : TripRecordingPolicy.kBleReconnectGraceIdle;
-
     _hasPendingDisconnectArchive = true;
+    _pendingDisconnectGraceDuration = selectedGrace;
     _disconnectGraceTimer?.cancel();
-    _disconnectGraceTimer = Timer(grace, () {
+    _disconnectGraceTimer = Timer(selectedGrace, () {
       if (!_hasPendingDisconnectArchive || !ref.mounted) return;
       _hasPendingDisconnectArchive = false;
       _disconnectGraceTimer = null;
+      _pendingDisconnectGraceDuration = null;
       BleLogger.instance.event('trip_archive_disconnect_grace_expired', {
-        'grace_sec': grace.inSeconds,
+        'grace_sec': selectedGrace.inSeconds,
       });
       unawaited(
         _archiveCurrentTripIfMeaningful(
