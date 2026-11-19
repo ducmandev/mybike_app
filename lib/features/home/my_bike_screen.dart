@@ -455,98 +455,46 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
                           _sheetToggleRow(
                             icon: Icons.key_rounded,
                             iconColor: AppColors.tertiary,
-                            title: 'Mở khóa & Bật xe khi lại gần',
-                            subtitle: 'Tự động mở khóa bánh và bật sáng taplo khi đến gần xe',
+                            title: 'Mở khóa xe khi lại gần',
+                            subtitle: 'Chỉ tự động mở khóa bánh xe khi điện thoại vào vùng gần',
                             value: ble.walkUpUnlock,
                             onChanged: (v) {
                               ref.read(bleProvider.notifier).setWalkUpUnlock(v);
                               setSheetState(() {});
-                              _heroSnack(v ? 'Đã bật mở khóa & bật sáng taplo khi lại gần' : 'Đã tắt tự mở xe');
+                              _heroSnack(v ? 'Đã bật tự mở khóa xe khi lại gần' : 'Đã tắt tự mở khóa khi lại gần');
                             },
                           ),
                           if (ble.walkUpUnlock) ...[
-                            // Tính năng phụ: BẬT XE SẴN KHI Ở RẤT GẦN
-                            Container(
-                              margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: ble.walkUpAutoPowerOn
-                                    ? AppColors.amber.withValues(alpha: 0.08)
-                                    : AppColors.panelSecondary,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: ble.walkUpAutoPowerOn
-                                      ? AppColors.amber.withValues(alpha: 0.35)
-                                      : AppColors.panelBorderBright,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 32,
-                                    height: 32,
-                                    decoration: BoxDecoration(
-                                      color: ble.walkUpAutoPowerOn
-                                          ? AppColors.amber
-                                          : AppColors.surfaceContainerHighest,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: const Icon(Icons.bolt_rounded, color: Colors.white, size: 18),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Flexible(
-                                              child: Text(
-                                                'Bật xe sẵn khi ở rất gần',
-                                                style: AppTypography.labelMd(
-                                                  color: AppColors.textPrimary,
-                                                  fontWeight: FontWeight.w700,
-                                                ).copyWith(fontSize: 12.5, letterSpacing: 0),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 6),
-                                            Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                                              decoration: BoxDecoration(
-                                                color: AppColors.amber.withValues(alpha: 0.16),
-                                                borderRadius: BorderRadius.circular(4),
-                                              ),
-                                              child: Text(
-                                                'TIỆN ÍCH',
-                                                style: AppTypography.labelSm(
-                                                  color: AppColors.amber,
-                                                  fontWeight: FontWeight.w800,
-                                                ).copyWith(fontSize: 8.5, letterSpacing: 0),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          'Tự mở khóa & bật nguồn khi tới cạnh xe (tự kiểm tra status, không tắt xe nếu đã mở sẵn)',
-                                          style: AppTypography.labelSm(color: AppColors.textDim)
-                                              .copyWith(letterSpacing: 0),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Switch.adaptive(
-                                    value: ble.walkUpAutoPowerOn,
-                                    activeTrackColor: AppColors.amber,
-                                    onChanged: (v) {
-                                      ref.read(bleProvider.notifier).setWalkUpAutoPowerOn(v);
-                                      setSheetState(() {});
-                                      _heroSnack(v ? 'Đã bật tự khởi động xe sẵn khi lại gần' : 'Đã tắt tự bật xe');
-                                    },
-                                  ),
-                                ],
-                              ),
+                            // Mục con 1: Tự bật nguồn xe khi lại gần
+                            _sheetSubFeatureCard(
+                              icon: Icons.bolt_rounded,
+                              accentColor: AppColors.amber,
+                              title: 'Tự bật nguồn xe khi lại gần',
+                              badgeLabel: 'TIỆN ÍCH',
+                              subtitle: 'Tự bật sáng taplo & khởi động điện xe ngay sau khi mở khóa (không tắt xe nếu đã mở)',
+                              value: ble.walkUpAutoPowerOn,
+                              onChanged: (v) {
+                                ref.read(bleProvider.notifier).setWalkUpAutoPowerOn(v);
+                                setSheetState(() {});
+                                _heroSnack(v ? 'Đã bật tự khởi động nguồn xe khi lại gần' : 'Đã tắt tự bật nguồn xe');
+                              },
+                            ),
+                            // Mục con 2 (đỏ): Giữ xe không tự động tắt khi ở gần
+                            _sheetSubFeatureCard(
+                              icon: Icons.power_settings_new_rounded,
+                              accentColor: AppColors.red,
+                              title: 'Giữ xe không tự động tắt',
+                              badgeLabel: 'LUÔN BẬT',
+                              subtitle:
+                                  'Không tự tắt sau 90s; khi ở gần dù tắt tay hay tự tắt do chân chống xe vẫn tự động mở lại',
+                              value: ble.walkUpKeepAwake,
+                              onChanged: (v) {
+                                ref.read(bleProvider.notifier).setWalkUpKeepAwake(v);
+                                setSheetState(() {});
+                                _heroSnack(
+                                  v ? 'Đã bật giữ xe không tự tắt khi ở gần' : 'Đã tắt giữ xe không tự tắt',
+                                );
+                              },
                             ),
 
                             // Tùy chỉnh mức sóng khi đến gần
@@ -1066,6 +1014,90 @@ class _MyBikeScreenState extends ConsumerState<MyBikeScreen> {
           Switch.adaptive(
             value: value,
             activeTrackColor: AppColors.primary,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Thẻ tùy chọn phụ (cấp 2) bên trong cài đặt Walk-Up (dùng chung cho mục cam & mục đỏ).
+  Widget _sheetSubFeatureCard({
+    required IconData icon,
+    required Color accentColor,
+    required String title,
+    required String badgeLabel,
+    required String subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: value ? accentColor.withValues(alpha: 0.08) : AppColors.panelSecondary,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: value ? accentColor.withValues(alpha: 0.35) : AppColors.panelBorderBright,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: value ? accentColor : AppColors.surfaceContainerHighest,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        style: AppTypography.labelMd(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w700,
+                        ).copyWith(fontSize: 12.5, letterSpacing: 0),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                      decoration: BoxDecoration(
+                        color: accentColor.withValues(alpha: 0.16),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        badgeLabel,
+                        style: AppTypography.labelSm(
+                          color: accentColor,
+                          fontWeight: FontWeight.w800,
+                        ).copyWith(fontSize: 8.5, letterSpacing: 0),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: AppTypography.labelSm(color: AppColors.textDim)
+                      .copyWith(letterSpacing: 0),
+                ),
+              ],
+            ),
+          ),
+          Switch.adaptive(
+            value: value,
+            activeTrackColor: accentColor,
             onChanged: onChanged,
           ),
         ],

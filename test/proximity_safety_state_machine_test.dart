@@ -747,12 +747,14 @@ void main() {
       final notifier = container.read(bleProvider.notifier);
       await notifier.setWalkUpUnlock(true);
       await notifier.setWalkUpAutoPowerOn(true);
+      await notifier.setWalkUpKeepAwake(true);
       await notifier.setAntiTheft5m(true);
       await notifier.setWalkUpRssiThreshold(-52.0);
 
       final s = container.read(bleProvider);
       expect(s.walkUpUnlock, isTrue);
       expect(s.walkUpAutoPowerOn, isTrue);
+      expect(s.walkUpKeepAwake, isTrue);
       expect(s.antiTheft5m, isTrue);
       expect(s.walkUpRssiThreshold, -52.0);
     });
@@ -789,6 +791,7 @@ void main() {
         autoLockWalkAway: true,
         walkUpUnlock: true,
         walkUpAutoPowerOn: true,
+        walkUpKeepAwake: true,
         walkUpRssiThreshold: -62.0,
         autoLockRssiThreshold: -80.0,
         antiTheft5m: true,
@@ -810,6 +813,7 @@ void main() {
       expect(next.autoLockWalkAway, isTrue);
       expect(next.walkUpUnlock, isTrue);
       expect(next.walkUpAutoPowerOn, isTrue);
+      expect(next.walkUpKeepAwake, isTrue);
       expect(next.walkUpRssiThreshold, -62.0);
       expect(next.autoLockRssiThreshold, -80.0);
       expect(next.antiTheft5m, isTrue);
@@ -1254,6 +1258,102 @@ void main() {
       await waitUntil(() => unlockCount == 1 && !container.read(bleProvider).isLocked);
       expect(unlockCount, 1);
       expect(container.read(bleProvider).isLocked, isFalse);
+    });
+
+    test('walkUpKeepAwake prevents 90s idle timeout and auto re-opens after kickstand or manual power-off, while respecting manual lock and charger', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final tele = BikeLogMsg()
+        ..state = BikeState.off
+        ..parking = true
+        ..speed = 0.0;
+      final controller = TestBleControllerHarness(BleState(
+        phase: BlePhase.connected,
+        isAuthorized: true,
+        isLocked: false,
+        walkUpUnlock: true,
+        walkUpAutoPowerOn: false,
+        walkUpKeepAwake: true,
+        autoLockWalkAway: true,
+        sessionKey: Uint8List(16),
+        lastTelemetry: tele,
+      ));
+      final container = ProviderContainer(
+        overrides: [bleProvider.overrideWith(() => controller)],
+      );
+      addTearDown(container.dispose);
+      container.read(bleProvider);
+
+      final ops = <String>[];
+      controller.writeSettingTestOverride = (uuid, data, label) async {
+        if (uuid == Gatt.powerProtectedChar) {
+          ops.add(data.first == 0x30 ? 'unlock' : 'lock');
+        }
+        return 'Đã ghi $label xuống xe (${String.fromCharCodes(data)})';
+      };
+      controller.sendPowerTestOverride = (val, label) async {
+        ops.add(val == '1' ? 'power_on' : 'power_off');
+      };
+
+      // 1. Lại gần -> tự bật xe dù walkUpAutoPowerOn == false (vì walkUpKeepAwake == true)
+      final t0 = DateTime(2026, 1, 1, 10, 0, 0);
+      controller.ingestRssiForTest(-58, now: t0);
+      await waitUntil(() => ops.length == 1);
+      expect(ops, ['power_on']);
+      expect(container.read(bleProvider).lastTelemetry?.isBikeOn, isTrue);
+
+      // 2. Đứng gần 120s không vào số chạy -> KHÔNG bị tắt bởi timeout 90s
+      controller.ingestRssiForTest(-58, now: t0.add(const Duration(seconds: 95)));
+      controller.ingestRssiForTest(-58, now: t0.add(const Duration(seconds: 120)));
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(ops, ['power_on']);
+      expect(container.read(bleProvider).lastTelemetry?.isBikeOn, isTrue);
+
+      // 3. ECU tự tắt do chân chống (BikeState.off) -> đợi settle 2s -> tự mở lại
+      tele.state = BikeState.off;
+      final tKickOff = t0.add(const Duration(seconds: 125));
+      controller.ingestRssiForTest(-58, now: tKickOff);
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(ops.length, 1, reason: 'Trong 2s ECU settle chưa gửi bật lại ngay');
+
+      controller.ingestRssiForTest(-58, now: tKickOff.add(const Duration(seconds: 3)));
+      await waitUntil(() => ops.length == 2);
+      expect(ops, ['power_on', 'power_on']);
+      expect(container.read(bleProvider).lastTelemetry?.isBikeOn, isTrue);
+
+      // 4. Tắt tay trên app (turnOffBike) khi vẫn đứng ở gần -> sau 2s settle tự mở lại
+      await controller.turnOffBike(isAutomation: false);
+      expect(ops, ['power_on', 'power_on', 'power_off']);
+      final tManualOff = tKickOff.add(const Duration(seconds: 10));
+      controller.ingestRssiForTest(-58, now: tManualOff);
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(ops.length, 3);
+
+      controller.ingestRssiForTest(-58, now: tManualOff.add(const Duration(seconds: 3)));
+      await waitUntil(() => ops.length == 4);
+      expect(ops, ['power_on', 'power_on', 'power_off', 'power_on']);
+      expect(container.read(bleProvider).lastTelemetry?.isBikeOn, isTrue);
+
+      // 5. Đang cắm sạc mà xe tắt -> không tự bật nguồn lại
+      tele.charging = ChargerLogMsg()..stage = 1;
+      tele.state = BikeState.off;
+      final tCharge = tManualOff.add(const Duration(seconds: 10));
+      controller.ingestRssiForTest(-58, now: tCharge);
+      controller.ingestRssiForTest(-58, now: tCharge.add(const Duration(seconds: 5)));
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(ops.length, 4);
+      tele.charging = null;
+      tele.state = BikeState.parking;
+
+      // 6. Chủ động KHÓA AN TOÀN (lockBike) -> tôn trọng khóa, KHÔNG tự mở lại khi đang đứng cạnh
+      final lockRes = await controller.lockBike(isAutomation: false);
+      expect(lockRes, contains('KHÓA AN TOÀN'));
+      expect(container.read(bleProvider).isLocked, isTrue);
+      final opsBeforeLockCheck = ops.length;
+      final tLocked = tCharge.add(const Duration(seconds: 12));
+      controller.ingestRssiForTest(-58, now: tLocked);
+      controller.ingestRssiForTest(-58, now: tLocked.add(const Duration(seconds: 5)));
+      await Future.delayed(const Duration(milliseconds: 30));
+      expect(ops.length, opsBeforeLockCheck);
     });
   });
 }
